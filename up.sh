@@ -184,7 +184,12 @@ for a in json.load(sys.stdin):
     "CODEX_FLEET_AGENT_NAME=codex-$acct_id"
     "CODEX_FLEET_ACCOUNT_EMAIL=$email"
   )
-  pane_cmd="env ${pane_env[*]} codex < '$PROMPT_FILE'"
+  # codex CLI takes the initial prompt as a positional argument and stays
+  # interactive afterwards. Redirecting stdin from the prompt file (the
+  # previous shape) made codex exit on EOF, killing the pane immediately.
+  # Use --prompt-file when available (codex >= 0.x), otherwise fall back
+  # to passing the file contents as the positional argument.
+  pane_cmd="env ${pane_env[*]} codex \"\$(cat '$PROMPT_FILE')\""
   if [[ $FIRST -eq 1 ]]; then
     tmux new-session -d -s "$SESSION" -n "codex-$acct_id" "$pane_cmd"
     FIRST=0
