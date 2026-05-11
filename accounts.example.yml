@@ -1,0 +1,31 @@
+# codex-fleet account inventory.
+#
+# Each entry spawns one tmux pane in the fleet session. The `email` field
+# must match an existing `~/.codex/accounts/<email>.json` auth file
+# (no extension). `skills` is informational — the Colony orchestrator
+# reads it via task_post hints when deciding which account is best
+# suited for a given task; it does not gate task assignment by itself.
+#
+# Copy this file to `accounts.yml` and adjust to your real accounts:
+#   cp scripts/codex-fleet/accounts.example.yml scripts/codex-fleet/accounts.yml
+
+accounts:
+  - id: research
+    email: admin@gitguardex.com
+    skills: [research, planning, deep-analysis]
+    rate_limit_tier: high
+
+  - id: coding
+    email: admin@magnoliavilag.hu
+    skills: [implementation, testing]
+    rate_limit_tier: standard
+
+  - id: review
+    email: admin@mite.hu
+    skills: [code-review, security]
+    rate_limit_tier: standard
+
+  - id: docs
+    email: dpq@recodee.online
+    skills: [documentation, refactor]
+    rate_limit_tier: standard
