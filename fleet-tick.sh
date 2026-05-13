@@ -7,16 +7,18 @@ set -eo pipefail
 
 INTERVAL="${FLEET_TICK_INTERVAL:-5}"
 TMUX_SESSION="${CODEX_FLEET_SESSION:-codex-fleet}"
-REPO=/home/deadpool/Documents/recodee
-PLAN_JSON="$REPO/openspec/plans/rust-ph13-14-15-completion-2026-05-13/plan.json"
-STATE_OUT=/tmp/claude-viz/live-fleet-state.txt
-PLAN_OUT=/tmp/claude-viz/live-plan-design.txt
-WAVES_OUT=/tmp/claude-viz/live-waves.txt
-ACTIVE_FILE=/tmp/claude-viz/fleet-active-accounts.txt
-PID_FILE=/tmp/claude-viz/fleet-tick.pid
+REPO="${FLEET_TICK_REPO:-/home/deadpool/Documents/recodee}"
+PLAN_JSON="${FLEET_TICK_PLAN_JSON:-$REPO/openspec/plans/rust-ph13-14-15-completion-2026-05-13/plan.json}"
+STATE_OUT="${FLEET_TICK_STATE_OUT:-/tmp/claude-viz/live-fleet-state.txt}"
+PLAN_OUT="${FLEET_TICK_PLAN_OUT:-/tmp/claude-viz/live-plan-design.txt}"
+WAVES_OUT="${FLEET_TICK_WAVES_OUT:-/tmp/claude-viz/live-waves.txt}"
+ACTIVE_FILE="${FLEET_TICK_ACTIVE_FILE:-/tmp/claude-viz/fleet-active-accounts.txt}"
+PID_FILE="${FLEET_TICK_PID_FILE:-/tmp/claude-viz/fleet-tick.pid}"
 
-mkdir -p /tmp/claude-viz
-echo $$ > "$PID_FILE"
+if [[ "${FLEET_TICK_SOURCE_ONLY:-0}" != "1" ]]; then
+  mkdir -p "$(dirname "$STATE_OUT")" "$(dirname "$PLAN_OUT")" "$(dirname "$WAVES_OUT")"
+  echo $$ > "$PID_FILE"
+fi
 
 declare -A SHORT=(
   [koncita@pipacsclub.hu]=koncita     [mesi@lebenyse.hu]=mesi
@@ -43,7 +45,7 @@ declare -A AID=(
   [admin@zazrifka.sk]=admin-zazrifka       [zeus@mite.hu]=zeus-mite
 )
 
-# Sub-task evidence files (anyOf semantics: file exists ⇒ done)
+# Sub-task evidence files scored by subtask_progress_pct for fractional progress.
 SUB_EVIDENCE=(
   "openspec/changes/ph13-rollback-drill-inventory-2026-05-13/proposal.md"
   "rust/codex-lb-runtime/tests/rollback_drills.rs"
@@ -114,8 +116,61 @@ pct_spark() {
   fi
 }
 
+clamp_pct() {
+  local n="$1"
+  [[ "$n" =~ ^[0-9]+$ ]] || { printf '0'; return; }
+  (( n < 0 )) && n=0
+  (( n > 100 )) && n=100
+  printf '%d' "$n"
+}
+
+subtask_progress_bar() {
+  local pct
+  pct=$(clamp_pct "${1:-0}")
+  local len="${2:-10}"
+  local filled=$(( pct * len / 100 ))
+  local bar=""
+  local i
+  for ((i=0; i<filled; i++)); do bar+="█"; done
+  for ((i=filled; i<len; i++)); do bar+="░"; done
+  printf '%s' "$bar"
+}
+
+# Score evidence completeness for a sub-task. This keeps the plan UI from
+# treating a touched file as binary done before it has enough proof.
+subtask_progress_pct() {
+  local idx="$1"
+  local evidence="${SUB_EVIDENCE[$idx]:-}"
+  [[ -n "$evidence" ]] || { printf '0'; return; }
+
+  local file="$REPO/$evidence"
+  [[ -s "$file" ]] || { printf '0'; return; }
+
+  local score=20
+  local lines
+  lines=$(wc -l < "$file" 2>/dev/null || printf '0')
+  [[ "$lines" =~ ^[0-9]+$ ]] || lines=0
+  local line_score=$(( lines * 30 / 60 ))
+  (( line_score > 30 )) && line_score=30
+  score=$(( score + line_score ))
+
+  grep -qE '^##[[:space:]]+Why\b' "$file" 2>/dev/null && score=$(( score + 10 ))
+  grep -qE '^##[[:space:]]+(What Changes|What Changed|Changes)\b' "$file" 2>/dev/null && score=$(( score + 10 ))
+  grep -qE '^##[[:space:]]+(Impact|Verification|Test Plan)\b' "$file" 2>/dev/null && score=$(( score + 10 ))
+
+  if [[ "$file" == *.rs ]]; then
+    if grep -qE '#\[(tokio::|async_std::)?test\]|fn[[:space:]]+test_|fn[[:space:]]+[a-zA-Z0-9_]*test' "$file" 2>/dev/null; then
+      score=$(( score + 20 ))
+    fi
+  elif grep -qE '(^- \[[xX]\]|```|cargo test|pytest|bun test|Verification)' "$file" 2>/dev/null; then
+    score=$(( score + 20 ))
+  fi
+
+  clamp_pct "$score"
+}
+
 # Determine subtask claim from plan.json (jq fast path)
-# Returns:  status|claimed_agent  (status=done if evidence exists, else from plan.json)
+# Returns:  status|claimed_agent  (progress is scored separately from evidence)
 load_subtask_state() {
   local idx="$1"
   local plan_status="" plan_agent=""
@@ -129,9 +184,7 @@ load_subtask_state() {
   local evidence="${SUB_EVIDENCE[$idx]}"
   local final_status="$plan_status"
   [[ -z "$final_status" ]] && final_status="available"
-  if [[ -e "$REPO/$evidence" ]]; then
-    final_status="completed"
-  fi
+  [[ -z "$evidence" ]] && final_status="available"
   echo "${final_status}|${plan_agent}"
 }
 
@@ -148,6 +201,10 @@ build_worker_sub_map() {
     )
   fi
 }
+
+if [[ "${FLEET_TICK_SOURCE_ONLY:-0}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 while true; do
   ts=$(date '+%H:%M:%S')
@@ -254,21 +311,23 @@ while true; do
           tail_clean=$(echo "$tail" | sed 's/\[[0-9;]*m//g')
           if echo "$tail_clean" | grep -qE "usage limit|rate.?limit hit|429"; then
             working="${MAG}◍ rate-limited${R}"
-          elif echo "$tail_clean" | tail -8 | grep -qE "^› (Find and fix|Use /skills|Run /review|Improve documentation|Implement|Summarize|Explain|Write tests)"; then
-            working="${DIM}idle (default prompt)${R}"
           elif w=$(echo "$tail_clean" | tail -10 | grep -oE "Reviewing approval request" | head -1); [[ -n "$w" ]]; then
             cmd_being_approved=$(echo "$tail_clean" | tail -8 | grep -oE "└ [^[:space:]].*" | head -1 | sed 's/└ //; s/.\{60\}.*/…/')
             working="${Y}⏸ approval: ${cmd_being_approved}${R}"
-          elif w=$(echo "$tail_clean" | tail -10 | grep -oE "Working \([0-9]+[ms][^)]*\)" | tail -1); [[ -n "$w" ]]; then
+          elif w=$(echo "$tail_clean" | tail -12 | grep -oE "Working \([0-9]+[ms][^)]*\)" | tail -1); [[ -n "$w" ]]; then
+            # codex draws the › prompt placeholder beneath `Working (…)` so
+            # this MUST run before the idle-prompt regex below.
             secs=$(echo "$w" | grep -oE "[0-9]+[ms]" | head -1)
             working="${G}⚡ working ${secs}${R}"
-          elif w=$(echo "$tail_clean" | tail -10 | grep -oE "Worked for [0-9]+m[^─]*" | tail -1); [[ -n "$w" ]]; then
+          elif w=$(echo "$tail_clean" | tail -12 | grep -oE "Worked for [0-9]+m[^─]*" | tail -1); [[ -n "$w" ]]; then
             secs=$(echo "$w" | grep -oE "[0-9]+m [0-9]+s" | head -1)
             working="${G}✓ worked ${secs}${R}"
           elif w=$(echo "$tail_clean" | tail -10 | grep -oE "Calling [a-zA-Z_]+\.[a-zA-Z_]+" | tail -1); [[ -n "$w" ]]; then
             working="${C}● ${w}${R}"
           elif w=$(echo "$tail_clean" | tail -10 | grep -oE "Ran [a-z_]+" | tail -1); [[ -n "$w" ]]; then
             working="${C}● ${w}${R}"
+          elif echo "$tail_clean" | tail -8 | grep -qE "^› (Find and fix|Use /skills|Run /review|Improve documentation|Implement|Summarize|Explain|Write tests)"; then
+            working="${DIM}idle (default prompt)${R}"
           else
             working="${DIM}polling…${R}"
           fi
@@ -290,32 +349,47 @@ while true; do
   mv -f "$STATE_OUT.tmp" "$STATE_OUT"
 
   # ── 5. render live-plan-design.txt (graphical wave tree) ───────────────────
-  # Precompute subtask state[i] = "status|agent"
+  # Precompute subtask state and evidence completeness independently.
   declare -A SUBST
+  declare -A SUBPCT
   for i in 0 1 2 3 4 5 6 7 8 9 10 11; do
     SUBST[$i]=$(load_subtask_state "$i")
+    SUBPCT[$i]=$(subtask_progress_pct "$i")
   done
   marker() {
-    local i="$1"; local s="${SUBST[$i]%%|*}"
-    case "$s" in
-      completed) echo -e "${G}●${R}" ;;
-      claimed)   echo -e "${Y}◐${R}" ;;
-      blocked)   echo -e "${RED}✕${R}" ;;
-      *)         echo -e "${DIM}◇${R}" ;;
-    esac
+    local i="$1"; local s="${SUBST[$i]%%|*}"; local pct="${SUBPCT[$i]:-0}"
+    if [[ "$s" == "blocked" ]]; then
+      echo -e "${RED}✕${R}"
+    elif (( pct >= 100 )); then
+      echo -e "${G}●${R}"
+    elif [[ "$s" == "claimed" ]] || (( pct > 0 )); then
+      echo -e "${Y}◐${R}"
+    else
+      echo -e "${DIM}◇${R}"
+    fi
   }
   label() {
-    local i="$1"; local s="${SUBST[$i]%%|*}"; local a="${SUBST[$i]##*|}"
-    case "$s" in
-      completed) echo -e "${G}${SUB_TITLES[$i]}${R} ${DIM}done${R}" ;;
-      claimed)   if [[ -n "$a" && "$a" != "null" ]]; then echo -e "${Y}${SUB_TITLES[$i]}${R} ${DIM}←${R} ${C}$a${R}";
-                 else echo -e "${Y}${SUB_TITLES[$i]}${R} ${DIM}claimed${R}"; fi ;;
-      *)         echo -e "${DIM}${SUB_TITLES[$i]}${R}" ;;
-    esac
+    local i="$1"; local s="${SUBST[$i]%%|*}"; local a="${SUBST[$i]##*|}"; local pct="${SUBPCT[$i]:-0}"
+    local pcol mini suffix
+    pcol=$(pct_color "$pct")
+    mini=$(subtask_progress_bar "$pct" 8)
+    suffix=""
+    if (( pct >= 100 )); then
+      suffix="${DIM}done${R}"
+    elif [[ "$s" == "claimed" && -n "$a" && "$a" != "null" ]]; then
+      suffix="${DIM}←${R} ${C}$a${R}"
+    elif [[ "$s" == "claimed" ]]; then
+      suffix="${DIM}claimed${R}"
+    elif (( pct > 0 )); then
+      suffix="${DIM}evidence${R}"
+    fi
+    echo -e "${pcol}${mini}${R} ${B}${pct}%${R} ${DIM}sub-$i${R} ${SUB_TITLES[$i]} ${suffix}"
   }
   done_count=0
+  progress_sum=0
   for i in 0 1 2 3 4 5 6 7 8 9 10 11; do
-    [[ "${SUBST[$i]%%|*}" == "completed" ]] && done_count=$((done_count+1))
+    progress_sum=$((progress_sum + ${SUBPCT[$i]:-0}))
+    (( ${SUBPCT[$i]:-0} >= 100 )) && done_count=$((done_count+1))
   done
 
   {
@@ -351,11 +425,11 @@ while true; do
     echo
     # progress bar
     bar_len=50
-    filled=$(( done_count * bar_len / 12 ))
+    pct=$(( progress_sum / 12 ))
+    filled=$(( pct * bar_len / 100 ))
     bar=""
     for ((i=0;i<filled;i++)); do bar+="█"; done
     for ((i=filled;i<bar_len;i++)); do bar+="░"; done
-    pct=$(( done_count * 100 / 12 ))
     echo -e "  progress  ${G}${bar}${R}  ${B}${done_count}/12${R}  ${DIM}(${pct}%)${R}"
     echo
     echo -e "  ${DIM}LEGEND ${G}●${R}${DIM} done   ${Y}◐${R}${DIM} claimed   ${RED}✕${R}${DIM} blocked   ◇ available   ◆ finalizer${R}"
@@ -364,8 +438,8 @@ while true; do
   } > "$PLAN_OUT.tmp"
   mv -f "$PLAN_OUT.tmp" "$PLAN_OUT"
 
-  unset USAGE ALIVE SUBST CODEX_PANES
-  declare -A USAGE ALIVE SUBST
+  unset USAGE ALIVE CODEX_PANES
+  declare -A USAGE ALIVE
   declare -a CODEX_PANES
 
 
@@ -386,12 +460,16 @@ while true; do
     local out=""
     for i in $sub_csv; do
       local s="${SUBST[$i]%%|*}"
-      case "$s" in
-        completed) out+="${G}●${R}" ;;
-        claimed)   out+="${Y}◐${R}" ;;
-        blocked)   out+="${RED}✕${R}" ;;
-        *)         out+="${DIM}◇${R}" ;;
-      esac
+      local pct="${SUBPCT[$i]:-0}"
+      if [[ "$s" == "blocked" ]]; then
+        out+="${RED}✕${R}"
+      elif (( pct >= 100 )); then
+        out+="${G}●${R}"
+      elif [[ "$s" == "claimed" ]] || (( pct > 0 )); then
+        out+="${Y}◐${R}"
+      else
+        out+="${DIM}◇${R}"
+      fi
       out+=" "
     done
     echo -e "$out"
@@ -418,7 +496,7 @@ while true; do
       # count completed in this wave
       wave_done=0
       for i in $members; do
-        [[ "${SUBST[$i]%%|*}" == "completed" ]] && wave_done=$((wave_done+1))
+        (( ${SUBPCT[$i]:-0} >= 100 )) && wave_done=$((wave_done+1))
       done
       if (( wave_done == n )); then
         wcol=$G
