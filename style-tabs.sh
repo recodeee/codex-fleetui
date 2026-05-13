@@ -121,7 +121,35 @@ for ((i=0; i<last_idx; i++)); do
   tx_set "status-format[$i]" "$PADDING_ROW"
 done
 
+# ── menu styling ─────────────────────────────────────────────────────────────
+tx_set menu-style          "fg=#ffffff,bg=#1a1a1a"
+tx_set menu-selected-style "fg=#0a0a0a,bg=#ffd07a,bold"
+tx_set menu-border-style   "fg=#3a7ebf"
+# Round corners — easier on the eye than tmux's default sharp corners.
+tx_set menu-border-lines   "rounded"
+
+# ── sticky right-click menu ──────────────────────────────────────────────────
+# tmux's default MouseDown3Pane binding calls `display-menu` WITHOUT `-O`, so
+# the menu only stays open while the right mouse button is held down. When
+# you release the button (or move the mouse to click an item) the menu can
+# disappear before you reach it.
+#
+# Rebind with `-O` (sticky): menu stays open until an item is clicked, Escape
+# is pressed, or a click lands outside the menu. This mirrors browser/native
+# right-click menu behaviour.
+#
+# Use `tmux source-file` with a here-doc so tmux parses the brace blocks the
+# same way it does .tmux.conf — passing the binding via shell argv breaks
+# because bash splits the {} groups by whitespace.
+sticky_menu_conf=$(mktemp -t codex-fleet-menu.XXXXXX.tmux.conf)
+trap 'rm -f "$sticky_menu_conf"' EXIT
+cat >"$sticky_menu_conf" <<'TMUX_CONF'
+unbind-key -T root MouseDown3Pane
+bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { display-menu -O -T "#[align=centre]#{pane_index} (#{pane_id})" -t = -x M -y M "#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Top,}" '<' { send-keys -X history-top } "#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Bottom,}" '>' { send-keys -X history-bottom } '' "#{?mouse_word,Search For #[underscore]#{=/9/...:mouse_word},}" C-r { if-shell -F "#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}" "copy-mode -t=" ; send-keys -X -t = search-backward -- "#{q:mouse_word}" } "#{?mouse_word,Type #[underscore]#{=/9/...:mouse_word},}" C-y { copy-mode -q ; send-keys -l "#{q:mouse_word}" } "#{?mouse_word,Copy #[underscore]#{=/9/...:mouse_word},}" c { copy-mode -q ; set-buffer "#{q:mouse_word}" } "#{?mouse_line,Copy Line,}" l { copy-mode -q ; set-buffer "#{q:mouse_line}" } '' "Horizontal Split" h { split-window -h } "Vertical Split" v { split-window -v } '' "#{?#{>:#{window_panes},1},,-}Swap Up" u { swap-pane -U } "#{?#{>:#{window_panes},1},,-}Swap Down" d { swap-pane -D } "#{?pane_marked_set,,-}Swap Marked" s { swap-pane } '' Kill X { kill-pane } Respawn R { respawn-pane -k } "#{?pane_marked,Unmark,Mark}" m { select-pane -m } "#{?#{>:#{window_panes},1},,-}#{?window_zoomed_flag,Unzoom,Zoom}" z { resize-pane -Z } }
+TMUX_CONF
+tmux source-file "$sticky_menu_conf" >/dev/null 2>&1 || echo "[style-tabs] WARN: sticky menu rebind failed (see $sticky_menu_conf)"
+
 # Immediate redraw.
 tmux refresh-client -S >/dev/null 2>&1 || true
 
-echo "[style-tabs] applied browser-style tabs (height=$HEIGHT, tabs on row $last_idx) to session=$SESSION"
+echo "[style-tabs] applied browser-style tabs (height=$HEIGHT, tabs on row $last_idx, sticky right-click menu) to session=$SESSION"
