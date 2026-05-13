@@ -67,25 +67,81 @@ SUB_TITLES=(
   "PH15.0 decommission inv" "PH15.1 cutover runbook"   "PH15.2 final verify"
 )
 
-# ANSI palette (Catppuccin-ish)
+# iOS system palette (truecolor ANSI)
 B=$'\033[1m'; D=$'\033[2m'; R=$'\033[0m'
-G=$'\033[38;5;114m'    # green for done/running
-Y=$'\033[38;5;179m'    # yellow for claimed/warn
-RED=$'\033[38;5;174m'  # red for blocked/down
-C=$'\033[38;5;110m'    # cyan/blue
-M=$'\033[38;5;176m'    # mauve
-DIM=$'\033[38;5;240m'  # dim grey for unclaimed
-TEAL=$'\033[38;5;73m'  # teal headings
-# 7-stop gradient (0%→red, 50%→yellow, 100%→green)
-GRAD0=$'\033[38;5;203m'   # 0–14   red
-GRAD1=$'\033[38;5;209m'   # 15–29  red-orange
-GRAD2=$'\033[38;5;215m'   # 30–44  orange
-GRAD3=$'\033[38;5;221m'   # 45–59  yellow
-GRAD4=$'\033[38;5;185m'   # 60–74  yellow-green
-GRAD5=$'\033[38;5;150m'   # 75–89  lime
-GRAD6=$'\033[38;5;83m'    # 90+    bright green
-MAG=$'\033[38;5;176m'     # magenta (rate-limited)
-ICE=$'\033[38;5;117m'     # sky (working)
+IOS_BLUE=$'\033[38;2;0;122;255m'
+IOS_GREEN=$'\033[38;2;52;199;89m'
+IOS_RED=$'\033[38;2;255;59;48m'
+IOS_ORANGE=$'\033[38;2;255;149;0m'
+IOS_YELLOW=$'\033[38;2;255;204;0m'
+IOS_GRAY=$'\033[38;2;142;142;147m'
+IOS_GRAY2=$'\033[38;2;174;174;178m'
+IOS_GRAY6=$'\033[38;2;242;242;247m'
+IOS_WHITE=$'\033[38;2;255;255;255m'
+G="$IOS_GREEN"     # green for done/running
+Y="$IOS_YELLOW"    # yellow for claimed/warn
+RED="$IOS_RED"     # red for blocked/down
+C="$IOS_BLUE"      # blue for links/work
+M="$IOS_ORANGE"    # orange section accent
+DIM="$IOS_GRAY"    # grey for unclaimed
+TEAL="$IOS_BLUE"   # blue headings
+# 7-stop iOS gradient (0%→red, 50%→yellow, 100%→green)
+GRAD0="$IOS_RED"
+GRAD1="$IOS_RED"
+GRAD2="$IOS_ORANGE"
+GRAD3="$IOS_YELLOW"
+GRAD4="$IOS_YELLOW"
+GRAD5="$IOS_GREEN"
+GRAD6="$IOS_GREEN"
+MAG="$IOS_ORANGE"  # rate-limited
+ICE="$IOS_BLUE"    # working
+IOS_CARD_WIDTH="${FLEET_TICK_CARD_WIDTH:-86}"
+
+strip_ansi() {
+  sed -E $'s/\x1B\\[[0-9;]*m//g' <<<"${1:-}"
+}
+
+ios_visible_len() {
+  local clean
+  clean=$(strip_ansi "${1:-}")
+  printf '%d' "${#clean}"
+}
+
+ios_card_top() {
+  local title="${1:-}"
+  local width="${2:-$IOS_CARD_WIDTH}"
+  local label="─ ${title} "
+  local fill_len=$(( width - ${#label} - 2 ))
+  (( fill_len < 1 )) && fill_len=1
+  local fill
+  printf -v fill '%*s' "$fill_len" ""
+  fill=${fill// /─}
+  printf '%b╭%s%s╮%b\n' "$IOS_GRAY2" "$label" "$fill" "$R"
+}
+
+ios_card_bottom() {
+  local width="${1:-$IOS_CARD_WIDTH}"
+  local fill_len=$(( width - 2 ))
+  local fill
+  printf -v fill '%*s' "$fill_len" ""
+  fill=${fill// /─}
+  printf '%b╰%s╯%b\n' "$IOS_GRAY2" "$fill" "$R"
+}
+
+ios_card_row() {
+  local text="${1:-}"
+  local width="${2:-$IOS_CARD_WIDTH}"
+  local content_width=$(( width - 6 ))
+  local len
+  len=$(ios_visible_len "$text")
+  local pad=$(( content_width - len ))
+  (( pad < 0 )) && pad=0
+  printf '%b│%b  %b%*s  %b│%b\n' "$IOS_GRAY2" "$R" "$text" "$pad" "" "$IOS_GRAY2" "$R"
+}
+
+ios_card_blank() {
+  ios_card_row "" "${1:-$IOS_CARD_WIDTH}"
+}
 
 # Pick gradient color by percentage int
 pct_color() {
@@ -101,24 +157,6 @@ pct_color() {
   fi
 }
 
-# usage_color — INVERTED gradient for usage caps. Low % = green (lots of headroom),
-# high % = red (close to cap). Use this for 5h/weekly columns; use pct_color for
-# things where higher = better (progress, done%).
-usage_color() {
-  local n="$1"
-  [[ "$n" =~ ^[0-9]+$ ]] || { printf '%s' "$DIM"; return; }
-  if   (( n >= 95 )); then printf '%s' "$GRAD0"
-  elif (( n >= 85 )); then printf '%s' "$GRAD1"
-  elif (( n >= 70 )); then printf '%s' "$GRAD2"
-  elif (( n >= 55 )); then printf '%s' "$GRAD3"
-  elif (( n >= 40 )); then printf '%s' "$GRAD4"
-  elif (( n >= 20 )); then printf '%s' "$GRAD5"
-  else                     printf '%s' "$GRAD6"
-  fi
-}
-
-
-
 # Tiny block-spark for a percentage (▁..█)
 pct_spark() {
   local n="$1"
@@ -132,28 +170,6 @@ pct_spark() {
   elif (( n >= 12 )); then printf '▂'
   else                     printf '▁'
   fi
-}
-
-WHITE=$'\033[38;5;253m'   # bright off-white for bar caps
-
-# 6-cell gradient-filled horizontal bar ▕████░░▏ for 0..100 (usage semantic).
-# Filled cells use usage_color (0% green / lots of room → 100% red / capped),
-# empty cells dim. Each cell rendered as a colored █ on dim ░ rail.
-usage_bar() {
-  local n="$1" width=6
-  [[ "$n" =~ ^[0-9]+$ ]] || n=0
-  local filled=$(( (n * width + 50) / 100 ))
-  (( filled > width )) && filled=$width
-  (( filled < 0 )) && filled=0
-  local col
-  col=$(usage_color "$n")
-  local out="${WHITE}▕${R}${col}"
-  local i
-  for ((i=0;i<filled;i++)); do out+="█"; done
-  out+="${DIM}"
-  for ((i=filled;i<width;i++)); do out+="░"; done
-  out+="${WHITE}▏${R}"
-  printf '%s' "$out"
 }
 
 clamp_pct() {
@@ -249,29 +265,6 @@ fi
 while true; do
   ts=$(date '+%H:%M:%S')
 
-  # ── 0. detect target window — fall back if "overview" was renamed ────────
-  # up.sh historically named the tile window "overview"; newer sessions name
-  # it "fleet" (or whatever was active at startup). Without a fallback, every
-  # `tmux list-panes -t SESSION:overview` returns non-zero and the surrounding
-  # `set -eo pipefail` kills the daemon on the very first tick. Detect once
-  # per tick, store the resolved name in OVERVIEW_WIN.
-  OVERVIEW_WIN=""
-  if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    for candidate in overview fleet plan waves; do
-      if tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null \
-           | grep -qx "$candidate"; then
-        OVERVIEW_WIN="$candidate"
-        break
-      fi
-    done
-    # Last-ditch fallback: first window in the session.
-    if [[ -z "$OVERVIEW_WIN" ]]; then
-      OVERVIEW_WIN=$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | head -1)
-    fi
-  fi
-  # Allow operator override (e.g. CODEX_FLEET_OVERVIEW_WIN=main).
-  OVERVIEW_WIN="${CODEX_FLEET_OVERVIEW_WIN:-$OVERVIEW_WIN}"
-
   # ── 1. usage from codex-auth ───────────────────────────────────────────────
   declare -A USAGE
   while IFS= read -r line; do
@@ -291,7 +284,7 @@ while true; do
     declare -a CODEX_PANES
     while IFS='|' read -r pid pane_idx left cmd; do
       [[ "$left" -gt 0 && "$cmd" == "node" ]] && CODEX_PANES+=("$pane_idx")
-    done < <(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
+    done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
     i=0
     for aid in "${ACTIVE[@]}"; do
       [[ $i -lt ${#CODEX_PANES[@]} ]] && ALIVE[$aid]=running
@@ -323,76 +316,30 @@ while true; do
   # ── 3. plan claim mapping ──────────────────────────────────────────────────
   build_worker_sub_map
 
-  # ── 4. render live-fleet-state.txt — V2 ACTIVE/RESERVE sections ───────────
-  # Load active worker IDs
-  declare -A IS_ACTIVE
-  mapfile -t _ACT < "$ACTIVE_FILE" 2>/dev/null || _ACT=()
-  for _a in "${_ACT[@]}"; do IS_ACTIVE[$_a]=1; done
+  # ── 4. render live-fleet-state.txt ─────────────────────────────────────────
+  declare -A ACTIVE_SET
+  mapfile -t ACTIVE_STATE < "$ACTIVE_FILE" 2>/dev/null || ACTIVE_STATE=()
+  for active_aid in "${ACTIVE_STATE[@]}"; do
+    ACTIVE_SET[$active_aid]=1
+  done
 
-  # Render row function (used by both sections)
-  render_row() {
-    local email="$1" section="$2"
-    local pair="${USAGE[$email]:-- -}"
-    local h5=${pair%% *}; local wk=${pair##* }
-    local aid=${AID[$email]}
-    local st=${ALIVE[$aid]:-}
-    local wk_num=${wk%\%}; local h5_num=${h5%\%}
-    [[ "$wk_num" =~ ^[0-9]+$ ]] || wk_num=0
-    [[ "$h5_num" =~ ^[0-9]+$ ]] || h5_num=0
-    local wkc h5c wk_bar h5_bar live working
-    wkc=$(usage_color "$wk_num"); h5c=$(usage_color "$h5_num")
-    wk_bar=$(usage_bar "$wk_num"); h5_bar=$(usage_bar "$h5_num")
-    if [[ -n "${EXHAUSTED[$aid]:-}" ]]; then
-      live="${B}${RED}⚠ EXHAUST${R} "
-    elif [[ "$st" == "running" ]]; then
-      live="${B}${G}● run${R}      "
-      n_alive=$((n_alive+1))
-    elif [[ "$section" == "reserve" ]]; then
-      live="${DIM}◌ reserve${R}  "
-    else
-      live="${DIM}◌ idle${R}     "
-    fi
-    working=""
-    if [[ "$section" == "active" ]]; then
-      local agent_key="codex-$aid"
-      if [[ -n "${WORKER_SUB[$agent_key]:-}" ]]; then
-        local sub_idx="${WORKER_SUB[$agent_key]}"
-        working="${C}→ sub-$sub_idx${R} ${DIM}${SUB_TITLES[$sub_idx]}${R}"
-      fi
-    else
-      working="${DIM}—${R}"
-    fi
-    printf "  ${B}%-12s${R}  ${h5c}%-4s${R} %b   ${wkc}%-5s${R} %b   %b  %b\n" \
-      "${SHORT[$email]:-$email}" "$h5" "$h5_bar" "$wk" "$wk_bar" "$live" "$working"
-  }
-
-  {
-    # Header banner with v2 marker
-    echo -e "${B}${TEAL}╭─ CODEX-FLEET ${R}${MAG}v2${R}${TEAL} ──────────────────────────────────────────╮${R}    ${D}${ts}${R}"
-    printf "  ${B}${TEAL}%-12s  %-7s  %-8s  %-11s  %s${R}\n" "ACCOUNT" "5h" "WEEKLY" "STATUS" "WORKING ON"
-    echo -e "  ${TEAL}─────────────────────────────────────────────────────────────────────${R}"
-    n_alive=0
-    # ─── ACTIVE section ───
-    n_active=${#_ACT[@]}
-    echo -e "  ${B}${G}▶ ACTIVE ${n_active}/5${R}  ${DIM}running codex panes${R}"
-    for email in "${FLEET_EMAILS[@]}"; do
-      aid=${AID[$email]}
-      [[ -z "${IS_ACTIVE[$aid]:-}" ]] && continue
+  fleet_state_row() {
+      local email="$1"
       pair="${USAGE[$email]:-- -}"
       h5=${pair%% *}; wk=${pair##* }
+      aid=${AID[$email]}
       st=${ALIVE[$aid]:-}
       # Usage colors — gradient: 0%=red → 50%=yellow → 100%=green
       wk_num=${wk%\%}; h5_num=${h5%\%}
       [[ "$wk_num" =~ ^[0-9]+$ ]] || wk_num=0
       [[ "$h5_num" =~ ^[0-9]+$ ]] || h5_num=0
-      wkc=$(usage_color "$wk_num"); h5c=$(usage_color "$h5_num")
-      wk_bar=$(usage_bar "$wk_num"); h5_bar=$(usage_bar "$h5_num")
+      wkc=$(pct_color "$wk_num"); h5c=$(pct_color "$h5_num")
+      wk_bar=$(pct_spark "$wk_num"); h5_bar=$(pct_spark "$h5_num")
       # Worker status
       if [[ -n "${EXHAUSTED[$aid]:-}" ]]; then
         live="${B}${RED}⚠ EXHAUST${R} "
       elif [[ "$st" == "running" ]]; then
         live="${B}${G}● run${R}      "
-        n_alive=$((n_alive+1))
       else
         live="${DIM}◌ idle${R}     "
       fi
@@ -410,13 +357,13 @@ while true; do
         declare -a NP=()
         while IFS='|' read -r _pid _idx _left _cmd; do
           [[ "$_left" -gt 0 && "$_cmd" == "node" ]] && NP+=("$_idx")
-        done < <(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
+        done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
         for a in "${ACTIVE3[@]}"; do
           [[ "$a" == "$aid" && $i_p -lt ${#NP[@]} ]] && pane_for_agent="${NP[$i_p]}"
           i_p=$((i_p+1))
         done
         if [[ -n "$pane_for_agent" ]]; then
-          tail=$(tmux capture-pane -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pane_for_agent" -p -S -25 2>/dev/null)
+          tail=$(tmux capture-pane -t "$TMUX_SESSION:overview.$pane_for_agent" -p -S -25 2>/dev/null)
           # Strip ANSI for matching
           tail_clean=$(echo "$tail" | sed 's/\[[0-9;]*m//g')
           if echo "$tail_clean" | grep -qE "usage limit|rate.?limit hit|429"; then
@@ -444,62 +391,62 @@ while true; do
           unset NP; declare -a NP=()
         fi
       fi
-      printf "  ${B}%-12s${R}  ${h5c}%-4s${R} %b   ${wkc}%-5s${R} %b   %b  %b\n" \
+      printf "${B}%-12s${R}  ${h5c}%-4s %s${R}  ${wkc}%-5s %s${R}  %b  %b" \
         "${SHORT[$email]:-$email}" "$h5" "$h5_bar" "$wk" "$wk_bar" "$live" "$working"
-    done
-    # ─── RESERVE section ───
-    n_reserve=0
-    for email in "${FLEET_EMAILS[@]}"; do
-      aid=${AID[$email]}
-      [[ -n "${IS_ACTIVE[$aid]:-}" ]] && continue
-      n_reserve=$((n_reserve+1))
-    done
-    echo
-    echo -e "  ${B}${C}▶ RESERVE ${n_reserve}${R}  ${DIM}promote when an active worker exhausts${R}"
-    for email in "${FLEET_EMAILS[@]}"; do
-      aid=${AID[$email]}
-      [[ -n "${IS_ACTIVE[$aid]:-}" ]] && continue
-      render_row "$email" "reserve"
-    done
-    echo -e "  ${TEAL}─────────────────────────────────────────────────────────────────────${R}"
+  }
 
-    # ─── Plan summary footer ───
-    # Wave chips from plan.json: green for done waves, yellow for partial, dim for pending
-    plan_done=0; plan_total=12
-    if [[ -f "$PLAN_JSON" ]]; then
-      plan_done=$(jq -r '[.tasks[] | select(.status=="completed")] | length' "$PLAN_JSON" 2>/dev/null || echo 0)
-      plan_total=$(jq -r '.tasks | length' "$PLAN_JSON" 2>/dev/null || echo 12)
+  render_fleet_section() {
+    local title="$1"
+    local mode="$2"
+    local rendered=0
+    local email aid row st
+    ios_card_top "$title"
+    ios_card_row "${B}${TEAL}ACCOUNT       5h      WEEKLY    WORKER       WORKING ON${R}"
+    ios_card_row "${IOS_GRAY6}────────────────────────────────────────────────────────────${R}"
+    for email in "${FLEET_EMAILS[@]}"; do
+      aid=${AID[$email]}
+      if [[ "$mode" == "active" && -z "${ACTIVE_SET[$aid]:-}" ]]; then
+        continue
+      fi
+      if [[ "$mode" == "reserve" && -n "${ACTIVE_SET[$aid]:-}" ]]; then
+        continue
+      fi
+      st=${ALIVE[$aid]:-}
+      if [[ "$st" == "running" && -z "${EXHAUSTED[$aid]:-}" ]]; then
+        n_alive=$((n_alive+1))
+      fi
+      row=$(fleet_state_row "$email")
+      ios_card_row "$row"
+      rendered=$((rendered+1))
+    done
+    if (( rendered == 0 )); then
+      ios_card_row "${DIM}no workers in this lane${R}"
     fi
-    plan_pct=$(( plan_done * 100 / (plan_total > 0 ? plan_total : 1) ))
-    plan_pct_color=$(pct_color "$plan_pct")
-    # Wave chips W1..W8 based on actual sub-task states
-    wave_chips=""
-    declare -A WAVE_DEFS=([1]=0 [2]="1 2 3 4" [3]=5 [4]="6 7" [5]=8 [6]=9 [7]=10 [8]=11)
-    for w in 1 2 3 4 5 6 7 8; do
-      mem="${WAVE_DEFS[$w]}"
-      wave_chips+=" ${B}W${w}${R}"
-      for i in $mem; do
-        st="${SUBST[$i]%%|*}"
-        case "$st" in
-          completed) wave_chips+="${G}●${R}" ;;
-          claimed)   wave_chips+="${Y}◐${R}" ;;
-          *)         wave_chips+="${DIM}◇${R}" ;;
-        esac
-      done
-    done
-    echo -e "  ${B}PLAN${R} ${wave_chips}  ${B}${plan_pct_color}${plan_done}/${plan_total}${R} ${DIM}(${plan_pct}%)${R}"
+    ios_card_bottom
+  }
 
-    # Footer counters
+  {
+    n_alive=0
+    ios_card_top "CODEX-FLEET LIVE STATE"
+    ios_card_row "${B}${IOS_WHITE}fleet cockpit${R} ${DIM}iOS system palette · rounded cards${R}"
+    ios_card_row "${DIM}updated=${ts}  repo=${REPO##*/}  palette=#007AFF/#34C759/#FF3B30/#FF9500${R}"
+    ios_card_bottom
+    echo
+    render_fleet_section "ACTIVE" "active"
+    echo
+    render_fleet_section "RESERVE" "reserve"
+    echo
+    # color the active-workers count by saturation (5/5 green, 0/5 dim)
     if   (( n_alive >= 5 )); then awc=$GRAD6
     elif (( n_alive >= 3 )); then awc=$GRAD4
     elif (( n_alive >= 1 )); then awc=$GRAD3
     else                          awc=$DIM; fi
-    n_exhausted=${#EXHAUSTED[@]}
-    if (( n_exhausted > 0 )); then exhc=$RED; else exhc=$DIM; fi
-    echo -e "  ${DIM}active=${R}${B}${awc}${n_alive}/${n_active}${R}  ${DIM}reserve=${R}${B}${C}${n_reserve}${R}  ${DIM}exhausted=${R}${exhc}${n_exhausted}${R}  ${DIM}refresh=${INTERVAL}s${R}"
-    echo -e "${TEAL}╰──────────────────────────────────────────────────────────╯${R}"
+    ios_card_top "FLEET FOOTER"
+    ios_card_row "${DIM}active workers=${R}${B}${awc}${n_alive}/5${R}   ${DIM}refresh=${INTERVAL}s   tick=$$${R}"
+    ios_card_bottom
   } > "$STATE_OUT.tmp"
   mv -f "$STATE_OUT.tmp" "$STATE_OUT"
+  unset ACTIVE_SET ACTIVE_STATE
 
   # ── 5. render live-plan-design.txt (graphical wave tree) ───────────────────
   # Precompute subtask state and evidence completeness independently.
@@ -550,98 +497,88 @@ while true; do
   # pane's @panel option is set later in this loop to "[viz] plan-design" so
   # we can find it by that marker. Fall back to a wide layout if we haven't
   # tagged the pane yet (first tick after up.sh).
-  plan_pane_width=$(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_width}|#{@panel}' 2>/dev/null | awk -F'|' '$2 ~ /plan-design/ {print $1; exit}')
+  plan_pane_width=$(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_width}|#{@panel}' 2>/dev/null | awk -F'|' '$2 ~ /plan-design/ {print $1; exit}')
   plan_pane_width=${plan_pane_width:-130}
   plan_compact=0
   # Wide tree needs ~130 chars (PH13 column + arrows + PH14 column + labels).
   # Anything narrower wraps and overlaps, so switch to compact vertical mode.
   (( plan_pane_width < 130 )) && plan_compact=1
 
-  # ── minimal/visual plan render ───────────────────────────────────────────
-  # 3 phase bars + 1 total bar + 8-wave chip grid + 1-line legend.
-  # No sub-task labels, no horizontal arrows, no PLAN CLOSE arrow art —
-  # just colored progress bars and chip strips so the screen reads as a
-  # dashboard not a dense ascii tree.
-
-  # Per-phase progress: PH13 = sub-0..4 (5), PH14 = sub-5..8 (4), PH15 = sub-9..11 (3)
-  ph13_sum=0; ph14_sum=0; ph15_sum=0
-  ph13_done=0; ph14_done=0; ph15_done=0
-  for i in 0 1 2 3 4; do
-    ph13_sum=$(( ph13_sum + ${SUBPCT[$i]:-0} ))
-    (( ${SUBPCT[$i]:-0} >= 100 )) && ph13_done=$((ph13_done+1))
-  done
-  for i in 5 6 7 8; do
-    ph14_sum=$(( ph14_sum + ${SUBPCT[$i]:-0} ))
-    (( ${SUBPCT[$i]:-0} >= 100 )) && ph14_done=$((ph14_done+1))
-  done
-  for i in 9 10 11; do
-    ph15_sum=$(( ph15_sum + ${SUBPCT[$i]:-0} ))
-    (( ${SUBPCT[$i]:-0} >= 100 )) && ph15_done=$((ph15_done+1))
-  done
-  ph13_pct=$(( ph13_sum / 5 ))
-  ph14_pct=$(( ph14_sum / 4 ))
-  ph15_pct=$(( ph15_sum / 3 ))
-  total_pct=$(( progress_sum / 12 ))
-
-  # Bar widths scale with pane width but stay sane: 12..28 cells per phase,
-  # 30..60 cells for total.
-  phase_w=$(( plan_pane_width / 5 ))
-  (( phase_w < 12 )) && phase_w=12
-  (( phase_w > 28 )) && phase_w=28
-  total_w=$(( plan_pane_width - 24 ))
-  (( total_w < 30 )) && total_w=30
-  (( total_w > 60 )) && total_w=60
-
-  # chip() prints a single character for sub-task i, colored by status.
-  chip() {
-    local i="$1" s pct
-    s="${SUBST[$i]%%|*}"
-    pct="${SUBPCT[$i]:-0}"
-    if [[ "$s" == "blocked" ]]; then printf '%s✕%s' "$RED" "$R"
-    elif (( pct >= 100 )); then printf '%s●%s' "$G" "$R"
-    elif [[ "$s" == "claimed" ]] || (( pct > 0 )); then printf '%s◐%s' "$Y" "$R"
-    else printf '%s◇%s' "$DIM" "$R"
-    fi
-  }
-
   {
-    echo -e "${B}${TEAL}PLAN${R}  ${D}rust-ph13-14-15-completion${R}  ${D}${ts}${R}"
+    echo -e "${B}${TEAL}PLAN${R}  ${D}rust-ph13-14-15-completion-2026-05-13${R}   ${D}${ts}${R}   ${DIM}w=${plan_pane_width}${R}"
     echo
-    # Phase bars
-    printf '  %s%-4s%s %b  %s%d/5%s  %sROLLBACK%s\n' \
-      "$B" "PH13" "$R" "$(pct_color "$ph13_pct")$(subtask_progress_bar "$ph13_pct" "$phase_w")$R" \
-      "$B" "$ph13_done" "$R" "$DIM" "$R"
-    printf '  %s%-4s%s %b  %s%d/4%s  %sROLLOUT%s\n' \
-      "$B" "PH14" "$R" "$(pct_color "$ph14_pct")$(subtask_progress_bar "$ph14_pct" "$phase_w")$R" \
-      "$B" "$ph14_done" "$R" "$DIM" "$R"
-    printf '  %s%-4s%s %b  %s%d/3%s  %sDECOMM%s\n' \
-      "$B" "PH15" "$R" "$(pct_color "$ph15_pct")$(subtask_progress_bar "$ph15_pct" "$phase_w")$R" \
-      "$B" "$ph15_done" "$R" "$DIM" "$R"
+
+    if (( plan_compact == 1 )); then
+      # ── compact (narrow pane) — vertical wave list, no horizontal arrows ──
+      printf "  ${M}PH13 ROLLBACK DRILLS${R}   ${M}PH14 ROLLOUT${R}   ${M}PH15 DECOMM${R}\n"
+      echo "  ───────────────────────────────────────"
+      echo
+      # W1
+      echo -e "  ${B}W1${R}  $(marker 0) sub-0   $(label 0)"
+      echo
+      echo -e "  ${B}W2${R}  $(marker 1) sub-1   $(label 1)"
+      echo -e "      $(marker 2) sub-2   $(label 2)"
+      echo -e "      $(marker 3) sub-3   $(label 3)"
+      echo -e "      $(marker 4) sub-4   $(label 4)"
+      echo
+      echo -e "  ${B}W3${R}  $(marker 5) sub-5   $(label 5)"
+      echo -e "  ${B}W4${R}  $(marker 6) sub-6   $(label 6)"
+      echo -e "      $(marker 7) sub-7   $(label 7)"
+      echo -e "  ${B}W5${R}  $(marker 8) sub-8   $(label 8)"
+      echo
+      echo -e "  ${B}W6${R}  $(marker 9) sub-9   $(label 9)"
+      echo -e "  ${B}W7${R}  $(marker 10) sub-10  $(label 10)  ${DIM}◄ 2,3,4,9${R}"
+      echo -e "  ${B}W8${R}  $(marker 11) sub-11  $(label 11)  ${DIM}◄ all${R}"
+      echo
+      echo -e "          ▼ ${B}${G}PLAN CLOSE${R}"
+    else
+      # ── wide (full tree) layout — same as before ───────────────────────────
+      printf '       ${M}%-26s${R}   ${M}%-22s${R}   ${M}%-14s${R}\n' \
+        "PH13  ROLLBACK DRILLS" "PH14  ROLLOUT GATES" "PH15  DECOMM" \
+        | sed 's/\${M}/'"$M"'/g; s/\${R}/'"$R"'/g'
+      echo "       ─────────────────────       ──────────────────       ────────────"
+      echo
+
+      echo -e "  W1  ┌─ $(marker 0) sub-0  $(label 0)"
+      echo -e "      │"
+      echo -e "  W2  ├─ $(marker 1) sub-1  $(label 1)  ${DIM}──►${R}  W3 $(marker 5) sub-5  $(label 5)"
+      echo -e "      │                                                  │"
+      echo -e "      ├─ $(marker 2) sub-2  $(label 2)                       ${DIM}├─►${R} W4 $(marker 6) sub-6  $(label 6)"
+      echo -e "      │                                                  │       │"
+      echo -e "      ├─ $(marker 3) sub-3  $(label 3)                       │       ${DIM}└─►${R} W5 $(marker 8) sub-8  $(label 8)"
+      echo -e "      │                                                  │"
+      echo -e "      └─ $(marker 4) sub-4  $(label 4)                       ${DIM}└─►${R} W4 $(marker 7) sub-7  $(label 7)"
+      echo -e "                                                                  │"
+      echo -e "                                  ${DIM}┌─────────────────────────────────┘${R}"
+      echo -e "                                  │"
+      echo -e "                          W6 $(marker 9) sub-9  $(label 9)"
+      echo -e "                                  │"
+      echo -e "                          W7 $(marker 10) sub-10 $(label 10) ${DIM}◄ needs 2,3,4,9${R}"
+      echo -e "                                  │"
+      echo -e "                          W8 $(marker 11) sub-11 $(label 11) ${DIM}◄ needs all${R}"
+      echo -e "                                  │"
+      echo -e "                                  ▼ ${B}${G}PLAN CLOSE${R}"
+    fi
+
     echo
-    # Total bar
-    printf '  %sTOTAL%s %b  %s%d/12%s  %s%d%%%s\n' \
-      "$B" "$R" "$(pct_color "$total_pct")$(subtask_progress_bar "$total_pct" "$total_w")$R" \
-      "$B" "$done_count" "$R" "$(pct_color "$total_pct")" "$total_pct" "$R"
+    # progress bar — width scales with pane width
+    bar_len=$(( plan_pane_width - 30 ))
+    (( bar_len < 12 )) && bar_len=12
+    (( bar_len > 60 )) && bar_len=60
+    pct=$(( progress_sum / 12 ))
+    filled=$(( pct * bar_len / 100 ))
+    bar=""
+    for ((i=0;i<filled;i++)); do bar+="█"; done
+    for ((i=filled;i<bar_len;i++)); do bar+="░"; done
+    echo -e "  progress  ${G}${bar}${R}  ${B}${done_count}/12${R}  ${DIM}(${pct}%)${R}"
     echo
-    # Wave chip grid — 2 columns (W1-W4 left, W5-W8 right) to halve vertical space
-    printf '  %sW1%s %b              %sW5%s %b\n' \
-      "$ICE" "$R" "$(chip 0)" \
-      "$ICE" "$R" "$(chip 8)"
-    printf '  %sW2%s %b %b %b %b      %sW6%s %b\n' \
-      "$ICE" "$R" "$(chip 1)" "$(chip 2)" "$(chip 3)" "$(chip 4)" \
-      "$ICE" "$R" "$(chip 9)"
-    printf '  %sW3%s %b              %sW7%s %b\n' \
-      "$ICE" "$R" "$(chip 5)" \
-      "$ICE" "$R" "$(chip 10)"
-    printf '  %sW4%s %b %b            %sW8%s %b\n' \
-      "$ICE" "$R" "$(chip 6)" "$(chip 7)" \
-      "$ICE" "$R" "$(chip 11)"
-    echo
-    # Minimal legend — one line
-    echo -e "  ${DIM}${G}●${R}${DIM} done  ${Y}◐${R}${DIM} active  ◇ pending  ${RED}✕${R}${DIM} blocked${R}"
-    echo
-    # Provenance footer — one dim line.
-    echo -e "  ${DIM}made with${R} ${C}claude code${R} ${DIM}·${R} ${ICE}codex-fleet v2${R}"
+    if (( plan_compact == 1 )); then
+      echo -e "  ${DIM}LEGEND ${G}●${R}${DIM} done  ${Y}◐${R}${DIM} claim  ${RED}✕${R}${DIM} block  ◇ avail${R}"
+    else
+      echo -e "  ${DIM}LEGEND ${G}●${R}${DIM} done   ${Y}◐${R}${DIM} claimed   ${RED}✕${R}${DIM} blocked   ◇ available   ◆ finalizer${R}"
+      echo -e "  ${DIM}GATE   PH12 still [>] — checkbox flips need PH12 green${R}"
+    fi
+    echo -e "  ${DIM}refresh=${INTERVAL}s${R}"
   } > "$PLAN_OUT.tmp"
   mv -f "$PLAN_OUT.tmp" "$PLAN_OUT"
 
@@ -762,14 +699,14 @@ while true; do
       if [[ "$left" -gt 0 && "$cmd" == "node" ]]; then
         NODE_PANES+=("$pane_idx")
       fi
-    done < <(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
+    done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
     for aid in "${ACTIVE2[@]}"; do
       [[ $pane_i -lt ${#NODE_PANES[@]} ]] || break
       pidx=${NODE_PANES[$pane_i]}
       agent_key="codex-$aid"
       sub="${WORKER_SUB[$agent_key]:-}"
       # Scrape pane scrollback for branch + PR URL + PR state
-      ptail=$(tmux capture-pane -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.${pidx}" -p -S -300 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+      ptail=$(tmux capture-pane -t "$TMUX_SESSION:overview.${pidx}" -p -S -300 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
       # Find last branch reference: either "branch=foo" or "agent/codex/<slug>" or "spec/<slug>/sub-N"
       branch=$(echo "$ptail" | grep -oE "(branch=|on )(agent/[^[:space:]]+|spec/[^[:space:]]+)" | tail -1 | sed -E 's/^(branch=|on )//')
       if [[ -z "$branch" ]]; then
@@ -807,22 +744,23 @@ while true; do
       if [[ -z "$sub" && -z "$branch_short" && -z "$pr_num" ]]; then
         title="${title} polling"
       fi
-      tmux set-option -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.${pidx}" -p @panel "$title" 2>/dev/null || true
+      tmux set-option -t "$TMUX_SESSION:overview.${pidx}" -p @panel "$title" 2>/dev/null || true
       pane_i=$((pane_i+1))
     done
     # Also re-pin the two viz panes by content sniff
-    for pidx in $(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_index}'); do
-      cmd=$(tmux display-message -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pidx" -p '#{pane_current_command}' 2>/dev/null)
+    for pidx in $(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_index}'); do
+      cmd=$(tmux display-message -t "$TMUX_SESSION:overview.$pidx" -p '#{pane_current_command}' 2>/dev/null)
       if [[ "$cmd" == "watch" ]]; then
-        sample=$(tmux capture-pane -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pidx" -p -S -100 2>/dev/null | grep -m1 -oE 'CODEX-FLEET|rust-ph13-14-15' || echo "")
+        sample=$(tmux capture-pane -t "$TMUX_SESSION:overview.$pidx" -p -S -100 2>/dev/null | grep -m1 -oE 'CODEX-FLEET|rust-ph13-14-15' || echo "")
         case "$sample" in
-          rust-ph13-14-15) tmux set-option -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pidx" -p @panel '[viz] plan-design' 2>/dev/null ;;
-          CODEX-FLEET)     tmux set-option -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pidx" -p @panel '[viz] fleet-state' 2>/dev/null ;;
+          rust-ph13-14-15) tmux set-option -t "$TMUX_SESSION:overview.$pidx" -p @panel '[viz] plan-design' 2>/dev/null ;;
+          CODEX-FLEET)     tmux set-option -t "$TMUX_SESSION:overview.$pidx" -p @panel '[viz] fleet-state' 2>/dev/null ;;
         esac
       fi
     done
     unset NODE_PANES; declare -a NODE_PANES
   fi
 
+  [[ "${FLEET_TICK_ONCE:-0}" == "1" ]] && break
   sleep "$INTERVAL"
 done
