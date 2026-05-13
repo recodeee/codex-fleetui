@@ -249,6 +249,29 @@ fi
 while true; do
   ts=$(date '+%H:%M:%S')
 
+  # ── 0. detect target window — fall back if "overview" was renamed ────────
+  # up.sh historically named the tile window "overview"; newer sessions name
+  # it "fleet" (or whatever was active at startup). Without a fallback, every
+  # `tmux list-panes -t SESSION:overview` returns non-zero and the surrounding
+  # `set -eo pipefail` kills the daemon on the very first tick. Detect once
+  # per tick, store the resolved name in OVERVIEW_WIN.
+  OVERVIEW_WIN=""
+  if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    for candidate in overview fleet plan waves; do
+      if tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null \
+           | grep -qx "$candidate"; then
+        OVERVIEW_WIN="$candidate"
+        break
+      fi
+    done
+    # Last-ditch fallback: first window in the session.
+    if [[ -z "$OVERVIEW_WIN" ]]; then
+      OVERVIEW_WIN=$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | head -1)
+    fi
+  fi
+  # Allow operator override (e.g. CODEX_FLEET_OVERVIEW_WIN=main).
+  OVERVIEW_WIN="${CODEX_FLEET_OVERVIEW_WIN:-$OVERVIEW_WIN}"
+
   # ── 1. usage from codex-auth ───────────────────────────────────────────────
   declare -A USAGE
   while IFS= read -r line; do
@@ -268,7 +291,7 @@ while true; do
     declare -a CODEX_PANES
     while IFS='|' read -r pid pane_idx left cmd; do
       [[ "$left" -gt 0 && "$cmd" == "node" ]] && CODEX_PANES+=("$pane_idx")
-    done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
+    done < <(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
     i=0
     for aid in "${ACTIVE[@]}"; do
       [[ $i -lt ${#CODEX_PANES[@]} ]] && ALIVE[$aid]=running
@@ -387,13 +410,13 @@ while true; do
         declare -a NP=()
         while IFS='|' read -r _pid _idx _left _cmd; do
           [[ "$_left" -gt 0 && "$_cmd" == "node" ]] && NP+=("$_idx")
-        done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
+        done < <(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
         for a in "${ACTIVE3[@]}"; do
           [[ "$a" == "$aid" && $i_p -lt ${#NP[@]} ]] && pane_for_agent="${NP[$i_p]}"
           i_p=$((i_p+1))
         done
         if [[ -n "$pane_for_agent" ]]; then
-          tail=$(tmux capture-pane -t "$TMUX_SESSION:overview.$pane_for_agent" -p -S -25 2>/dev/null)
+          tail=$(tmux capture-pane -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pane_for_agent" -p -S -25 2>/dev/null)
           # Strip ANSI for matching
           tail_clean=$(echo "$tail" | sed 's/\[[0-9;]*m//g')
           if echo "$tail_clean" | grep -qE "usage limit|rate.?limit hit|429"; then
@@ -527,7 +550,7 @@ while true; do
   # pane's @panel option is set later in this loop to "[viz] plan-design" so
   # we can find it by that marker. Fall back to a wide layout if we haven't
   # tagged the pane yet (first tick after up.sh).
-  plan_pane_width=$(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_width}|#{@panel}' 2>/dev/null | awk -F'|' '$2 ~ /plan-design/ {print $1; exit}')
+  plan_pane_width=$(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_width}|#{@panel}' 2>/dev/null | awk -F'|' '$2 ~ /plan-design/ {print $1; exit}')
   plan_pane_width=${plan_pane_width:-130}
   plan_compact=0
   # Wide tree needs ~130 chars (PH13 column + arrows + PH14 column + labels).
@@ -739,14 +762,14 @@ while true; do
       if [[ "$left" -gt 0 && "$cmd" == "node" ]]; then
         NODE_PANES+=("$pane_idx")
       fi
-    done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
+    done < <(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
     for aid in "${ACTIVE2[@]}"; do
       [[ $pane_i -lt ${#NODE_PANES[@]} ]] || break
       pidx=${NODE_PANES[$pane_i]}
       agent_key="codex-$aid"
       sub="${WORKER_SUB[$agent_key]:-}"
       # Scrape pane scrollback for branch + PR URL + PR state
-      ptail=$(tmux capture-pane -t "$TMUX_SESSION:overview.${pidx}" -p -S -300 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+      ptail=$(tmux capture-pane -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.${pidx}" -p -S -300 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
       # Find last branch reference: either "branch=foo" or "agent/codex/<slug>" or "spec/<slug>/sub-N"
       branch=$(echo "$ptail" | grep -oE "(branch=|on )(agent/[^[:space:]]+|spec/[^[:space:]]+)" | tail -1 | sed -E 's/^(branch=|on )//')
       if [[ -z "$branch" ]]; then
@@ -784,17 +807,17 @@ while true; do
       if [[ -z "$sub" && -z "$branch_short" && -z "$pr_num" ]]; then
         title="${title} polling"
       fi
-      tmux set-option -t "$TMUX_SESSION:overview.${pidx}" -p @panel "$title" 2>/dev/null || true
+      tmux set-option -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.${pidx}" -p @panel "$title" 2>/dev/null || true
       pane_i=$((pane_i+1))
     done
     # Also re-pin the two viz panes by content sniff
-    for pidx in $(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_index}'); do
-      cmd=$(tmux display-message -t "$TMUX_SESSION:overview.$pidx" -p '#{pane_current_command}' 2>/dev/null)
+    for pidx in $(tmux list-panes -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}" -F '#{pane_index}'); do
+      cmd=$(tmux display-message -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pidx" -p '#{pane_current_command}' 2>/dev/null)
       if [[ "$cmd" == "watch" ]]; then
-        sample=$(tmux capture-pane -t "$TMUX_SESSION:overview.$pidx" -p -S -100 2>/dev/null | grep -m1 -oE 'CODEX-FLEET|rust-ph13-14-15' || echo "")
+        sample=$(tmux capture-pane -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pidx" -p -S -100 2>/dev/null | grep -m1 -oE 'CODEX-FLEET|rust-ph13-14-15' || echo "")
         case "$sample" in
-          rust-ph13-14-15) tmux set-option -t "$TMUX_SESSION:overview.$pidx" -p @panel '[viz] plan-design' 2>/dev/null ;;
-          CODEX-FLEET)     tmux set-option -t "$TMUX_SESSION:overview.$pidx" -p @panel '[viz] fleet-state' 2>/dev/null ;;
+          rust-ph13-14-15) tmux set-option -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pidx" -p @panel '[viz] plan-design' 2>/dev/null ;;
+          CODEX-FLEET)     tmux set-option -t "$TMUX_SESSION:${OVERVIEW_WIN:-overview}.$pidx" -p @panel '[viz] fleet-state' 2>/dev/null ;;
         esac
       fi
     done
