@@ -101,6 +101,24 @@ pct_color() {
   fi
 }
 
+# usage_color — INVERTED gradient for usage caps. Low % = green (lots of headroom),
+# high % = red (close to cap). Use this for 5h/weekly columns; use pct_color for
+# things where higher = better (progress, done%).
+usage_color() {
+  local n="$1"
+  [[ "$n" =~ ^[0-9]+$ ]] || { printf '%s' "$DIM"; return; }
+  if   (( n >= 95 )); then printf '%s' "$GRAD0"
+  elif (( n >= 85 )); then printf '%s' "$GRAD1"
+  elif (( n >= 70 )); then printf '%s' "$GRAD2"
+  elif (( n >= 55 )); then printf '%s' "$GRAD3"
+  elif (( n >= 40 )); then printf '%s' "$GRAD4"
+  elif (( n >= 20 )); then printf '%s' "$GRAD5"
+  else                     printf '%s' "$GRAD6"
+  fi
+}
+
+
+
 # Tiny block-spark for a percentage (▁..█)
 pct_spark() {
   local n="$1"
@@ -114,6 +132,28 @@ pct_spark() {
   elif (( n >= 12 )); then printf '▂'
   else                     printf '▁'
   fi
+}
+
+WHITE=$'\033[38;5;253m'   # bright off-white for bar caps
+
+# 6-cell gradient-filled horizontal bar ▕████░░▏ for 0..100 (usage semantic).
+# Filled cells use usage_color (0% green / lots of room → 100% red / capped),
+# empty cells dim. Each cell rendered as a colored █ on dim ░ rail.
+usage_bar() {
+  local n="$1" width=6
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  local filled=$(( (n * width + 50) / 100 ))
+  (( filled > width )) && filled=$width
+  (( filled < 0 )) && filled=0
+  local col
+  col=$(usage_color "$n")
+  local out="${WHITE}▕${R}${col}"
+  local i
+  for ((i=0;i<filled;i++)); do out+="█"; done
+  out+="${DIM}"
+  for ((i=filled;i<width;i++)); do out+="░"; done
+  out+="${WHITE}▏${R}"
+  printf '%s' "$out"
 }
 
 clamp_pct() {
@@ -260,23 +300,70 @@ while true; do
   # ── 3. plan claim mapping ──────────────────────────────────────────────────
   build_worker_sub_map
 
-  # ── 4. render live-fleet-state.txt ─────────────────────────────────────────
+  # ── 4. render live-fleet-state.txt — V2 ACTIVE/RESERVE sections ───────────
+  # Load active worker IDs
+  declare -A IS_ACTIVE
+  mapfile -t _ACT < "$ACTIVE_FILE" 2>/dev/null || _ACT=()
+  for _a in "${_ACT[@]}"; do IS_ACTIVE[$_a]=1; done
+
+  # Render row function (used by both sections)
+  render_row() {
+    local email="$1" section="$2"
+    local pair="${USAGE[$email]:-- -}"
+    local h5=${pair%% *}; local wk=${pair##* }
+    local aid=${AID[$email]}
+    local st=${ALIVE[$aid]:-}
+    local wk_num=${wk%\%}; local h5_num=${h5%\%}
+    [[ "$wk_num" =~ ^[0-9]+$ ]] || wk_num=0
+    [[ "$h5_num" =~ ^[0-9]+$ ]] || h5_num=0
+    local wkc h5c wk_bar h5_bar live working
+    wkc=$(usage_color "$wk_num"); h5c=$(usage_color "$h5_num")
+    wk_bar=$(usage_bar "$wk_num"); h5_bar=$(usage_bar "$h5_num")
+    if [[ -n "${EXHAUSTED[$aid]:-}" ]]; then
+      live="${B}${RED}⚠ EXHAUST${R} "
+    elif [[ "$st" == "running" ]]; then
+      live="${B}${G}● run${R}      "
+      n_alive=$((n_alive+1))
+    elif [[ "$section" == "reserve" ]]; then
+      live="${DIM}◌ reserve${R}  "
+    else
+      live="${DIM}◌ idle${R}     "
+    fi
+    working=""
+    if [[ "$section" == "active" ]]; then
+      local agent_key="codex-$aid"
+      if [[ -n "${WORKER_SUB[$agent_key]:-}" ]]; then
+        local sub_idx="${WORKER_SUB[$agent_key]}"
+        working="${C}→ sub-$sub_idx${R} ${DIM}${SUB_TITLES[$sub_idx]}${R}"
+      fi
+    else
+      working="${DIM}—${R}"
+    fi
+    printf "  ${B}%-12s${R}  ${h5c}%-4s${R} %b   ${wkc}%-5s${R} %b   %b  %b\n" \
+      "${SHORT[$email]:-$email}" "$h5" "$h5_bar" "$wk" "$wk_bar" "$live" "$working"
+  }
+
   {
-    echo -e "${B}${TEAL}╭─ CODEX-FLEET LIVE STATE ─────────────────────────────────╮${R}    ${D}${ts}${R}"
-    printf "  ${B}${TEAL}%-12s  %-7s  %-8s  %-11s  %s${R}\n" "ACCOUNT" "5h" "WEEKLY" "WORKER" "WORKING ON"
+    # Header banner with v2 marker
+    echo -e "${B}${TEAL}╭─ CODEX-FLEET ${R}${MAG}v2${R}${TEAL} ──────────────────────────────────────────╮${R}    ${D}${ts}${R}"
+    printf "  ${B}${TEAL}%-12s  %-7s  %-8s  %-11s  %s${R}\n" "ACCOUNT" "5h" "WEEKLY" "STATUS" "WORKING ON"
     echo -e "  ${TEAL}─────────────────────────────────────────────────────────────────────${R}"
     n_alive=0
+    # ─── ACTIVE section ───
+    n_active=${#_ACT[@]}
+    echo -e "  ${B}${G}▶ ACTIVE ${n_active}/5${R}  ${DIM}running codex panes${R}"
     for email in "${FLEET_EMAILS[@]}"; do
+      aid=${AID[$email]}
+      [[ -z "${IS_ACTIVE[$aid]:-}" ]] && continue
       pair="${USAGE[$email]:-- -}"
       h5=${pair%% *}; wk=${pair##* }
-      aid=${AID[$email]}
       st=${ALIVE[$aid]:-}
       # Usage colors — gradient: 0%=red → 50%=yellow → 100%=green
       wk_num=${wk%\%}; h5_num=${h5%\%}
       [[ "$wk_num" =~ ^[0-9]+$ ]] || wk_num=0
       [[ "$h5_num" =~ ^[0-9]+$ ]] || h5_num=0
-      wkc=$(pct_color "$wk_num"); h5c=$(pct_color "$h5_num")
-      wk_bar=$(pct_spark "$wk_num"); h5_bar=$(pct_spark "$h5_num")
+      wkc=$(usage_color "$wk_num"); h5c=$(usage_color "$h5_num")
+      wk_bar=$(usage_bar "$wk_num"); h5_bar=$(usage_bar "$h5_num")
       # Worker status
       if [[ -n "${EXHAUSTED[$aid]:-}" ]]; then
         live="${B}${RED}⚠ EXHAUST${R} "
@@ -334,16 +421,59 @@ while true; do
           unset NP; declare -a NP=()
         fi
       fi
-      printf "  ${B}%-12s${R}  ${h5c}%-4s %s${R}  ${wkc}%-5s %s${R}  %b  %b\n" \
+      printf "  ${B}%-12s${R}  ${h5c}%-4s${R} %b   ${wkc}%-5s${R} %b   %b  %b\n" \
         "${SHORT[$email]:-$email}" "$h5" "$h5_bar" "$wk" "$wk_bar" "$live" "$working"
     done
+    # ─── RESERVE section ───
+    n_reserve=0
+    for email in "${FLEET_EMAILS[@]}"; do
+      aid=${AID[$email]}
+      [[ -n "${IS_ACTIVE[$aid]:-}" ]] && continue
+      n_reserve=$((n_reserve+1))
+    done
+    echo
+    echo -e "  ${B}${C}▶ RESERVE ${n_reserve}${R}  ${DIM}promote when an active worker exhausts${R}"
+    for email in "${FLEET_EMAILS[@]}"; do
+      aid=${AID[$email]}
+      [[ -n "${IS_ACTIVE[$aid]:-}" ]] && continue
+      render_row "$email" "reserve"
+    done
     echo -e "  ${TEAL}─────────────────────────────────────────────────────────────────────${R}"
-    # color the active-workers count by saturation (5/5 green, 0/5 dim)
+
+    # ─── Plan summary footer ───
+    # Wave chips from plan.json: green for done waves, yellow for partial, dim for pending
+    plan_done=0; plan_total=12
+    if [[ -f "$PLAN_JSON" ]]; then
+      plan_done=$(jq -r '[.tasks[] | select(.status=="completed")] | length' "$PLAN_JSON" 2>/dev/null || echo 0)
+      plan_total=$(jq -r '.tasks | length' "$PLAN_JSON" 2>/dev/null || echo 12)
+    fi
+    plan_pct=$(( plan_done * 100 / (plan_total > 0 ? plan_total : 1) ))
+    plan_pct_color=$(pct_color "$plan_pct")
+    # Wave chips W1..W8 based on actual sub-task states
+    wave_chips=""
+    declare -A WAVE_DEFS=([1]=0 [2]="1 2 3 4" [3]=5 [4]="6 7" [5]=8 [6]=9 [7]=10 [8]=11)
+    for w in 1 2 3 4 5 6 7 8; do
+      mem="${WAVE_DEFS[$w]}"
+      wave_chips+=" ${B}W${w}${R}"
+      for i in $mem; do
+        st="${SUBST[$i]%%|*}"
+        case "$st" in
+          completed) wave_chips+="${G}●${R}" ;;
+          claimed)   wave_chips+="${Y}◐${R}" ;;
+          *)         wave_chips+="${DIM}◇${R}" ;;
+        esac
+      done
+    done
+    echo -e "  ${B}PLAN${R} ${wave_chips}  ${B}${plan_pct_color}${plan_done}/${plan_total}${R} ${DIM}(${plan_pct}%)${R}"
+
+    # Footer counters
     if   (( n_alive >= 5 )); then awc=$GRAD6
     elif (( n_alive >= 3 )); then awc=$GRAD4
     elif (( n_alive >= 1 )); then awc=$GRAD3
     else                          awc=$DIM; fi
-    echo -e "  ${DIM}active workers=${R}${B}${awc}${n_alive}/5${R}   ${DIM}refresh=${INTERVAL}s   tick=$$${R}"
+    n_exhausted=${#EXHAUSTED[@]}
+    if (( n_exhausted > 0 )); then exhc=$RED; else exhc=$DIM; fi
+    echo -e "  ${DIM}active=${R}${B}${awc}${n_alive}/${n_active}${R}  ${DIM}reserve=${R}${B}${C}${n_reserve}${R}  ${DIM}exhausted=${R}${exhc}${n_exhausted}${R}  ${DIM}refresh=${INTERVAL}s${R}"
     echo -e "${TEAL}╰──────────────────────────────────────────────────────────╯${R}"
   } > "$STATE_OUT.tmp"
   mv -f "$STATE_OUT.tmp" "$STATE_OUT"
