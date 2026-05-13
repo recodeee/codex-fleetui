@@ -392,39 +392,79 @@ while true; do
     (( ${SUBPCT[$i]:-0} >= 100 )) && done_count=$((done_count+1))
   done
 
+  # ── responsive width detection ─────────────────────────────────────────────
+  # Look up the consumer pane (the one watching live-plan-design.txt). The
+  # pane's @panel option is set later in this loop to "[viz] plan-design" so
+  # we can find it by that marker. Fall back to a wide layout if we haven't
+  # tagged the pane yet (first tick after up.sh).
+  plan_pane_width=$(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_width}|#{@panel}' 2>/dev/null | awk -F'|' '$2 ~ /plan-design/ {print $1; exit}')
+  plan_pane_width=${plan_pane_width:-130}
+  plan_compact=0
+  # Wide tree needs ~130 chars (PH13 column + arrows + PH14 column + labels).
+  # Anything narrower wraps and overlaps, so switch to compact vertical mode.
+  (( plan_pane_width < 130 )) && plan_compact=1
+
   {
-    echo -e "${B}${TEAL}PLAN${R}  ${D}rust-ph13-14-15-completion-2026-05-13${R}            ${D}${ts}${R}"
-    echo
-    printf '       ${M}%-26s${R}   ${M}%-22s${R}   ${M}%-14s${R}\n' \
-      "PH13  ROLLBACK DRILLS" "PH14  ROLLOUT GATES" "PH15  DECOMM" \
-      | sed 's/\${M}/'"$M"'/g; s/\${R}/'"$R"'/g'
-    echo "       ─────────────────────       ──────────────────       ────────────"
+    echo -e "${B}${TEAL}PLAN${R}  ${D}rust-ph13-14-15-completion-2026-05-13${R}   ${D}${ts}${R}   ${DIM}w=${plan_pane_width}${R}"
     echo
 
-    # Row W1
-    echo -e "  W1  ┌─ $(marker 0) sub-0  $(label 0)"
-    echo -e "      │"
-    # Row W2 with arrows into PH14
-    echo -e "  W2  ├─ $(marker 1) sub-1  $(label 1)  ${DIM}──►${R}  W3 $(marker 5) sub-5  $(label 5)"
-    echo -e "      │                                                  │"
-    echo -e "      ├─ $(marker 2) sub-2  $(label 2)                       ${DIM}├─►${R} W4 $(marker 6) sub-6  $(label 6)"
-    echo -e "      │                                                  │       │"
-    echo -e "      ├─ $(marker 3) sub-3  $(label 3)                       │       ${DIM}└─►${R} W5 $(marker 8) sub-8  $(label 8)"
-    echo -e "      │                                                  │"
-    echo -e "      └─ $(marker 4) sub-4  $(label 4)                       ${DIM}└─►${R} W4 $(marker 7) sub-7  $(label 7)"
-    echo -e "                                                                  │"
-    echo -e "                                  ${DIM}┌─────────────────────────────────┘${R}"
-    echo -e "                                  │"
-    echo -e "                          W6 $(marker 9) sub-9  $(label 9)"
-    echo -e "                                  │"
-    echo -e "                          W7 $(marker 10) sub-10 $(label 10) ${DIM}◄ needs 2,3,4,9${R}"
-    echo -e "                                  │"
-    echo -e "                          W8 $(marker 11) sub-11 $(label 11) ${DIM}◄ needs all${R}"
-    echo -e "                                  │"
-    echo -e "                                  ▼ ${B}${G}PLAN CLOSE${R}"
+    if (( plan_compact == 1 )); then
+      # ── compact (narrow pane) — vertical wave list, no horizontal arrows ──
+      printf "  ${M}PH13 ROLLBACK DRILLS${R}   ${M}PH14 ROLLOUT${R}   ${M}PH15 DECOMM${R}\n"
+      echo "  ───────────────────────────────────────"
+      echo
+      # W1
+      echo -e "  ${B}W1${R}  $(marker 0) sub-0   $(label 0)"
+      echo
+      echo -e "  ${B}W2${R}  $(marker 1) sub-1   $(label 1)"
+      echo -e "      $(marker 2) sub-2   $(label 2)"
+      echo -e "      $(marker 3) sub-3   $(label 3)"
+      echo -e "      $(marker 4) sub-4   $(label 4)"
+      echo
+      echo -e "  ${B}W3${R}  $(marker 5) sub-5   $(label 5)"
+      echo -e "  ${B}W4${R}  $(marker 6) sub-6   $(label 6)"
+      echo -e "      $(marker 7) sub-7   $(label 7)"
+      echo -e "  ${B}W5${R}  $(marker 8) sub-8   $(label 8)"
+      echo
+      echo -e "  ${B}W6${R}  $(marker 9) sub-9   $(label 9)"
+      echo -e "  ${B}W7${R}  $(marker 10) sub-10  $(label 10)  ${DIM}◄ 2,3,4,9${R}"
+      echo -e "  ${B}W8${R}  $(marker 11) sub-11  $(label 11)  ${DIM}◄ all${R}"
+      echo
+      echo -e "          ▼ ${B}${G}PLAN CLOSE${R}"
+    else
+      # ── wide (full tree) layout — same as before ───────────────────────────
+      printf '       ${M}%-26s${R}   ${M}%-22s${R}   ${M}%-14s${R}\n' \
+        "PH13  ROLLBACK DRILLS" "PH14  ROLLOUT GATES" "PH15  DECOMM" \
+        | sed 's/\${M}/'"$M"'/g; s/\${R}/'"$R"'/g'
+      echo "       ─────────────────────       ──────────────────       ────────────"
+      echo
+
+      echo -e "  W1  ┌─ $(marker 0) sub-0  $(label 0)"
+      echo -e "      │"
+      echo -e "  W2  ├─ $(marker 1) sub-1  $(label 1)  ${DIM}──►${R}  W3 $(marker 5) sub-5  $(label 5)"
+      echo -e "      │                                                  │"
+      echo -e "      ├─ $(marker 2) sub-2  $(label 2)                       ${DIM}├─►${R} W4 $(marker 6) sub-6  $(label 6)"
+      echo -e "      │                                                  │       │"
+      echo -e "      ├─ $(marker 3) sub-3  $(label 3)                       │       ${DIM}└─►${R} W5 $(marker 8) sub-8  $(label 8)"
+      echo -e "      │                                                  │"
+      echo -e "      └─ $(marker 4) sub-4  $(label 4)                       ${DIM}└─►${R} W4 $(marker 7) sub-7  $(label 7)"
+      echo -e "                                                                  │"
+      echo -e "                                  ${DIM}┌─────────────────────────────────┘${R}"
+      echo -e "                                  │"
+      echo -e "                          W6 $(marker 9) sub-9  $(label 9)"
+      echo -e "                                  │"
+      echo -e "                          W7 $(marker 10) sub-10 $(label 10) ${DIM}◄ needs 2,3,4,9${R}"
+      echo -e "                                  │"
+      echo -e "                          W8 $(marker 11) sub-11 $(label 11) ${DIM}◄ needs all${R}"
+      echo -e "                                  │"
+      echo -e "                                  ▼ ${B}${G}PLAN CLOSE${R}"
+    fi
+
     echo
-    # progress bar
-    bar_len=50
+    # progress bar — width scales with pane width
+    bar_len=$(( plan_pane_width - 30 ))
+    (( bar_len < 12 )) && bar_len=12
+    (( bar_len > 60 )) && bar_len=60
     pct=$(( progress_sum / 12 ))
     filled=$(( pct * bar_len / 100 ))
     bar=""
@@ -432,8 +472,12 @@ while true; do
     for ((i=filled;i<bar_len;i++)); do bar+="░"; done
     echo -e "  progress  ${G}${bar}${R}  ${B}${done_count}/12${R}  ${DIM}(${pct}%)${R}"
     echo
-    echo -e "  ${DIM}LEGEND ${G}●${R}${DIM} done   ${Y}◐${R}${DIM} claimed   ${RED}✕${R}${DIM} blocked   ◇ available   ◆ finalizer${R}"
-    echo -e "  ${DIM}GATE   PH12 still [>] — checkbox flips need PH12 green${R}"
+    if (( plan_compact == 1 )); then
+      echo -e "  ${DIM}LEGEND ${G}●${R}${DIM} done  ${Y}◐${R}${DIM} claim  ${RED}✕${R}${DIM} block  ◇ avail${R}"
+    else
+      echo -e "  ${DIM}LEGEND ${G}●${R}${DIM} done   ${Y}◐${R}${DIM} claimed   ${RED}✕${R}${DIM} blocked   ◇ available   ◆ finalizer${R}"
+      echo -e "  ${DIM}GATE   PH12 still [>] — checkbox flips need PH12 green${R}"
+    fi
     echo -e "  ${DIM}refresh=${INTERVAL}s${R}"
   } > "$PLAN_OUT.tmp"
   mv -f "$PLAN_OUT.tmp" "$PLAN_OUT"
