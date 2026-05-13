@@ -616,6 +616,9 @@ while true; do
     echo
     # Minimal legend — one line
     echo -e "  ${DIM}${G}●${R}${DIM} done  ${Y}◐${R}${DIM} active  ◇ pending  ${RED}✕${R}${DIM} blocked${R}"
+    echo
+    # Provenance footer — one dim line.
+    echo -e "  ${DIM}made with${R} ${C}claude code${R} ${DIM}·${R} ${ICE}codex-fleet v2${R}"
   } > "$PLAN_OUT.tmp"
   mv -f "$PLAN_OUT.tmp" "$PLAN_OUT"
 
