@@ -121,11 +121,11 @@ for ((i=0; i<last_idx; i++)); do
   tx_set "status-format[$i]" "$PADDING_ROW"
 done
 
-# ── menu styling ─────────────────────────────────────────────────────────────
-tx_set menu-style          "fg=#ffffff,bg=#1a1a1a"
-tx_set menu-selected-style "fg=#0a0a0a,bg=#ffd07a,bold"
-tx_set menu-border-style   "fg=#3a7ebf"
-# Round corners — easier on the eye than tmux's default sharp corners.
+# ── iOS-style menu styling ───────────────────────────────────────────────────
+# Card-like background, rounded border, bold accent on the highlighted row.
+tx_set menu-style          "fg=#e6e6e6,bg=#16181d"
+tx_set menu-selected-style "fg=#ffffff,bg=#3a7ebf,bold"
+tx_set menu-border-style   "fg=#2a3038"
 tx_set menu-border-lines   "rounded"
 
 # ── sticky right-click menu ──────────────────────────────────────────────────
@@ -143,9 +143,17 @@ tx_set menu-border-lines   "rounded"
 # because bash splits the {} groups by whitespace.
 sticky_menu_conf=$(mktemp -t codex-fleet-menu.XXXXXX.tmux.conf)
 trap 'rm -f "$sticky_menu_conf"' EXIT
+# iOS-style sectioned menu:
+#   1. CAPTURE  — Copy whole session (full scrollback), Copy visible, Copy line
+#   2. NAVIGATE — Search history, Scroll to top/bottom
+#   3. PANE     — Horizontal/Vertical split, Zoom toggle
+#   4. ARRANGE  — Swap up/down/with-marked, Mark
+#   5. DANGER   — Respawn, Kill
+# Each item prefixed with a glyph for icon-led readability; sections separated
+# by tmux's '' separator. `-O` keeps the menu open until selection/Escape.
 cat >"$sticky_menu_conf" <<'TMUX_CONF'
 unbind-key -T root MouseDown3Pane
-bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { display-menu -O -T "#[align=centre]#{pane_index} (#{pane_id})" -t = -x M -y M "#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Top,}" '<' { send-keys -X history-top } "#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Bottom,}" '>' { send-keys -X history-bottom } '' "#{?mouse_word,Search For #[underscore]#{=/9/...:mouse_word},}" C-r { if-shell -F "#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}" "copy-mode -t=" ; send-keys -X -t = search-backward -- "#{q:mouse_word}" } "#{?mouse_word,Type #[underscore]#{=/9/...:mouse_word},}" C-y { copy-mode -q ; send-keys -l "#{q:mouse_word}" } "#{?mouse_word,Copy #[underscore]#{=/9/...:mouse_word},}" c { copy-mode -q ; set-buffer "#{q:mouse_word}" } "#{?mouse_line,Copy Line,}" l { copy-mode -q ; set-buffer "#{q:mouse_line}" } '' "Horizontal Split" h { split-window -h } "Vertical Split" v { split-window -v } '' "#{?#{>:#{window_panes},1},,-}Swap Up" u { swap-pane -U } "#{?#{>:#{window_panes},1},,-}Swap Down" d { swap-pane -D } "#{?pane_marked_set,,-}Swap Marked" s { swap-pane } '' Kill X { kill-pane } Respawn R { respawn-pane -k } "#{?pane_marked,Unmark,Mark}" m { select-pane -m } "#{?#{>:#{window_panes},1},,-}#{?window_zoomed_flag,Unzoom,Zoom}" z { resize-pane -Z } }
+bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { display-menu -O -T "#[align=centre,fg=#ffd07a,bold] ◆  pane #{pane_index} · #{pane_id} " -t = -x M -y M "  📋  Copy whole session" C "run-shell \"tmux capture-pane -t '#{pane_id}' -p -S - -E - | wl-copy && tmux display-message -d 1500 '📋  Pane history copied to clipboard'\"" "  📄  Copy visible" c "run-shell \"tmux capture-pane -t '#{pane_id}' -p | wl-copy && tmux display-message -d 1500 '📄  Visible area copied'\"" "  ✂   Copy this line" l "run-shell \"echo -n '#{q:mouse_line}' | wl-copy && tmux display-message -d 1500 '✂   Line copied'\"" '' "  🔎  Search history…" / { copy-mode -t= ; send-keys -X search-backward "" } "  ⬆   Scroll to top" '<' { copy-mode -t= ; send-keys -X history-top } "  ⬇   Scroll to bottom" '>' { copy-mode -t= ; send-keys -X history-bottom } '' "  ⬓   Horizontal split" h { split-window -h } "  ⬒   Vertical split" v { split-window -v } "#{?#{>:#{window_panes},1},,-}  ⛶   #{?window_zoomed_flag,Unzoom,Zoom}" z { resize-pane -Z } '' "#{?#{>:#{window_panes},1},,-}  ▲   Swap up" u { swap-pane -U } "#{?#{>:#{window_panes},1},,-}  ▼   Swap down" d { swap-pane -D } "#{?pane_marked_set,,-}  ⇄   Swap with marked" s { swap-pane } "  ◈   #{?pane_marked,Unmark,Mark} pane" m { select-pane -m } '' "  ↻   Respawn pane" R { respawn-pane -k } "  ✕   Kill pane" X { kill-pane } }
 TMUX_CONF
 tmux source-file "$sticky_menu_conf" >/dev/null 2>&1 || echo "[style-tabs] WARN: sticky menu rebind failed (see $sticky_menu_conf)"
 
