@@ -199,9 +199,14 @@ for a in json.load(sys.stdin):
   fi
 done
 
-# Final tile + status line for sanity.
+# Final tile + browser-style tab strip.
 tmux select-layout -t "$SESSION:0" tiled >/dev/null
-tmux set-option -g -t "$SESSION" status-right "codex-fleet | #{?pane_in_mode,COPY,RUN} | #(date +%H:%M)" >/dev/null
+if [[ -x "$SCRIPT_DIR/style-tabs.sh" ]]; then
+  CODEX_FLEET_SESSION="$SESSION" bash "$SCRIPT_DIR/style-tabs.sh" >/dev/null 2>&1 || true
+else
+  # fallback: at least put a sensible right-side info chip
+  tmux set-option -g -t "$SESSION" status-right "codex-fleet | #{?pane_in_mode,COPY,RUN} | #(date +%H:%M)" >/dev/null
+fi
 
 echo "[codex-fleet] up: session=$SESSION, panes=$ACCOUNT_COUNT, work-root=$WORK_ROOT"
 echo "[codex-fleet] attach with: tmux attach -t $SESSION"
