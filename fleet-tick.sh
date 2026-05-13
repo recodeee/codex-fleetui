@@ -534,81 +534,88 @@ while true; do
   # Anything narrower wraps and overlaps, so switch to compact vertical mode.
   (( plan_pane_width < 130 )) && plan_compact=1
 
+  # ── minimal/visual plan render ───────────────────────────────────────────
+  # 3 phase bars + 1 total bar + 8-wave chip grid + 1-line legend.
+  # No sub-task labels, no horizontal arrows, no PLAN CLOSE arrow art —
+  # just colored progress bars and chip strips so the screen reads as a
+  # dashboard not a dense ascii tree.
+
+  # Per-phase progress: PH13 = sub-0..4 (5), PH14 = sub-5..8 (4), PH15 = sub-9..11 (3)
+  ph13_sum=0; ph14_sum=0; ph15_sum=0
+  ph13_done=0; ph14_done=0; ph15_done=0
+  for i in 0 1 2 3 4; do
+    ph13_sum=$(( ph13_sum + ${SUBPCT[$i]:-0} ))
+    (( ${SUBPCT[$i]:-0} >= 100 )) && ph13_done=$((ph13_done+1))
+  done
+  for i in 5 6 7 8; do
+    ph14_sum=$(( ph14_sum + ${SUBPCT[$i]:-0} ))
+    (( ${SUBPCT[$i]:-0} >= 100 )) && ph14_done=$((ph14_done+1))
+  done
+  for i in 9 10 11; do
+    ph15_sum=$(( ph15_sum + ${SUBPCT[$i]:-0} ))
+    (( ${SUBPCT[$i]:-0} >= 100 )) && ph15_done=$((ph15_done+1))
+  done
+  ph13_pct=$(( ph13_sum / 5 ))
+  ph14_pct=$(( ph14_sum / 4 ))
+  ph15_pct=$(( ph15_sum / 3 ))
+  total_pct=$(( progress_sum / 12 ))
+
+  # Bar widths scale with pane width but stay sane: 12..28 cells per phase,
+  # 30..60 cells for total.
+  phase_w=$(( plan_pane_width / 5 ))
+  (( phase_w < 12 )) && phase_w=12
+  (( phase_w > 28 )) && phase_w=28
+  total_w=$(( plan_pane_width - 24 ))
+  (( total_w < 30 )) && total_w=30
+  (( total_w > 60 )) && total_w=60
+
+  # chip() prints a single character for sub-task i, colored by status.
+  chip() {
+    local i="$1" s pct
+    s="${SUBST[$i]%%|*}"
+    pct="${SUBPCT[$i]:-0}"
+    if [[ "$s" == "blocked" ]]; then printf '%s✕%s' "$RED" "$R"
+    elif (( pct >= 100 )); then printf '%s●%s' "$G" "$R"
+    elif [[ "$s" == "claimed" ]] || (( pct > 0 )); then printf '%s◐%s' "$Y" "$R"
+    else printf '%s◇%s' "$DIM" "$R"
+    fi
+  }
+
   {
-    echo -e "${B}${TEAL}PLAN${R}  ${D}rust-ph13-14-15-completion-2026-05-13${R}   ${D}${ts}${R}   ${DIM}w=${plan_pane_width}${R}"
+    echo -e "${B}${TEAL}PLAN${R}  ${D}rust-ph13-14-15-completion${R}  ${D}${ts}${R}"
     echo
-
-    if (( plan_compact == 1 )); then
-      # ── compact (narrow pane) — vertical wave list, no horizontal arrows ──
-      printf "  ${M}PH13 ROLLBACK DRILLS${R}   ${M}PH14 ROLLOUT${R}   ${M}PH15 DECOMM${R}\n"
-      echo "  ───────────────────────────────────────"
-      echo
-      # W1
-      echo -e "  ${B}W1${R}  $(marker 0) sub-0   $(label 0)"
-      echo
-      echo -e "  ${B}W2${R}  $(marker 1) sub-1   $(label 1)"
-      echo -e "      $(marker 2) sub-2   $(label 2)"
-      echo -e "      $(marker 3) sub-3   $(label 3)"
-      echo -e "      $(marker 4) sub-4   $(label 4)"
-      echo
-      echo -e "  ${B}W3${R}  $(marker 5) sub-5   $(label 5)"
-      echo -e "  ${B}W4${R}  $(marker 6) sub-6   $(label 6)"
-      echo -e "      $(marker 7) sub-7   $(label 7)"
-      echo -e "  ${B}W5${R}  $(marker 8) sub-8   $(label 8)"
-      echo
-      echo -e "  ${B}W6${R}  $(marker 9) sub-9   $(label 9)"
-      echo -e "  ${B}W7${R}  $(marker 10) sub-10  $(label 10)  ${DIM}◄ 2,3,4,9${R}"
-      echo -e "  ${B}W8${R}  $(marker 11) sub-11  $(label 11)  ${DIM}◄ all${R}"
-      echo
-      echo -e "          ▼ ${B}${G}PLAN CLOSE${R}"
-    else
-      # ── wide (full tree) layout — same as before ───────────────────────────
-      printf '       ${M}%-26s${R}   ${M}%-22s${R}   ${M}%-14s${R}\n' \
-        "PH13  ROLLBACK DRILLS" "PH14  ROLLOUT GATES" "PH15  DECOMM" \
-        | sed 's/\${M}/'"$M"'/g; s/\${R}/'"$R"'/g'
-      echo "       ─────────────────────       ──────────────────       ────────────"
-      echo
-
-      echo -e "  W1  ┌─ $(marker 0) sub-0  $(label 0)"
-      echo -e "      │"
-      echo -e "  W2  ├─ $(marker 1) sub-1  $(label 1)  ${DIM}──►${R}  W3 $(marker 5) sub-5  $(label 5)"
-      echo -e "      │                                                  │"
-      echo -e "      ├─ $(marker 2) sub-2  $(label 2)                       ${DIM}├─►${R} W4 $(marker 6) sub-6  $(label 6)"
-      echo -e "      │                                                  │       │"
-      echo -e "      ├─ $(marker 3) sub-3  $(label 3)                       │       ${DIM}└─►${R} W5 $(marker 8) sub-8  $(label 8)"
-      echo -e "      │                                                  │"
-      echo -e "      └─ $(marker 4) sub-4  $(label 4)                       ${DIM}└─►${R} W4 $(marker 7) sub-7  $(label 7)"
-      echo -e "                                                                  │"
-      echo -e "                                  ${DIM}┌─────────────────────────────────┘${R}"
-      echo -e "                                  │"
-      echo -e "                          W6 $(marker 9) sub-9  $(label 9)"
-      echo -e "                                  │"
-      echo -e "                          W7 $(marker 10) sub-10 $(label 10) ${DIM}◄ needs 2,3,4,9${R}"
-      echo -e "                                  │"
-      echo -e "                          W8 $(marker 11) sub-11 $(label 11) ${DIM}◄ needs all${R}"
-      echo -e "                                  │"
-      echo -e "                                  ▼ ${B}${G}PLAN CLOSE${R}"
-    fi
-
+    # Phase bars
+    printf '  %s%-4s%s %b  %s%d/5%s  %sROLLBACK%s\n' \
+      "$B" "PH13" "$R" "$(pct_color "$ph13_pct")$(subtask_progress_bar "$ph13_pct" "$phase_w")$R" \
+      "$B" "$ph13_done" "$R" "$DIM" "$R"
+    printf '  %s%-4s%s %b  %s%d/4%s  %sROLLOUT%s\n' \
+      "$B" "PH14" "$R" "$(pct_color "$ph14_pct")$(subtask_progress_bar "$ph14_pct" "$phase_w")$R" \
+      "$B" "$ph14_done" "$R" "$DIM" "$R"
+    printf '  %s%-4s%s %b  %s%d/3%s  %sDECOMM%s\n' \
+      "$B" "PH15" "$R" "$(pct_color "$ph15_pct")$(subtask_progress_bar "$ph15_pct" "$phase_w")$R" \
+      "$B" "$ph15_done" "$R" "$DIM" "$R"
     echo
-    # progress bar — width scales with pane width
-    bar_len=$(( plan_pane_width - 30 ))
-    (( bar_len < 12 )) && bar_len=12
-    (( bar_len > 60 )) && bar_len=60
-    pct=$(( progress_sum / 12 ))
-    filled=$(( pct * bar_len / 100 ))
-    bar=""
-    for ((i=0;i<filled;i++)); do bar+="█"; done
-    for ((i=filled;i<bar_len;i++)); do bar+="░"; done
-    echo -e "  progress  ${G}${bar}${R}  ${B}${done_count}/12${R}  ${DIM}(${pct}%)${R}"
+    # Total bar
+    printf '  %sTOTAL%s %b  %s%d/12%s  %s%d%%%s\n' \
+      "$B" "$R" "$(pct_color "$total_pct")$(subtask_progress_bar "$total_pct" "$total_w")$R" \
+      "$B" "$done_count" "$R" "$(pct_color "$total_pct")" "$total_pct" "$R"
     echo
-    if (( plan_compact == 1 )); then
-      echo -e "  ${DIM}LEGEND ${G}●${R}${DIM} done  ${Y}◐${R}${DIM} claim  ${RED}✕${R}${DIM} block  ◇ avail${R}"
-    else
-      echo -e "  ${DIM}LEGEND ${G}●${R}${DIM} done   ${Y}◐${R}${DIM} claimed   ${RED}✕${R}${DIM} blocked   ◇ available   ◆ finalizer${R}"
-      echo -e "  ${DIM}GATE   PH12 still [>] — checkbox flips need PH12 green${R}"
-    fi
-    echo -e "  ${DIM}refresh=${INTERVAL}s${R}"
+    # Wave chip grid — 2 columns (W1-W4 left, W5-W8 right) to halve vertical space
+    printf '  %sW1%s %b              %sW5%s %b\n' \
+      "$ICE" "$R" "$(chip 0)" \
+      "$ICE" "$R" "$(chip 8)"
+    printf '  %sW2%s %b %b %b %b      %sW6%s %b\n' \
+      "$ICE" "$R" "$(chip 1)" "$(chip 2)" "$(chip 3)" "$(chip 4)" \
+      "$ICE" "$R" "$(chip 9)"
+    printf '  %sW3%s %b              %sW7%s %b\n' \
+      "$ICE" "$R" "$(chip 5)" \
+      "$ICE" "$R" "$(chip 10)"
+    printf '  %sW4%s %b %b            %sW8%s %b\n' \
+      "$ICE" "$R" "$(chip 6)" "$(chip 7)" \
+      "$ICE" "$R" "$(chip 11)"
+    echo
+    # Minimal legend — one line
+    echo -e "  ${DIM}${G}●${R}${DIM} done  ${Y}◐${R}${DIM} active  ◇ pending  ${RED}✕${R}${DIM} blocked${R}"
   } > "$PLAN_OUT.tmp"
   mv -f "$PLAN_OUT.tmp" "$PLAN_OUT"
 
