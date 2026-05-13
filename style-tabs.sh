@@ -77,27 +77,33 @@ tmux set-option -g -t "$SESSION" window-status-current-format \
 tmux set-option -g -t "$SESSION" window-status-current-style \
   "fg=#ffffff,bg=#3a7ebf,bold" >/dev/null
 
-# ── 3-row layout: top accent row, label row, bottom accent row ───────────────
-# The top + bottom rows continue the active-tab BG colour, so the active tab
-# visually "extends" up and down (browser tab effect). Inactive tabs stay
-# recessed (dim fill).
-if [[ "$HEIGHT" -ge 3 ]]; then
-  # status-format is an array. Row 0 is topmost when status-position=top.
-  # The "main" row that uses status-left/status-right is the LAST one
-  # (closest to the panes).
-  # Row 0 (top accent) — same #{W:...} aware fill as the tabs row but content-empty
-  tmux set-option -g -t "$SESSION" status-format[0] \
-    "#[fg=#0a0a0a,bg=#e67e22]                                          #[bg=#0a0a0a]#[list=on align=left]#{W:#[bg=#0a0a0a] #[bg=#1a1a1a]                  #[bg=#0a0a0a] ,#[fg=#3a7ebf,bg=#0a0a0a]▎#[bg=#3a7ebf]                       #[fg=#3a7ebf,bg=#0a0a0a]▎}#[list=off]" >/dev/null
+# ── multi-row layout: top + bottom accent rows are uniform dark fills ────────
+# Earlier draft tried #{W:...} per-window fills with fixed-width literals to
+# produce a "browser tab extending into accent rows" effect — but the literal
+# widths didn't align with the variable-width tab labels and wiped the label
+# row. Use uniform dark BG fills instead: tab strip still feels taller, but
+# labels always survive.
+#
+# Tmux quirk: clear any inherited per-index status-format first, then only
+# write the indices we actually want to customise. Indices >= HEIGHT are
+# ignored by tmux but we unset them for cleanliness.
+for idx in 0 1 2 3 4; do
+  tmux set-option -u -g -t "$SESSION" "status-format[$idx]" >/dev/null 2>&1 || true
+done
 
-  # Row 2 (bottom accent) — same as top, mirrors the active-tab BG to make
-  # the tab "merge" with the content area below.
+if [[ "$HEIGHT" -ge 2 ]]; then
+  # Build a uniform-dark accent line — wide enough to cover any pane width.
+  ACCENT_LINE="#[fg=#0a0a0a,bg=#0a0a0a]$(printf '%*s' 300 '')"
+  # status-format[0] (top) = uniform dark padding above the tabs row.
+  tmux set-option -g -t "$SESSION" "status-format[0]" "$ACCENT_LINE" >/dev/null
+  # The "main" row carrying status-left + tab list + status-right is the LAST
+  # row (closest to the panes). Leave its format default by NOT setting an
+  # override — tmux falls back to its built-in template that honours
+  # status-left / window-status-(current-)format / status-right.
+  # For HEIGHT=3, also pad the row between top accent and tabs (status-format[1]).
   if [[ "$HEIGHT" -ge 3 ]]; then
-    tmux set-option -g -t "$SESSION" status-format[2] \
-      "#[fg=#0a0a0a,bg=#0a0a0a]                                          #[list=on align=left]#{W:#[bg=#0a0a0a] #[bg=#1a1a1a]                  #[bg=#0a0a0a] ,#[fg=#3a7ebf,bg=#0a0a0a]▎#[bg=#3a7ebf]                       #[fg=#3a7ebf,bg=#0a0a0a]▎}#[list=off]" >/dev/null
+    tmux set-option -g -t "$SESSION" "status-format[1]" "$ACCENT_LINE" >/dev/null
   fi
-
-  # Middle row keeps tmux's default template (uses status-left/right + tabs).
-  tmux set-option -u -g -t "$SESSION" status-format[1] >/dev/null 2>&1 || true
 fi
 
 # ── activity / bell highlights — "hover" analog ──────────────────────────────
