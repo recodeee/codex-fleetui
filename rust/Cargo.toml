@@ -2,5 +2,6 @@
 resolver = "2"
 
 # Keep the shared input crate explicit because it is the cross-dashboard input
-# contract; the remaining fleet-* crates are picked up as their directories land.
-members = ["fleet-input", "fleet-*"]
+# contract; fleet-layout is explicit because Lane B consumes its public DSL.
+# The remaining fleet-* crates are picked up as their directories land.
+members = ["fleet-input", "fleet-layout", "fleet-*"]
