@@ -14,3 +14,7 @@ ratatui = "0.30"
 crossterm = "0.29"
 fleet-ui = { path = "../fleet-ui" }
 fleet-data = { path = "../fleet-data" }
+# tuirealm — third binary in the codex-fleet ratatui → tuirealm migration
+# (fleet-tab-strip #50, fleet-state #52, fleet-plan-tree this PR). Drives
+# the live plan.json reload via `Msg::Tick`.
+tuirealm = "4.1"
