@@ -222,7 +222,7 @@ while IFS='|' read -r id email; do
   pid="${PANE_IDS[$i]}"
   tmux set-option -p -t "$pid" '@panel' "[codex-$id]"
   tmux respawn-pane -k -t "$pid" \
-    "env CODEX_GUARD_BYPASS=1 CODEX_HOME=/tmp/codex-fleet/$id CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email codex \"\$(cat $WAKE)\""
+    "env CODEX_GUARD_BYPASS=1 CODEX_HOME=/tmp/codex-fleet/$id CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email codex --dangerously-bypass-approvals-and-sandbox \"\$(cat $WAKE)\""
   i=$((i + 1))
 done <<< "$ACCOUNTS"
 
