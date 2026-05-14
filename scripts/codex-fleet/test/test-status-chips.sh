@@ -6,8 +6,17 @@ TMP="${TMPDIR:-/tmp}/claude-viz-test-status-chips-$$"
 trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP"
+mkdir -p "$TMP/bin"
 printf '{"tasks":[]}\n' > "$TMP/plan.json"
 : > "$TMP/active.txt"
+cat > "$TMP/bin/codex-auth" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "list" ]]; then
+  printf '  chip@example.com type=ChatGPT seat (Business) 5h=0%% weekly=10%%\n'
+fi
+SH
+chmod +x "$TMP/bin/codex-auth"
+export PATH="$TMP/bin:$PATH"
 
 export FLEET_TICK_SOURCE_ONLY=1
 export FLEET_TICK_REPO="$TMP"
@@ -67,7 +76,10 @@ assert_eq "#007AFF" "$(ios_status_chip_hex working)" "working chip hex"
 
 tmux_chip=$(tmux_status_chip running)
 assert_eq "#[bg=#34C759,fg=#FFFFFF,bold]◖ ● running ◗#[default]" "$tmux_chip" "tmux running chip"
+assert_eq "#[bg=#8E8E93,fg=#FFFFFF,bold]◖ ◌ idle    ◗#[default]" "$(tmux_status_chip idle)" "tmux idle chip"
+assert_contains "$(tmux_status_chip exhausted)" "#[bg=#FF3B30,fg=#FFFFFF,bold]" "tmux exhausted chip"
 assert_contains "$(tmux_status_chip rate_limited)" "#[bg=#FF9500,fg=#FFFFFF,bold]" "tmux limited chip"
+assert_contains "$(tmux_status_chip working)" "#[bg=#007AFF,fg=#FFFFFF,bold]" "tmux working chip"
 
 export FLEET_TICK_SOURCE_ONLY=0
 export FLEET_TICK_ONCE=1
@@ -86,6 +98,7 @@ assert_file_contains "$FLEET_TICK_STATE_OUT" "WORKER" "worker status heading"
 assert_file_contains "$FLEET_TICK_STATE_OUT" "◖" "status chip left radius"
 assert_file_contains "$FLEET_TICK_STATE_OUT" "◗" "status chip right radius"
 assert_file_contains "$FLEET_TICK_STATE_OUT" "◌ idle" "reserve idle chip"
+assert_file_contains "$FLEET_TICK_STATE_OUT" "chip" "stub account rendered"
 assert_file_contains "$FLEET_TICK_STATE_OUT" $'\033[48;2;142;142;147m' "idle chip background"
 
 printf 'status chip tests passed\n'
