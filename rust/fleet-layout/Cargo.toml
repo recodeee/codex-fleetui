@@ -1,0 +1,8 @@
+[package]
+name = "fleet-layout"
+version = "0.0.1"
+edition = "2021"
+description = "Typed tmux layout DSL for codex-fleet panes."
+publish = false
+
+[dependencies]
