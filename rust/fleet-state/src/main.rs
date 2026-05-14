@@ -20,7 +20,7 @@
 use std::{io, time::Duration};
 
 use crossterm::{
-    event::{self, Event, KeyEvent},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -28,7 +28,7 @@ use fleet_data::{
     fleet::{self, FleetSummary, WorkerRow},
     panes::PaneState,
 };
-use fleet_input::{Action, ContextStack, KeyPattern, Matcher};
+use fleet_input::{Action, ContextStack, Matcher};
 use fleet_ui::{
     card::card,
     chip::{status_chip, ChipKind},
@@ -50,11 +50,17 @@ enum InputContext {
 }
 
 fn input_context() -> ContextStack<InputContext> {
-    let matcher = Matcher::new()
-        .bind(KeyPattern::char('q'), Action::Quit)
-        .bind(KeyPattern::esc(), Action::Quit);
+    ContextStack::from_context(InputContext::Global)
+}
 
-    ContextStack::new(InputContext::Global, matcher)
+fn input_matcher() -> Matcher<InputContext, Action> {
+    Matcher::new()
+        .bind(InputContext::Global, key(KeyCode::Char('q')), Action::Quit)
+        .bind(InputContext::Global, key(KeyCode::Esc), Action::Quit)
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
 }
 
 /// tmux session + window the fleet's worker panes live in. Matches the
@@ -63,13 +69,13 @@ fn input_context() -> ContextStack<InputContext> {
 fn fleet_target() -> (String, String) {
     let session =
         std::env::var("CODEX_FLEET_SESSION").unwrap_or_else(|_| "codex-fleet".to_string());
-    let window =
-        std::env::var("CODEX_FLEET_WINDOW").unwrap_or_else(|_| "overview".to_string());
+    let window = std::env::var("CODEX_FLEET_WINDOW").unwrap_or_else(|_| "overview".to_string());
     (session, window)
 }
 
 struct App {
-    input: ContextStack<InputContext>,
+    input_stack: ContextStack<InputContext>,
+    input_matcher: Matcher<InputContext, Action>,
     /// The live join of accounts + panes. `None` until the first successful
     /// load; `Some(vec![])` is a valid "fleet is empty / not running" state.
     rows: Option<Vec<WorkerRow>>,
@@ -81,7 +87,8 @@ struct App {
 impl App {
     fn new() -> Self {
         Self {
-            input: input_context(),
+            input_stack: input_context(),
+            input_matcher: input_matcher(),
             rows: None,
             load_error: None,
         }
@@ -105,23 +112,20 @@ impl App {
     }
 
     fn dispatch_key(&mut self, key: KeyEvent) -> Option<Action> {
-        self.input.dispatch(key)
+        self.input_stack.dispatch(&self.input_matcher, key)
     }
 
     /// Apply an action dispatched from the input matcher. Returns `true`
-    /// when the action requests the event loop exit. `SelectTab` is a no-op
-    /// here — tab navigation is owned by tmux's status bar
-    /// (`style-tabs.sh`), so this binary intentionally does not handle it
-    /// even though the action exists in the shared `fleet_input::Action`
-    /// enum.
+    /// when the action requests the event loop exit. Overlay and tab-focus
+    /// actions are shared contracts for follow-up dashboards; this view has
+    /// no overlay state and leaves tab navigation to tmux's status bar.
     fn apply_action(&mut self, action: Action) -> bool {
         match action {
             Action::Quit => true,
-            Action::Refresh => {
-                self.refresh();
-                false
-            }
-            Action::Noop | Action::SelectTab(_) => false,
+            Action::CloseOverlay
+            | Action::FocusNextTab
+            | Action::FocusPrevTab
+            | Action::OpenSpotlight => false,
         }
     }
 }
@@ -155,7 +159,10 @@ fn render_worker_row(frame: &mut ratatui::Frame, area: Rect, row: &WorkerRow) {
     } else {
         row.email.clone()
     };
-    spans.push(Span::styled(format!("  {:<26}", label), Style::default().fg(IOS_FG)));
+    spans.push(Span::styled(
+        format!("  {:<26}", label),
+        Style::default().fg(IOS_FG),
+    ));
     spans.push(Span::raw(" "));
 
     // WEEKLY · 5H rails — usage axis (green→orange→red as the number climbs).
@@ -218,10 +225,7 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
     frame.render_widget(card(Some(&header_text), false), rows[0]);
 
     // ── Worker table ──────────────────────────────────────────────────────
-    let block = card(
-        Some("ACCOUNT · WEEKLY · 5H · STATUS · WORKING ON"),
-        false,
-    );
+    let block = card(Some("ACCOUNT · WEEKLY · 5H · STATUS · WORKING ON"), false);
     let inner = block.inner(rows[1]);
     frame.render_widget(block, rows[1]);
 
@@ -234,7 +238,12 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
                 }
                 render_worker_row(
                     frame,
-                    Rect { x: inner.x, y, width: inner.width, height: 1 },
+                    Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: 1,
+                    },
                     row,
                 );
             }
@@ -250,7 +259,12 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
                     msg,
                     Style::default().fg(IOS_FG_MUTED),
                 ))),
-                Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+                Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: inner.width,
+                    height: 1,
+                },
             );
         }
         None => {
@@ -259,7 +273,12 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
                     "  loading fleet state…",
                     Style::default().fg(IOS_FG_MUTED),
                 ))),
-                Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+                Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: inner.width,
+                    height: 1,
+                },
             );
         }
     }
@@ -272,7 +291,12 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
                 format!("  load error: {err}"),
                 Style::default().fg(IOS_FG_FAINT),
             ))),
-            Rect { x: inner.x, y, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            },
         );
     }
 }

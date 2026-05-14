@@ -1,79 +1,65 @@
-//! Context-aware key dispatch.
+//! Focus-context stack used by key dispatch.
 
 use crossterm::event::KeyEvent;
 
-use crate::{Action, Matcher};
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContextLayer<C> {
-    context: C,
-    matcher: Matcher,
-}
-
-impl<C> ContextLayer<C> {
-    pub fn new(context: C, matcher: Matcher) -> Self {
-        Self { context, matcher }
-    }
-
-    pub fn context(&self) -> &C {
-        &self.context
-    }
-
-    pub fn matcher(&self) -> &Matcher {
-        &self.matcher
-    }
-
-    pub fn matcher_mut(&mut self) -> &mut Matcher {
-        &mut self.matcher
-    }
-}
+use crate::Matcher;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ContextStack<C> {
-    layers: Vec<ContextLayer<C>>,
+    contexts: Vec<C>,
 }
 
 impl<C> ContextStack<C> {
-    pub fn new(context: C, matcher: Matcher) -> Self {
+    pub fn new() -> Self {
         Self {
-            layers: vec![ContextLayer::new(context, matcher)],
+            contexts: Vec::new(),
         }
     }
 
-    pub fn empty() -> Self {
-        Self { layers: Vec::new() }
-    }
-
-    pub fn push(&mut self, context: C, matcher: Matcher) {
-        self.layers.push(ContextLayer::new(context, matcher));
-    }
-
-    pub fn pop(&mut self) -> Option<ContextLayer<C>> {
-        if self.layers.len() > 1 {
-            self.layers.pop()
-        } else {
-            None
+    pub fn from_context(context: C) -> Self {
+        Self {
+            contexts: vec![context],
         }
     }
 
-    pub fn active(&self) -> Option<&ContextLayer<C>> {
-        self.layers.last()
+    pub fn push(&mut self, context: C) {
+        self.contexts.push(context);
     }
 
-    pub fn active_mut(&mut self) -> Option<&mut ContextLayer<C>> {
-        self.layers.last_mut()
+    pub fn pop(&mut self) -> Option<C> {
+        self.contexts.pop()
     }
 
-    pub fn layers(&self) -> &[ContextLayer<C>] {
-        &self.layers
+    pub fn top(&self) -> Option<&C> {
+        self.contexts.last()
     }
 
-    pub fn dispatch(&mut self, key: KeyEvent) -> Option<Action> {
-        self.layers
-            .iter()
-            .rev()
-            .find_map(|layer| layer.matcher.dispatch(key))
-            .filter(|action| !action.is_noop())
+    pub fn top_mut(&mut self) -> Option<&mut C> {
+        self.contexts.last_mut()
+    }
+
+    pub fn len(&self) -> usize {
+        self.contexts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.contexts.is_empty()
+    }
+
+    pub fn iter_top_down(&self) -> impl Iterator<Item = &C> {
+        self.contexts.iter().rev()
+    }
+}
+
+impl<C> ContextStack<C>
+where
+    C: Eq,
+{
+    pub fn dispatch<A>(&self, matcher: &Matcher<C, A>, key: KeyEvent) -> Option<A>
+    where
+        A: Clone,
+    {
+        matcher.dispatch(self, key)
     }
 }
 
@@ -82,7 +68,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::ContextStack;
-    use crate::{Action, KeyPattern, Matcher};
+    use crate::Matcher;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum TestContext {
@@ -90,35 +76,38 @@ mod tests {
         Overlay,
     }
 
-    fn key(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    #[test]
+    fn push_pop_on_empty_context_stack() {
+        let mut stack = ContextStack::new();
+
+        assert_eq!(stack.pop(), None);
+        assert_eq!(stack.top(), None);
+
+        stack.push(TestContext::Root);
+        stack.push(TestContext::Overlay);
+
+        assert_eq!(stack.top(), Some(&TestContext::Overlay));
+        assert_eq!(stack.pop(), Some(TestContext::Overlay));
+        assert_eq!(stack.pop(), Some(TestContext::Root));
+        assert!(stack.is_empty());
     }
 
     #[test]
-    fn top_context_wins_before_root_context() {
-        let root = Matcher::new().bind(KeyPattern::char('q'), Action::Quit);
-        let overlay = Matcher::new().bind(KeyPattern::char('q'), Action::SelectTab(2));
-        let mut stack = ContextStack::new(TestContext::Root, root);
-
-        assert_eq!(stack.dispatch(key('q')), Some(Action::Quit));
-
-        stack.push(TestContext::Overlay, overlay);
-        assert_eq!(stack.dispatch(key('q')), Some(Action::SelectTab(2)));
-    }
-
-    #[test]
-    fn pop_preserves_root_context() {
-        let mut stack = ContextStack::new(TestContext::Root, Matcher::new());
-        stack.push(TestContext::Overlay, Matcher::new());
-
-        assert_eq!(
-            stack.pop().map(|layer| layer.context().clone()),
-            Some(TestContext::Overlay)
+    fn dispatch_delegates_through_matcher_top_down() {
+        let mut stack = ContextStack::from_context(TestContext::Root);
+        stack.push(TestContext::Overlay);
+        let matcher = Matcher::new().bind(
+            TestContext::Root,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            "quit",
         );
-        assert!(stack.pop().is_none());
+
         assert_eq!(
-            stack.active().map(|layer| layer.context()),
-            Some(&TestContext::Root)
+            stack.dispatch(
+                &matcher,
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
+            ),
+            Some("quit")
         );
     }
 }

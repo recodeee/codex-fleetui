@@ -24,16 +24,16 @@ impl<M> ModalStack<M> {
         self.modals.pop()
     }
 
-    pub fn clear(&mut self) {
-        self.modals.clear();
-    }
-
-    pub fn active(&self) -> Option<&M> {
+    pub fn top(&self) -> Option<&M> {
         self.modals.last()
     }
 
-    pub fn active_mut(&mut self) -> Option<&mut M> {
+    pub fn top_mut(&mut self) -> Option<&mut M> {
         self.modals.last_mut()
+    }
+
+    pub fn clear(&mut self) {
+        self.modals.clear();
     }
 
     pub fn len(&self) -> usize {
@@ -53,14 +53,24 @@ impl<M> ModalStack<M> {
 mod tests {
     use super::ModalStack;
 
-    #[test]
-    fn active_modal_tracks_the_top_of_the_stack() {
-        let mut stack = ModalStack::new();
-        stack.push("spotlight");
-        stack.push("actions");
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum TestModal {
+        ContextMenu { selected: usize },
+        Spotlight,
+    }
 
-        assert_eq!(stack.active(), Some(&"actions"));
-        assert_eq!(stack.pop(), Some("actions"));
-        assert_eq!(stack.active(), Some(&"spotlight"));
+    #[test]
+    fn modal_stacked_on_modal_keeps_top_mutable() {
+        let mut stack = ModalStack::from_modal(TestModal::ContextMenu { selected: 0 });
+        stack.push(TestModal::Spotlight);
+
+        assert_eq!(stack.top(), Some(&TestModal::Spotlight));
+        assert_eq!(stack.pop(), Some(TestModal::Spotlight));
+
+        if let Some(TestModal::ContextMenu { selected }) = stack.top_mut() {
+            *selected = 1;
+        }
+
+        assert_eq!(stack.top(), Some(&TestModal::ContextMenu { selected: 1 }));
     }
 }

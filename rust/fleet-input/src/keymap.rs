@@ -1,100 +1,90 @@
-//! Key pattern matching for dashboard input.
+//! Generic context-sensitive key dispatch.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyEvent;
 
-use crate::Action;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct KeyPattern {
-    code: KeyCode,
-    modifiers: KeyModifiers,
-}
-
-impl KeyPattern {
-    pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
-        Self { code, modifiers }
-    }
-
-    pub fn char(c: char) -> Self {
-        Self::new(KeyCode::Char(c), KeyModifiers::NONE)
-    }
-
-    pub fn esc() -> Self {
-        Self::new(KeyCode::Esc, KeyModifiers::NONE)
-    }
-
-    pub fn enter() -> Self {
-        Self::new(KeyCode::Enter, KeyModifiers::NONE)
-    }
-
-    pub fn tab() -> Self {
-        Self::new(KeyCode::Tab, KeyModifiers::NONE)
-    }
-
-    pub fn with_modifiers(mut self, modifiers: KeyModifiers) -> Self {
-        self.modifiers = modifiers;
-        self
-    }
-
-    pub fn matches(&self, key: KeyEvent) -> bool {
-        self.code == key.code && self.modifiers == key.modifiers
-    }
-}
+use crate::ContextStack;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct KeyBinding {
-    pattern: KeyPattern,
-    action: Action,
+pub struct KeyBinding<C, A> {
+    context: C,
+    key: KeyEvent,
+    action: A,
 }
 
-impl KeyBinding {
-    pub fn new(pattern: KeyPattern, action: Action) -> Self {
-        Self { pattern, action }
+impl<C, A> KeyBinding<C, A> {
+    pub fn new(context: C, key: KeyEvent, action: A) -> Self {
+        Self {
+            context,
+            key,
+            action,
+        }
     }
 
-    pub fn pattern(&self) -> &KeyPattern {
-        &self.pattern
+    pub fn context(&self) -> &C {
+        &self.context
     }
 
-    pub fn action(&self) -> &Action {
+    pub fn key(&self) -> KeyEvent {
+        self.key
+    }
+
+    pub fn action(&self) -> &A {
         &self.action
     }
+
+    fn matches_key(&self, key: KeyEvent) -> bool {
+        self.key.code == key.code && self.key.modifiers == key.modifiers
+    }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Matcher {
-    bindings: Vec<KeyBinding>,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Matcher<C, A> {
+    bindings: Vec<KeyBinding<C, A>>,
 }
 
-impl Matcher {
+impl<C, A> Default for Matcher<C, A> {
+    fn default() -> Self {
+        Self {
+            bindings: Vec::new(),
+        }
+    }
+}
+
+impl<C, A> Matcher<C, A>
+where
+    C: Eq,
+    A: Clone,
+{
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn with_bindings(bindings: impl IntoIterator<Item = KeyBinding>) -> Self {
+    pub fn with_bindings(bindings: impl IntoIterator<Item = KeyBinding<C, A>>) -> Self {
         Self {
             bindings: bindings.into_iter().collect(),
         }
     }
 
-    pub fn bind(mut self, pattern: KeyPattern, action: Action) -> Self {
-        self.push(pattern, action);
+    pub fn bind(mut self, context: C, key: KeyEvent, action: A) -> Self {
+        self.push(context, key, action);
         self
     }
 
-    pub fn push(&mut self, pattern: KeyPattern, action: Action) {
-        self.bindings.push(KeyBinding::new(pattern, action));
+    pub fn push(&mut self, context: C, key: KeyEvent, action: A) {
+        self.bindings.push(KeyBinding::new(context, key, action));
     }
 
-    pub fn bindings(&self) -> &[KeyBinding] {
+    pub fn bindings(&self) -> &[KeyBinding<C, A>] {
         &self.bindings
     }
 
-    pub fn dispatch(&self, key: KeyEvent) -> Option<Action> {
-        self.bindings
-            .iter()
-            .find(|binding| binding.pattern.matches(key))
-            .map(|binding| binding.action.clone())
+    pub fn dispatch(&self, stack: &ContextStack<C>, key: KeyEvent) -> Option<A> {
+        stack.iter_top_down().find_map(|context| {
+            self.bindings
+                .iter()
+                .find(|binding| binding.context() == context && binding.matches_key(key))
+                .map(|binding| binding.action().clone())
+        })
     }
 }
 
@@ -102,41 +92,49 @@ impl Matcher {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{KeyPattern, Matcher};
-    use crate::Action;
+    use super::Matcher;
+    use crate::ContextStack;
 
-    fn key(c: char, modifiers: KeyModifiers) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), modifiers)
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum TestAction {
+        Quit,
+        CloseOverlay,
+        OpenSpotlight,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum TestContext {
+        Root,
+        Overlay,
+    }
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
     #[test]
-    fn dispatches_first_matching_action() {
+    fn dispatch_miss_returns_none() {
+        let stack = ContextStack::from_context(TestContext::Root);
+        let matcher = Matcher::new().bind(TestContext::Root, key('q'), TestAction::Quit);
+
+        assert_eq!(matcher.dispatch(&stack, key('x')), None);
+    }
+
+    #[test]
+    fn dispatch_hits_non_top_context_when_top_context_misses() {
+        let mut stack = ContextStack::from_context(TestContext::Root);
+        stack.push(TestContext::Overlay);
         let matcher = Matcher::new()
-            .bind(KeyPattern::char('q'), Action::Quit)
-            .bind(KeyPattern::char('r'), Action::Refresh);
+            .bind(TestContext::Root, key('s'), TestAction::OpenSpotlight)
+            .bind(TestContext::Overlay, key('q'), TestAction::CloseOverlay);
 
         assert_eq!(
-            matcher.dispatch(key('q', KeyModifiers::NONE)),
-            Some(Action::Quit)
+            matcher.dispatch(&stack, key('s')),
+            Some(TestAction::OpenSpotlight)
         );
         assert_eq!(
-            matcher.dispatch(key('r', KeyModifiers::NONE)),
-            Some(Action::Refresh)
-        );
-        assert_eq!(matcher.dispatch(key('x', KeyModifiers::NONE)), None);
-    }
-
-    #[test]
-    fn modifiers_are_part_of_the_key_pattern() {
-        let matcher = Matcher::new().bind(
-            KeyPattern::char('r').with_modifiers(KeyModifiers::CONTROL),
-            Action::Refresh,
-        );
-
-        assert_eq!(matcher.dispatch(key('r', KeyModifiers::NONE)), None);
-        assert_eq!(
-            matcher.dispatch(key('r', KeyModifiers::CONTROL)),
-            Some(Action::Refresh)
+            matcher.dispatch(&stack, key('q')),
+            Some(TestAction::CloseOverlay)
         );
     }
 }

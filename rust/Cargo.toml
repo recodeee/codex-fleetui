@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 
-# Picks up fleet-input, fleet-tui-poc, fleet-ui, fleet-data, and future fleet-*
-# bin crates as their directories land, without making missing future crates
-# break `cargo build` for this foundation PR.
-members = ["fleet-*"]
+# Keep the shared input crate explicit because it is the cross-dashboard input
+# contract; the remaining fleet-* crates are picked up as their directories land.
+members = ["fleet-input", "fleet-*"]

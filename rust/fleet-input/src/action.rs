@@ -1,22 +1,12 @@
-//! Dashboard actions produced by keyboard and mouse input.
+//! Dashboard actions produced by input routing.
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
-    /// No state transition should occur.
-    #[default]
-    Noop,
-    /// End the current dashboard event loop.
+    CloseOverlay,
+    FocusNextTab,
+    FocusPrevTab,
     Quit,
-    /// Refresh the dashboard data immediately.
-    Refresh,
-    /// Select a dashboard tab/window by numeric index.
-    SelectTab(usize),
-}
-
-impl Action {
-    pub fn is_noop(&self) -> bool {
-        matches!(self, Self::Noop)
-    }
+    OpenSpotlight,
 }
 
 #[cfg(test)]
@@ -24,8 +14,10 @@ mod tests {
     use super::Action;
 
     #[test]
-    fn default_action_is_noop() {
-        assert_eq!(Action::default(), Action::Noop);
-        assert!(Action::default().is_noop());
+    fn actions_are_small_copyable_commands() {
+        let action = Action::OpenSpotlight;
+
+        assert_eq!(action, Action::OpenSpotlight);
+        assert_ne!(action, Action::CloseOverlay);
     }
 }
