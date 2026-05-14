@@ -278,7 +278,11 @@ _repo_root="${CODEX_FLEET_REPO_ROOT:-$HOME/Documents/recodee}"
 tmux set-environment -g CODEX_FLEET_REPO_ROOT "$_repo_root" 2>/dev/null || true
 cat >"$sticky_menu_conf" <<'TMUX_CONF'
 unbind-key -T root MouseDown3Pane
-bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { set-environment -g CODEX_FLEET_MENU_LINE "#{q:mouse_line}" ; display-popup -E -B -w 60 -h 28 -x M -y M -t = "bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-context-menu.sh '#{pane_id}'" }
+# Right-click context menu — runs the ratatui-rendered iOS menu when its
+# binary exists, otherwise falls back to the bash renderer.
+# The chooser shell script keeps the conditional out of tmux's substitution
+# layer (tmux eats `$FB`-style shell vars before the popup spawns).
+bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { set-environment -g CODEX_FLEET_MENU_LINE "#{q:mouse_line}" ; display-popup -E -B -w 60 -h 28 -x M -y M -t = "bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-context-menu-chooser.sh '#{pane_id}'" }
 
 # Mouse-wheel scroll into copy-mode even when the pane is in alt-screen
 # (plan-tree-anim / fleet-state-anim use \033[?1049h; the default tmux

@@ -1726,7 +1726,7 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
-fn run() -> io::Result<()> {
+fn run(initial: Overlay, single_shot: bool, pane_id: Option<String>) -> io::Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
@@ -1734,6 +1734,13 @@ fn run() -> io::Result<()> {
     let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::new(backend)?;
 
     let mut app = App::new();
+    if initial != Overlay::None {
+        app.overlay = initial;
+    }
+    // Action dispatched on Enter / a shortcut key in single-shot mode. We run
+    // the tmux subprocess *after* tearing down raw mode so the spawned cmd
+    // sees a clean terminal state.
+    let mut pending_tmux: Option<Vec<String>> = None;
     loop {
         terminal.draw(|frame| render(frame, &mut app))?;
         if event::poll(Duration::from_millis(120))? {
@@ -1774,6 +1781,21 @@ fn run() -> io::Result<()> {
                             }
                             _ => {}
                         }
+                    } else if single_shot && app.overlay == Overlay::ContextMenu {
+                        // Live-fleet mode: render the iOS context menu, dispatch
+                        // a tmux command on the matching shortcut, then exit.
+                        match k.code {
+                            KeyCode::Esc | KeyCode::Char('q') => break,
+                            KeyCode::Char(c) => {
+                                if let Some(cmd) =
+                                    context_menu_tmux_args(c, pane_id.as_deref())
+                                {
+                                    pending_tmux = Some(cmd);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
                     } else {
                         match k.code {
                             KeyCode::Char('q') => break,
@@ -1810,9 +1832,72 @@ fn run() -> io::Result<()> {
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+
+    if let Some(args) = pending_tmux {
+        // Best-effort — if tmux isn't on PATH we silently fall through (the
+        // harness still works for the standalone preview).
+        let _ = std::process::Command::new("tmux").args(&args).status();
+    }
     Ok(())
 }
 
+// Maps a context-menu shortcut letter to its tmux argv. Mirrors the dispatch
+// table in scripts/codex-fleet/bin/pane-context-menu.sh so swapping the
+// binary into the display-popup is behavioural parity, not just visual.
+fn context_menu_tmux_args(c: char, pane: Option<&str>) -> Option<Vec<String>> {
+    let p = pane.unwrap_or("");
+    let push_t = |args: &mut Vec<String>| {
+        if !p.is_empty() {
+            args.push("-t".into());
+            args.push(p.into());
+        }
+    };
+    let mut v: Vec<String> = match c {
+        'h' => vec!["split-window".into(), "-h".into()],
+        'v' => vec!["split-window".into(), "-v".into()],
+        'z' => vec!["resize-pane".into(), "-Z".into()],
+        'u' => vec!["swap-pane".into(), "-U".into()],
+        'd' => vec!["swap-pane".into(), "-D".into()],
+        's' => vec!["swap-pane".into()],
+        'm' => vec!["select-pane".into(), "-m".into()],
+        'R' => vec!["respawn-pane".into(), "-k".into()],
+        'X' => vec!["kill-pane".into()],
+        _ => return None,
+    };
+    push_t(&mut v);
+    Some(v)
+}
+
+fn parse_overlay(name: &str) -> Overlay {
+    match name {
+        "context-menu" | "context_menu" | "ctx" => Overlay::ContextMenu,
+        "spotlight" | "search" => Overlay::Spotlight,
+        "action-sheet" | "action_sheet" | "sheet" => Overlay::ActionSheet,
+        "session-switcher" | "switcher" => Overlay::SessionSwitcher,
+        _ => Overlay::None,
+    }
+}
+
 fn main() -> io::Result<()> {
-    run()
+    // Minimal CLI: --overlay <name>  --pane <id>
+    let mut overlay = Overlay::None;
+    let mut single_shot = false;
+    let mut pane_id: Option<String> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if let Some(v) = a.strip_prefix("--overlay=") {
+            overlay = parse_overlay(v);
+            single_shot = overlay != Overlay::None;
+        } else if a == "--overlay" {
+            if let Some(v) = args.next() {
+                overlay = parse_overlay(&v);
+                single_shot = overlay != Overlay::None;
+            }
+        } else if let Some(v) = a.strip_prefix("--pane=") {
+            pane_id = Some(v.to_string());
+        } else if a == "--pane" {
+            pane_id = args.next();
+        }
+    }
+    run(overlay, single_shot, pane_id)
 }
