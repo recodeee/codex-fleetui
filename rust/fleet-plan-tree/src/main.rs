@@ -15,6 +15,7 @@
 // (250ms) — the live `claimed` / `completed` status surfaces without a
 // pane respawn.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -297,7 +298,11 @@ impl Component for PlanView {
                     p.tasks.len(),
                     c,
                     a,
-                    if b > 0 { format!(" · {} blocked", b) } else { String::new() },
+                    if b > 0 {
+                        format!(" · {} blocked", b)
+                    } else {
+                        String::new()
+                    },
                 )
             }
             None => "PLAN TREE · no plan found".to_string(),
@@ -306,8 +311,11 @@ impl Component for PlanView {
 
         if let Some(plan) = self.plan.as_ref() {
             // ── Body: ACTIVE NOW (claimed list) + WAVES (Kahn grid) ────────────
-            let claimed: Vec<&Subtask> =
-                plan.tasks.iter().filter(|t| t.status == "claimed").collect();
+            let claimed: Vec<&Subtask> = plan
+                .tasks
+                .iter()
+                .filter(|t| t.status == "claimed")
+                .collect();
             // 2 rows of chrome (top + bottom of card) + 1 per claimed worker;
             // collapsed to 3 rows when nothing is claimed (placeholder row).
             let active_h: u16 = (claimed.len() as u16 + 2).clamp(3, 12);
@@ -356,22 +364,26 @@ impl Component for PlanView {
 impl AppComponent<Msg, NoUserEvent> for PlanView {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
-            Event::Keyboard(KeyEvent { code: Key::Char('q'), .. })
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('q'),
+                ..
+            })
             | Event::Keyboard(KeyEvent { code: Key::Esc, .. })
                 if self.overlay == Overlay::Spotlight =>
             {
                 self.close_spotlight();
                 Some(Msg::Tick)
             }
-            Event::Keyboard(KeyEvent { code: Key::Enter, .. })
-                if self.overlay == Overlay::Spotlight =>
-            {
+            Event::Keyboard(KeyEvent {
+                code: Key::Enter, ..
+            }) if self.overlay == Overlay::Spotlight => {
                 self.close_spotlight();
                 Some(Msg::Tick)
             }
-            Event::Keyboard(KeyEvent { code: Key::Backspace, .. })
-                if self.overlay == Overlay::Spotlight =>
-            {
+            Event::Keyboard(KeyEvent {
+                code: Key::Backspace,
+                ..
+            }) if self.overlay == Overlay::Spotlight => {
                 self.spotlight_state.query.pop();
                 self.spotlight_state.selected = 0;
                 Some(Msg::Tick)
@@ -382,29 +394,37 @@ impl AppComponent<Msg, NoUserEvent> for PlanView {
                 self.spotlight_state.selected = self.spotlight_state.selected.saturating_sub(1);
                 Some(Msg::Tick)
             }
-            Event::Keyboard(KeyEvent { code: Key::Down, .. })
-                if self.overlay == Overlay::Spotlight =>
-            {
+            Event::Keyboard(KeyEvent {
+                code: Key::Down, ..
+            }) if self.overlay == Overlay::Spotlight => {
                 let max = spotlight_filter(&self.spotlight_state.query)
                     .len()
                     .saturating_sub(1);
-                self.spotlight_state.selected =
-                    (self.spotlight_state.selected + 1).min(max);
+                self.spotlight_state.selected = (self.spotlight_state.selected + 1).min(max);
                 Some(Msg::Tick)
             }
-            Event::Keyboard(KeyEvent { code: Key::Char(c), .. })
-                if self.overlay == Overlay::Spotlight && !c.is_control() =>
-            {
+            Event::Keyboard(KeyEvent {
+                code: Key::Char(c), ..
+            }) if self.overlay == Overlay::Spotlight && !c.is_control() => {
                 self.spotlight_state.query.push(*c);
                 self.spotlight_state.selected = 0;
                 Some(Msg::Tick)
             }
-            Event::Keyboard(KeyEvent { code: Key::Char('/'), .. })
-            | Event::Keyboard(KeyEvent { code: Key::Char('?'), .. }) => {
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('/'),
+                ..
+            })
+            | Event::Keyboard(KeyEvent {
+                code: Key::Char('?'),
+                ..
+            }) => {
                 self.open_spotlight();
                 Some(Msg::Tick)
             }
-            Event::Keyboard(KeyEvent { code: Key::Char('q'), .. })
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('q'),
+                ..
+            })
             | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => Some(Msg::Quit),
             Event::Tick => {
                 self.maybe_reload();
@@ -433,7 +453,12 @@ fn render_active_now(frame: &mut Frame, area: Rect, claimed: &[&Subtask]) {
                 "  no active claims — workers polling for work",
                 Style::default().fg(IOS_FG_MUTED),
             ))),
-            Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            },
         );
         return;
     }
@@ -452,13 +477,16 @@ fn render_active_now(frame: &mut Frame, area: Rect, claimed: &[&Subtask]) {
         let agent_col_w: usize = 22;
         let sub_col_w: usize = 8;
         let chrome_w: usize = 4; // ` ● ` + trailing spacer
-        let title_budget = (inner.width as usize)
-            .saturating_sub(agent_col_w + sub_col_w + chrome_w);
+        let title_budget =
+            (inner.width as usize).saturating_sub(agent_col_w + sub_col_w + chrome_w);
         let title = truncate_chars(&s.title, title_budget);
         let agent_str = format!("{:<width$}", agent, width = agent_col_w);
         let sub_str = format!("sub-{:<3}", s.subtask_index);
         let spans = vec![
-            Span::styled(" ● ", Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " ● ",
+                Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 agent_str,
                 Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
@@ -469,7 +497,12 @@ fn render_active_now(frame: &mut Frame, area: Rect, claimed: &[&Subtask]) {
         ];
         frame.render_widget(
             Paragraph::new(Line::from(spans)),
-            Rect { x: inner.x, y, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            },
         );
     }
 }
@@ -506,7 +539,9 @@ fn render_waves(frame: &mut Frame, area: Rect, plan: &Plan) {
             };
             spans.push(Span::styled(
                 prefix,
-                Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(IOS_FG_MUTED)
+                    .add_modifier(Modifier::BOLD),
             ));
             for idx in chunk {
                 let s = match plan.tasks.iter().find(|t| t.subtask_index == *idx) {
@@ -527,7 +562,12 @@ fn render_waves(frame: &mut Frame, area: Rect, plan: &Plan) {
             }
             frame.render_widget(
                 Paragraph::new(Line::from(spans)),
-                Rect { x: inner.x, y, width: inner.width, height: 1 },
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
             );
             y += 1;
         }
@@ -535,6 +575,181 @@ fn render_waves(frame: &mut Frame, area: Rect, plan: &Plan) {
             y += 1;
         }
     }
+
+    let remaining = inner.y + inner.height - y;
+    if remaining >= 4 {
+        render_agent_assignment_map(
+            frame,
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: remaining,
+            },
+            plan,
+        );
+    }
+}
+
+fn render_agent_assignment_map(frame: &mut Frame, area: Rect, plan: &Plan) {
+    if area.width == 0 || area.height < 2 {
+        return;
+    }
+
+    let divider_width = area.width.saturating_sub(4) as usize;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {}", "─".repeat(divider_width)),
+            Style::default().fg(IOS_HAIRLINE),
+        ))),
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        },
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                " CLAIM MAP ",
+                Style::default()
+                    .fg(IOS_FG)
+                    .bg(IOS_BG_GLASS)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " grouped by claimed agent · live plan.json",
+                Style::default().fg(IOS_FG_MUTED),
+            ),
+        ])),
+        Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: 1,
+        },
+    );
+
+    let rows = assignment_lines(plan, area.width, area.height.saturating_sub(2));
+    for (i, line) in rows.into_iter().enumerate() {
+        let y = area.y + 2 + i as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+fn assignment_lines(plan: &Plan, width: u16, max_rows: u16) -> Vec<Line<'static>> {
+    if max_rows == 0 {
+        return Vec::new();
+    }
+
+    let groups = claimed_agent_groups(plan);
+    if groups.is_empty() {
+        let (available, _claimed, completed, blocked) = rollup(plan);
+        return vec![Line::from(vec![
+            Span::raw("  "),
+            Span::styled("○ ", Style::default().fg(IOS_FG_MUTED)),
+            Span::styled("no claimed agents", Style::default().fg(IOS_FG)),
+            Span::styled(
+                format!(
+                    " · {} available · {} done · {} blocked",
+                    available, completed, blocked
+                ),
+                Style::default().fg(IOS_FG_MUTED),
+            ),
+        ])];
+    }
+
+    let mut assignments: Vec<(String, bool, &Subtask)> = Vec::new();
+    for (agent, tasks) in &groups {
+        for (i, task) in tasks.iter().enumerate() {
+            assignments.push((agent.clone(), i == 0, *task));
+        }
+    }
+
+    let max_rows = max_rows as usize;
+    let visible_rows = if assignments.len() > max_rows {
+        max_rows.saturating_sub(1)
+    } else {
+        max_rows
+    };
+    let hidden = assignments.len().saturating_sub(visible_rows);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (agent, first_for_agent, task) in assignments.into_iter().take(visible_rows) {
+        let title_budget = (width as usize).saturating_sub(38);
+        let title = truncate_chars(&task.title, title_budget);
+        let agent_label = if first_for_agent {
+            truncate_chars(&agent, 16)
+        } else {
+            String::new()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                if first_for_agent { "  ● " } else { "    " },
+                Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {:<16} ", agent_label),
+                Style::default()
+                    .fg(IOS_FG)
+                    .bg(IOS_BG_GLASS)
+                    .add_modifier(if first_for_agent {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!(" sub-{} ", task.subtask_index),
+                Style::default()
+                    .fg(IOS_FG)
+                    .bg(IOS_CHIP_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(title, Style::default().fg(IOS_FG)),
+        ]));
+    }
+
+    if hidden > 0 {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("+{} more claimed subtasks", hidden),
+                Style::default().fg(IOS_FG_MUTED),
+            ),
+        ]));
+    }
+
+    lines
+}
+
+fn claimed_agent_groups(plan: &Plan) -> BTreeMap<String, Vec<&Subtask>> {
+    let mut groups: BTreeMap<String, Vec<&Subtask>> = BTreeMap::new();
+    for task in plan.tasks.iter().filter(|t| t.status == "claimed") {
+        let agent = task
+            .claimed_by_agent
+            .as_deref()
+            .map(short_agent)
+            .unwrap_or("(unknown)")
+            .to_string();
+        groups.entry(agent).or_default().push(task);
+    }
+    groups
 }
 
 /// RECENT MERGES card — last 5 `git log --oneline origin/main` rows.
@@ -543,7 +758,10 @@ fn render_recent_merges(frame: &mut Frame, area: Rect, prs: &[String]) {
     if area.height == 0 {
         return;
     }
-    let block = card(Some("RECENT MERGES · git log --oneline -5 origin/main"), false);
+    let block = card(
+        Some("RECENT MERGES · git log --oneline -5 origin/main"),
+        false,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -555,7 +773,12 @@ fn render_recent_merges(frame: &mut Frame, area: Rect, prs: &[String]) {
                 "  (git unreachable from this pane)",
                 Style::default().fg(IOS_FG_MUTED),
             ))),
-            Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            },
         );
         return;
     }
@@ -575,7 +798,12 @@ fn render_recent_merges(frame: &mut Frame, area: Rect, prs: &[String]) {
         ];
         frame.render_widget(
             Paragraph::new(Line::from(spans)),
-            Rect { x: inner.x, y, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            },
         );
     }
 }
@@ -583,8 +811,8 @@ fn render_recent_merges(frame: &mut Frame, area: Rect, prs: &[String]) {
 // ---------- Helpers (path resolution + plan math) ----------
 
 fn resolve_plan_path() -> Option<PathBuf> {
-    let pin_file = std::env::var("PLAN_TREE_ANIM_PIN_FILE")
-        .unwrap_or_else(|_| DEFAULT_PIN_FILE.to_string());
+    let pin_file =
+        std::env::var("PLAN_TREE_ANIM_PIN_FILE").unwrap_or_else(|_| DEFAULT_PIN_FILE.to_string());
     if let Ok(raw) = fs::read_to_string(&pin_file) {
         let pinned = raw.trim();
         if !pinned.is_empty() {
@@ -622,7 +850,12 @@ fn waves(subtasks: &[Subtask]) -> Vec<Vec<u32>> {
         let lvl = if s.depends_on.is_empty() {
             0
         } else {
-            s.depends_on.iter().map(|d| resolve(*d, by, memo)).max().unwrap_or(0) + 1
+            s.depends_on
+                .iter()
+                .map(|d| resolve(*d, by, memo))
+                .max()
+                .unwrap_or(0)
+                + 1
         };
         memo.insert(idx, lvl);
         lvl
@@ -657,6 +890,111 @@ fn rollup(plan: &Plan) -> (usize, usize, usize, usize) {
     (available, claimed, completed, blocked)
 }
 
+#[cfg(test)]
+mod claim_map_tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn test_plan(tasks: Vec<Subtask>) -> Plan {
+        Plan {
+            schema_version: 1,
+            plan_slug: "creative-fill-test".to_string(),
+            title: "creative fill test".to_string(),
+            problem: "test".to_string(),
+            acceptance_criteria: Vec::new(),
+            roles: Vec::new(),
+            tasks,
+            created_at: None,
+            updated_at: None,
+            published: None,
+        }
+    }
+
+    fn subtask(idx: u32, title: &str, status: &str, agent: Option<&str>) -> Subtask {
+        Subtask {
+            subtask_index: idx,
+            title: title.to_string(),
+            description: String::new(),
+            file_scope: Vec::new(),
+            depends_on: Vec::new(),
+            capability_hint: None,
+            spec_row_id: None,
+            status: status.to_string(),
+            claimed_by_session_id: agent.map(|_| "session".to_string()),
+            claimed_by_agent: agent.map(str::to_string),
+            completed_summary: None,
+        }
+    }
+
+    fn plain(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn assignment_lines_group_claimed_tasks_by_agent() {
+        let plan = test_plan(vec![
+            subtask(0, "completed bootstrap", "completed", None),
+            subtask(3, "zeta owned task", "claimed", Some("codex-zeta")),
+            subtask(1, "alpha owned task", "claimed", Some("codex-alpha")),
+            subtask(2, "available task", "available", None),
+            subtask(4, "alpha second task", "claimed", Some("codex-alpha")),
+        ]);
+
+        let rows = assignment_lines(&plan, 96, 8);
+        let rendered = rows.iter().map(plain).collect::<Vec<_>>().join("\n");
+
+        let alpha = rendered.find("alpha").expect("alpha group rendered");
+        let zeta = rendered.find("zeta").expect("zeta group rendered");
+        assert!(
+            alpha < zeta,
+            "BTreeMap keeps agent groups stable alphabetically"
+        );
+        assert!(rendered.contains("sub-1"));
+        assert!(rendered.contains("sub-4"));
+        assert!(rendered.contains("sub-3"));
+        assert!(!rendered.contains("completed bootstrap"));
+        assert!(!rendered.contains("available task"));
+    }
+
+    #[test]
+    fn assignment_lines_use_real_rollup_when_no_claims() {
+        let plan = test_plan(vec![
+            subtask(0, "done", "completed", None),
+            subtask(1, "ready", "available", None),
+            subtask(2, "blocked", "blocked", None),
+        ]);
+
+        let rows = assignment_lines(&plan, 80, 4);
+        let rendered = plain(&rows[0]);
+
+        assert!(rendered.contains("no claimed agents"));
+        assert!(rendered.contains("1 available"));
+        assert!(rendered.contains("1 done"));
+        assert!(rendered.contains("1 blocked"));
+    }
+
+    #[test]
+    fn waves_render_includes_claim_map_section() {
+        let plan = test_plan(vec![
+            subtask(0, "bootstrap", "completed", None),
+            subtask(1, "owned implementation", "claimed", Some("codex-alpha")),
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(100, 22)).unwrap();
+
+        terminal
+            .draw(|frame| render_waves(frame, frame.area(), &plan))
+            .unwrap();
+
+        let rendered = format!("{}", terminal.backend());
+        assert!(rendered.contains("CLAIM MAP"));
+        assert!(rendered.contains("alpha"));
+        assert!(rendered.contains("owned implementation"));
+    }
+}
+
 // ---------- Model (tuirealm's M in M-V-U) ----------
 
 struct Model<T: TerminalAdapter> {
@@ -671,7 +1009,12 @@ impl Model<CrosstermTerminalAdapter> {
         let app = Self::init_app().map_err(|e| io::Error::other(format!("init app: {e:?}")))?;
         let terminal =
             Self::init_adapter().map_err(|e| io::Error::other(format!("init adapter: {e:?}")))?;
-        Ok(Self { app, terminal, quit: false, redraw: true })
+        Ok(Self {
+            app,
+            terminal,
+            quit: false,
+            redraw: true,
+        })
     }
 
     fn init_app() -> Result<Application<Id, Msg, NoUserEvent>, Box<dyn std::error::Error>> {
@@ -718,7 +1061,10 @@ fn main() -> io::Result<()> {
     let mut model = Model::<CrosstermTerminalAdapter>::new()?;
     let result = (|| -> io::Result<()> {
         while !model.quit {
-            if let Ok(messages) = model.app.tick(PollStrategy::Once(Duration::from_millis(100))) {
+            if let Ok(messages) = model
+                .app
+                .tick(PollStrategy::Once(Duration::from_millis(100)))
+            {
                 for msg in messages {
                     model.update(msg);
                 }
@@ -736,7 +1082,7 @@ fn main() -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod spotlight_tests {
     use super::*;
 
     #[test]
