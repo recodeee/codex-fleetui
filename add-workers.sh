@@ -140,7 +140,14 @@ print(m.group(1) if m else '')
   if ! command -v codex-auth >/dev/null 2>&1; then
     return
   fi
-  codex-auth list 2>/dev/null | python3 - "$need" "$ACTIVE_FILE" "$SCRIPT_DIR/accounts.yml" <<'PY'
+  # NB: cannot use `codex-auth list | python3 - <<'PY' ...` — the `-` tells
+  # python to read its script from stdin, which collides with the pipe.
+  # Capture codex-auth output to a tempfile and pass it as a positional arg.
+  local auth_tmp
+  auth_tmp="$(mktemp)"
+  trap "rm -f '$auth_tmp'" RETURN
+  codex-auth list >"$auth_tmp" 2>/dev/null || return
+  python3 - "$need" "$ACTIVE_FILE" "$SCRIPT_DIR/accounts.yml" "$auth_tmp" <<'PY'
 import re, sys, os
 need = int(sys.argv[1])
 active = set()
@@ -154,21 +161,22 @@ if os.path.exists(sys.argv[3]):
     for m in re.finditer(r'-\s*id:\s*(\S+)\s*\n\s*email:\s*(\S+)', txt):
         acc[m.group(2)] = m.group(1)
 out = []
-for line in sys.stdin:
-    em = re.search(r'(\S+@\S+)', line)
-    h5 = re.search(r'5h=(\d+)%', line)
-    wk = re.search(r'weekly=(\d+)%', line)
-    if not (em and h5 and wk):
-        continue
-    email = em.group(1)
-    if int(h5.group(1)) >= 100 or int(wk.group(1)) >= 90:
-        continue
-    aid = acc.get(email)
-    if not aid or aid in active:
-        continue
-    out.append(f"{aid}\t{email}")
-    if len(out) >= need:
-        break
+with open(sys.argv[4]) as fh:
+    for line in fh:
+        em = re.search(r'(\S+@\S+\.\S+)', line)
+        h5 = re.search(r'5h=(\d+)%', line)
+        wk = re.search(r'weekly=(\d+)%', line)
+        if not (em and h5 and wk):
+            continue
+        email = em.group(1)
+        if int(h5.group(1)) >= 100 or int(wk.group(1)) >= 90:
+            continue
+        aid = acc.get(email)
+        if not aid or aid in active:
+            continue
+        out.append(f"{aid}\t{email}")
+        if len(out) >= need:
+            break
 for row in out:
     print(row)
 PY
