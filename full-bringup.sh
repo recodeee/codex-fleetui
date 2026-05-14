@@ -154,6 +154,22 @@ tmux new-session -d -s "$SESSION" -n overview -x 274 -y 76
 tmux set-option -t "$SESSION" -g mouse on
 tmux set-option -w -t "$SESSION:overview" remain-on-exit on
 
+# Status bar — always-on window tabs so operators can see overview / fleet /
+# plan / waves / review / watcher without memorizing Ctrl+B digits. Inherited
+# global config is too low-contrast on dark terminals; force a visible style
+# per-session.
+tmux set-option -t "$SESSION" status on
+tmux set-option -t "$SESSION" status-position bottom
+tmux set-option -t "$SESSION" status-justify left
+tmux set-option -t "$SESSION" status-style 'bg=colour24,fg=white,bold'
+tmux set-option -t "$SESSION" status-left '#[bg=colour16,fg=colour39,bold] CODEX-FLEET '
+tmux set-option -t "$SESSION" status-left-length 20
+tmux set-option -t "$SESSION" status-right '#[bg=colour16,fg=colour39] %H:%M '
+tmux set-option -t "$SESSION" status-right-length 12
+tmux set-option -t "$SESSION" window-status-format ' #I:#W '
+tmux set-option -t "$SESSION" window-status-current-format ' #I:#W '
+tmux set-option -t "$SESSION" window-status-current-style 'bg=colour33,fg=white,bold'
+
 # 9. Split overview into N panes (default 2 columns x 4 rows = 8)
 ROWS=$((N_PANES / 2))
 tmux split-window -h -t "$SESSION:overview" -p 50
