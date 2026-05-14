@@ -129,7 +129,13 @@ if [[ -n "$(resolve_script waves-anim-generic.sh)" ]]; then
 else
   add_window waves waves-anim.sh         "FLEET_WAVES_PLAN_SLUG=$PLAN_SLUG "
 fi
-add_window review  review-board.sh
+# Prefer review-anim.sh (committed sibling of plan-anim / waves-anim) when
+# present; fall back to the historical review-board.sh placeholder otherwise.
+if [[ -n "$(resolve_script review-anim.sh)" ]]; then
+  add_window review review-anim.sh
+else
+  add_window review review-board.sh
+fi
 add_window watcher watcher-board.sh
 
 tmux set-option -w -t "$SESSION:plan"  remain-on-exit on
