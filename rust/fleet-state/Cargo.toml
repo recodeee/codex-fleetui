@@ -12,6 +12,11 @@ path = "src/main.rs"
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
-fleet-input = { path = "../fleet-input" }
 fleet-ui = { path = "../fleet-ui" }
 fleet-data = { path = "../fleet-data" }
+# tuirealm — second binary ported (after fleet-tab-strip in PR #50). The
+# fleet-input matcher is dropped here because tuirealm handles its own
+# key events; q/Esc map directly inside the AppComponent's on() method.
+# Future bindings (refresh, jump-to-row, …) become additional Msg
+# variants rather than fleet-input table entries.
+tuirealm = "4.1"
