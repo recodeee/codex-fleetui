@@ -110,6 +110,27 @@ pull_tasks() {
        "$PLAN_JSON" 2>/dev/null
 }
 
+# Per-tick rich pull for the proposal cards. Uses ASCII unit separator ()
+# between fields so titles/descriptions with tabs/spaces survive intact.
+# Newlines inside .description are flattened to a single space.
+# Output schema (per line):
+#   idx | status | title | agent | description | files_csv | deps_csv | summary
+pull_tasks_full() {
+  jq -r --arg US $'\x1f' '
+    .tasks | sort_by(.subtask_index) | .[] |
+    [
+      (.subtask_index|tostring),
+      (.status // "available"),
+      .title,
+      (.claimed_by_agent // ""),
+      ((.description // "") | gsub("\n"; " ") | gsub("\\s+"; " ")),
+      ((.file_scope // []) | join(",")),
+      ((.depends_on // []) | map(tostring) | join(",")),
+      (.completed_summary // "")
+    ] | join($US)
+  ' "$PLAN_JSON" 2>/dev/null
+}
+
 # Compute wave assignment once (deps don't change at runtime)
 declare -A LVL
 while IFS=$'\t' read -r idx lvl; do
@@ -154,6 +175,54 @@ trunc() {
     printf '%s' "$s"
   fi
 }
+
+# Word-wrap "$1" to width "$2", emitting each wrapped line on stdout.
+wrap_text() {
+  local s="$1" w="$2"
+  local line="" word
+  for word in $s; do
+    if (( ${#line} == 0 )); then
+      line="$word"
+    elif (( ${#line} + 1 + ${#word} <= w )); then
+      line="$line $word"
+    else
+      printf '%s\n' "$line"
+      line="$word"
+    fi
+  done
+  [[ -n "$line" ]] && printf '%s\n' "$line"
+}
+
+# Card border helpers (PANE_W minus 4 outer margin)
+card_top()    { local title="$1" w="$2" pad; pad=$(( w - ${#title} - 6 )); (( pad < 1 )) && pad=1; printf '%s┌─ %s%b ─%s─┐%s\n' "$GREY" "$WHITE" "$title" "$(printf '─%.0s' $(seq 1 "$pad"))" "$R"; }
+card_bottom() { local w="$1" line; line=$(printf '─%.0s' $(seq 1 $((w-2)))); printf '%s└%s┘%s\n' "$GREY" "$line" "$R"; }
+card_blank()  { local w="$1"; printf '%s│%*s│%s\n' "$GREY" $(( w - 2 )) "" "$R"; }
+# Print one card row, given already-styled inner content + visible-len of that content.
+# Args: width, visible_len, inner_content
+card_row() {
+  local w="$1" vis="$2" inner="$3"
+  local pad=$(( w - 4 - vis ))
+  (( pad < 0 )) && pad=0
+  printf '%s│%s  %b%*s%s│%s\n' "$GREY" "$R" "$inner" "$pad" "" "$GREY" "$R"
+}
+# Plain-text row (no SGR in content) — auto-compute visible length.
+card_row_plain() {
+  local w="$1" text="$2"
+  card_row "$w" "${#text}" "$text"
+}
+
+# Status chip — colored pill `◖ ● done ◗` etc.
+status_chip() {
+  local status="$1"
+  case "$status" in
+    completed) printf '%s◖ ● done    ◗%s' "$G" "$R" ;;
+    claimed)   printf '%s◖ ◐ claimed ◗%s' "$YELLOW" "$R" ;;
+    blocked)   printf '%s◖ ✕ blocked ◗%s' "$RED" "$R" ;;
+    *)         printf '%s◖ ◇ ready   ◗%s' "$DIM" "$R" ;;
+  esac
+}
+# Visible length of the chip (constant) — used for column padding math
+STATUS_CHIP_VIS=13
 
 render() {
   local f="$1"
@@ -304,6 +373,110 @@ render() {
     # Spacer row between card rows
     printf '%s\n' "${E}[K"
   done
+
+  # ── Proposal cards (one per sub-task) ────────────────────────────────
+  printf '%s\n' "${E}[K"
+  printf '%s%sPROPOSALS%s  %sfile · why · deps · worker · evidence%s%s\n' \
+    "$B" "$TEAL" "$R" "$DIM" "$R" "${E}[K"
+  local card_w=$(( PANE_W - 4 ))
+  (( card_w < 60 )) && card_w=60
+  (( card_w > 200 )) && card_w=200
+
+  local IFS_OLD="$IFS"
+  while IFS=$'\x1f' read -r idx status title agent description files deps summary; do
+    [[ -z "$idx" ]] && continue
+    local wave="${LVL[$idx]:-?}"
+    local chip; chip=$(status_chip "$status")
+    local hdr="W$((wave+1)) · sub-${idx} · ${title}"
+    # Title line + status chip
+    printf '%s' "${E}[K"
+    card_top "$hdr   $(printf '%s' "$chip" | sed -E 's/\x1B\[[0-9;]*m//g')" "$card_w"
+
+    # file: rows (one per file_scope entry).
+    # Use _fp here — the outer render() loop binds `f` to the frame counter
+    # and arithmetic `(( (f / 2) % 4 ))` later would divide a file path by 2.
+    if [[ -n "$files" ]]; then
+      local first=1 _fp
+      IFS=',' read -ra FILE_ARR <<<"$files"
+      for _fp in "${FILE_ARR[@]}"; do
+        if (( first )); then
+          card_row "$card_w" $(( 6 + ${#_fp} )) "${B}file:${R}   ${ICE}${_fp}${R}"
+          first=0
+        else
+          card_row "$card_w" $(( 9 + ${#_fp} )) "         ${ICE}${_fp}${R}"
+        fi
+      done
+    fi
+
+    # why: wrapped description
+    if [[ -n "$description" ]]; then
+      local inner_w=$(( card_w - 13 ))
+      (( inner_w < 30 )) && inner_w=30
+      local first=1 line
+      while IFS= read -r line; do
+        if (( first )); then
+          card_row "$card_w" $(( 6 + ${#line} )) "${B}why:${R}    ${WHITE}${line}${R}"
+          first=0
+        else
+          card_row "$card_w" $(( 9 + ${#line} )) "         ${WHITE}${line}${R}"
+        fi
+      done < <(wrap_text "$description" "$inner_w")
+    fi
+
+    # deps: resolve to "sub-N (status)" tuples
+    if [[ -n "$deps" ]]; then
+      local dep_list=""
+      IFS=',' read -ra DEP_ARR <<<"$deps"
+      local d_idx d_stat
+      for d_idx in "${DEP_ARR[@]}"; do
+        d_stat="${T_STATUS[$d_idx]:-?}"
+        local d_col="$DIM"
+        case "$d_stat" in
+          completed) d_col="$G" ;;
+          claimed) d_col="$YELLOW" ;;
+          blocked) d_col="$RED" ;;
+        esac
+        [[ -n "$dep_list" ]] && dep_list+="${DIM}, ${R}"
+        dep_list+="${d_col}sub-${d_idx}${R}${DIM}(${d_stat})${R}"
+      done
+      # Visible len (rough): "sub-N(status)" per dep, comma-separated
+      local dep_vis=0 d
+      for d in "${DEP_ARR[@]}"; do
+        d_stat="${T_STATUS[$d]:-?}"
+        dep_vis=$(( dep_vis + 5 + ${#d} + 2 + ${#d_stat} + 1 + 2 ))
+      done
+      (( dep_vis -= 2 ))  # last comma not present
+      card_row "$card_w" $(( 6 + dep_vis )) "${B}deps:${R}   ${dep_list}"
+    fi
+
+    # worker: claimed agent (or em-dash for unclaimed)
+    local worker_text
+    if [[ -n "$agent" && "$agent" != "null" ]]; then
+      worker_text="${ICE}${agent}${R}"
+      card_row "$card_w" $(( 8 + ${#agent} )) "${B}worker:${R} ${worker_text}"
+    else
+      card_row "$card_w" 9 "${B}worker:${R} ${DIM}—${R}"
+    fi
+
+    # evidence (only when completed and we have a summary)
+    if [[ "$status" == "completed" && -n "$summary" ]]; then
+      local inner_w=$(( card_w - 14 ))
+      (( inner_w < 30 )) && inner_w=30
+      local first=1 line
+      while IFS= read -r line; do
+        if (( first )); then
+          card_row "$card_w" $(( 10 + ${#line} )) "${B}evidence:${R} ${G}${line}${R}"
+          first=0
+        else
+          card_row "$card_w" $(( 11 + ${#line} )) "          ${G}${line}${R}"
+        fi
+      done < <(wrap_text "$summary" "$inner_w")
+    fi
+
+    card_bottom "$card_w"
+    printf '%s\n' "${E}[K"
+  done < <(pull_tasks_full)
+  IFS="$IFS_OLD"
 
   # ── Footer: total bar + counters ─────────────────────────────────────
   printf '%s\n' "${E}[K"
