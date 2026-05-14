@@ -38,12 +38,24 @@ the surrounding iOS chrome side-by-side):
 tmux split-window -h -t codex-fleet:overview "cd $(pwd) && cargo run --release"
 ```
 
-Press `q` or `Esc` to exit.
+## Keys
 
-## Expected output
+| Key       | View                                                        |
+|-----------|-------------------------------------------------------------|
+| `0`, Esc  | Phase-0 validation harness (chip + event log) — the default |
+| `1`       | iOS context menu over codex multi-pane backdrop             |
+| `2`       | iOS spotlight palette over codex multi-pane backdrop        |
+| `3`       | iOS action sheet over codex multi-pane backdrop             |
+| `4`       | iOS session switcher (full-screen)                          |
+| `q`       | Quit                                                        |
+
+`0`/`Esc` from any overlay returns to the harness; from the harness it
+quits.
+
+## Expected output (default view)
 
 ```
-╭ ◆  fleet-tui-poc  (press q to quit) ───────────────────────────────╮
+╭ ◆  fleet-tui-poc  (1·2·3·4 palettes  ·  q quit) ────────────────────╮
 │ ◖ ●   working   ◗                                                   │
 │ click the chip; coords appear below. expect ✓ ON CHIP when…         │
 │   (12, 4)  Down(Left)  ✓ ON CHIP                                    │
@@ -54,6 +66,27 @@ Press `q` or `Esc` to exit.
 
 The chip should look identical to the `[ working ]`-style chips that
 `fleet-tick.sh` renders elsewhere — same hue, same caps.
+
+## iOS palette previews (keys 1–4)
+
+Each palette is a ratatui port of an artboard from the
+`terminal-ios-style` design handoff (Claude Design, 2026-05-14). They
+preview the surfaces Phase 5 of the openspec change owns
+(`overlay.rs`), so the visual feasibility is checked before
+`fleet-ui` scaffolds.
+
+- **1 · Context menu** — UIKit long-press menu pinned to the active
+  pane. Five sections (copy / search / split / swap / lifecycle),
+  destructive Kill in `IOS_DESTRUCTIVE`, shortcut chips on the right.
+- **2 · Spotlight** — search-first palette. Query line + systemBlue
+  Top-Hit bar + three grouped result lists (Pane / Session / Fleet)
+  with monospace shortcut chips.
+- **3 · Action sheet** — bottom-anchored grouped sheet with a
+  separate `Cancel` button — the iOS hallmark — in `IOS_TINT`.
+- **4 · Session switcher** — app-switcher-style cards, one per codex
+  worker. Active worker has the systemBlue border + LIVE badge; per
+  card shows pane status, task, model · context · runtime, and a row
+  of Focus / Queue / Pause / Kill actions.
 
 ## What "validated" looks like
 
