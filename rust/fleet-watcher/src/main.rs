@@ -5,6 +5,7 @@
 // fleet-plan-tree (#53), fleet-waves (#54).
 
 use std::io;
+use std::process::Command;
 use std::time::Duration;
 
 use fleet_ui::{
@@ -52,6 +53,17 @@ struct SpotlightItem {
     title: &'static str,
     sub: &'static str,
     kbd: &'static str,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct MergeQueueItem {
+    number: String,
+    title: String,
+    author: String,
+    merge_state: String,
+    review_decision: String,
+    blocked_checks: String,
+    url: String,
 }
 
 const SPOTLIGHT_ITEMS: &[SpotlightItem] = &[
@@ -297,6 +309,240 @@ fn render_nav_pill(
     );
 }
 
+fn parse_merge_queue_tsv(tsv: &str) -> Vec<MergeQueueItem> {
+    tsv.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(7, '\t');
+            let item = MergeQueueItem {
+                number: parts.next()?.trim().to_owned(),
+                title: parts.next()?.trim().to_owned(),
+                author: parts.next()?.trim().to_owned(),
+                merge_state: parts.next()?.trim().to_owned(),
+                review_decision: parts.next()?.trim().to_owned(),
+                blocked_checks: parts.next()?.trim().to_owned(),
+                url: parts.next()?.trim().to_owned(),
+            };
+            if item.number.is_empty() || !item.review_decision.eq_ignore_ascii_case("APPROVED") {
+                None
+            } else {
+                Some(item)
+            }
+        })
+        .collect()
+}
+
+fn load_merge_queue() -> (Vec<MergeQueueItem>, Option<String>) {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--search",
+            "review:approved",
+            "--limit",
+            "6",
+            "--json",
+            "number,title,author,mergeStateStatus,reviewDecision,statusCheckRollup,url",
+            "--jq",
+            ".[] | [.number, .title, .author.login, (.mergeStateStatus // \"\"), (.reviewDecision // \"\"), (((.statusCheckRollup // []) | map(select((.conclusion // \"\") != \"SUCCESS\" and (.conclusion // \"\") != \"SKIPPED\")) | length) | tostring), .url] | @tsv",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            (parse_merge_queue_tsv(&stdout), None)
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let message = stderr
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("gh pr list failed")
+                .trim()
+                .to_owned();
+            (Vec::new(), Some(message))
+        }
+        Err(error) => (Vec::new(), Some(format!("gh unavailable: {error}"))),
+    }
+}
+
+fn merge_queue_check_label(item: &MergeQueueItem) -> String {
+    match item.blocked_checks.parse::<usize>() {
+        Ok(0) => "CI green".to_owned(),
+        Ok(1) => "1 check blocking".to_owned(),
+        Ok(count) => format!("{count} checks blocking"),
+        Err(_) => "CI unknown".to_owned(),
+    }
+}
+
+fn merge_queue_state_label(item: &MergeQueueItem) -> String {
+    if item.merge_state.is_empty() {
+        "merge state pending".to_owned()
+    } else {
+        item.merge_state.replace('_', " ").to_lowercase()
+    }
+}
+
+fn render_merge_queue(
+    frame: &mut Frame,
+    area: Rect,
+    queue: &[MergeQueueItem],
+    error: Option<&str>,
+) {
+    if area.width < 28 || area.height < 5 {
+        return;
+    }
+
+    let block = rounded_block(IOS_HAIRLINE, IOS_BG_GLASS, false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    fill(frame, inner, IOS_BG_GLASS);
+
+    text(
+        frame,
+        Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        },
+        Line::from(vec![
+            Span::styled(
+                "MERGE QUEUE",
+                Style::default()
+                    .fg(IOS_FG)
+                    .bg(IOS_BG_GLASS)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "{:>width$}",
+                    format!("{} approved open", queue.len()),
+                    width = inner.width.saturating_sub(12) as usize
+                ),
+                Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+            ),
+        ]),
+    );
+
+    let mut y = inner.y + 2;
+    if let Some(error) = error {
+        text(
+            frame,
+            Rect {
+                x: inner.x + 1,
+                y,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            },
+            Line::from(vec![
+                Span::styled("gh: ", Style::default().fg(IOS_TINT).bg(IOS_BG_GLASS)),
+                Span::styled(
+                    fit(error, inner.width.saturating_sub(6)),
+                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                ),
+            ]),
+        );
+        return;
+    }
+
+    if queue.is_empty() {
+        text(
+            frame,
+            Rect {
+                x: inner.x + 1,
+                y,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            },
+            Line::from(Span::styled(
+                "No approved open PRs from gh",
+                Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+            )),
+        );
+        return;
+    }
+
+    for item in queue
+        .iter()
+        .take(((inner.height.saturating_sub(2)) / 2) as usize)
+    {
+        if y + 1 >= inner.y + inner.height {
+            break;
+        }
+        let left_w = inner.width.saturating_sub(18);
+        text(
+            frame,
+            Rect {
+                x: inner.x + 1,
+                y,
+                width: left_w,
+                height: 1,
+            },
+            Line::from(vec![
+                Span::styled(
+                    format!("#{} ", item.number),
+                    Style::default()
+                        .fg(IOS_TINT)
+                        .bg(IOS_BG_GLASS)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    fit(&item.title, left_w.saturating_sub(6)),
+                    Style::default().fg(IOS_FG).bg(IOS_BG_GLASS),
+                ),
+            ]),
+        );
+        text(
+            frame,
+            Rect {
+                x: inner.x + inner.width.saturating_sub(16),
+                y,
+                width: 15,
+                height: 1,
+            },
+            Line::from(Span::styled(
+                "APPROVED",
+                Style::default()
+                    .fg(IOS_FG)
+                    .bg(IOS_TINT)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        );
+        text(
+            frame,
+            Rect {
+                x: inner.x + 1,
+                y: y + 1,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            },
+            Line::from(vec![
+                Span::styled(
+                    format!("@{} · ", fit(&item.author, 16)),
+                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                ),
+                Span::styled(
+                    format!("{} · ", merge_queue_state_label(item)),
+                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                ),
+                Span::styled(
+                    merge_queue_check_label(item),
+                    Style::default().fg(IOS_TINT).bg(IOS_BG_GLASS),
+                ),
+                Span::styled(" · ", Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS)),
+                Span::styled(
+                    fit(&item.url, 32),
+                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                ),
+            ]),
+        );
+        y += 2;
+    }
+}
+
 fn render_top_dock(frame: &mut Frame, area: Rect) {
     if area.width < 80 || area.height < 4 {
         return;
@@ -530,7 +776,12 @@ fn render_review_action(
     );
 }
 
-fn render_review_card(frame: &mut Frame, area: Rect) {
+fn render_review_card(
+    frame: &mut Frame,
+    area: Rect,
+    merge_queue: &[MergeQueueItem],
+    merge_queue_error: Option<&str>,
+) {
     if area.width < 36 || area.height < 14 {
         return;
     }
@@ -747,8 +998,23 @@ fn render_review_card(frame: &mut Frame, area: Rect) {
         }
     }
 
+    let button_y = inner.y + inner.height.saturating_sub(3);
+    let queue_y = files_y + 5;
+    if queue_y + 4 < button_y {
+        render_merge_queue(
+            frame,
+            Rect {
+                x: inner.x + 2,
+                y: queue_y,
+                width: inner.width.saturating_sub(4),
+                height: button_y.saturating_sub(queue_y).saturating_sub(1),
+            },
+            merge_queue,
+            merge_queue_error,
+        );
+    }
+
     if inner.height >= 5 {
-        let button_y = inner.y + inner.height - 3;
         let buttons = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -991,9 +1257,22 @@ struct WatcherView {
     spotlight_query: String,
     spotlight_selected: usize,
     spotlight_tick: u64,
+    merge_queue: Vec<MergeQueueItem>,
+    merge_queue_error: Option<String>,
+    merge_queue_loaded: bool,
 }
 
 impl WatcherView {
+    fn ensure_merge_queue_loaded(&mut self) {
+        if self.merge_queue_loaded {
+            return;
+        }
+        let (queue, error) = load_merge_queue();
+        self.merge_queue = queue;
+        self.merge_queue_error = error;
+        self.merge_queue_loaded = true;
+    }
+
     fn open_spotlight(&mut self) {
         self.overlay = Overlay::Spotlight;
         self.spotlight_query.clear();
@@ -1007,7 +1286,12 @@ impl WatcherView {
     }
 }
 
-fn render_dashboard(frame: &mut Frame, area: Rect) {
+fn render_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    merge_queue: &[MergeQueueItem],
+    merge_queue_error: Option<&str>,
+) {
     if area.width < 30 || area.height < 8 {
         return;
     }
@@ -1045,6 +1329,8 @@ fn render_dashboard(frame: &mut Frame, area: Rect) {
             width: content[0].width.saturating_sub(1),
             height: content[0].height,
         },
+        merge_queue,
+        merge_queue_error,
     );
     render_recent_decisions(
         frame,
@@ -1348,7 +1634,13 @@ fn render_spotlight_footer(frame: &mut Frame, inner: Rect) {
 
 impl Component for WatcherView {
     fn view(&mut self, frame: &mut Frame, area: Rect) {
-        render_dashboard(frame, area);
+        self.ensure_merge_queue_loaded();
+        render_dashboard(
+            frame,
+            area,
+            &self.merge_queue,
+            self.merge_queue_error.as_deref(),
+        );
         if self.overlay == Overlay::Spotlight {
             render_spotlight(frame, area, self);
         }
@@ -1577,10 +1869,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_merge_queue_tsv_keeps_only_approved_open_prs() {
+        let rows = "\
+72\tPolish review queue\tcodex-one\tREADY_TO_MERGE\tAPPROVED\t0\thttps://example.test/72\n\
+73\tNeeds another pass\tcodex-two\tBLOCKED\tCHANGES_REQUESTED\t2\thttps://example.test/73\n";
+
+        let queue = parse_merge_queue_tsv(rows);
+
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].number, "72");
+        assert_eq!(queue[0].title, "Polish review queue");
+        assert_eq!(queue[0].blocked_checks, "0");
+    }
+
+    #[test]
     fn review_queue_render_keeps_design_j_chrome() {
+        let queue = [MergeQueueItem {
+            number: "72".into(),
+            title: "Polish review queue".into(),
+            author: "codex-one".into(),
+            merge_state: "READY_TO_MERGE".into(),
+            review_decision: "APPROVED".into(),
+            blocked_checks: "0".into(),
+            url: "https://example.test/72".into(),
+        }];
         let mut terminal = Terminal::new(TestBackend::new(140, 44)).unwrap();
         terminal
-            .draw(|frame| render_dashboard(frame, frame.area()))
+            .draw(|frame| render_dashboard(frame, frame.area(), &queue, None))
             .unwrap();
         let frame = format!("{}", terminal.backend());
 
@@ -1598,6 +1913,11 @@ mod tests {
             "Approve",
             "Request changes",
             "Skip",
+            "MERGE QUEUE",
+            "#72",
+            "APPROVED",
+            "ready to merge",
+            "CI green",
             "Recent decisions",
             "approved",
             "escalated",
