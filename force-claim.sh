@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
-# force-claim — dispatch available plan sub-tasks onto idle codex panes.
+# force-claim — dispatch available plan sub-tasks across ALL non-empty plans
+# onto idle codex panes.
 #
-# What it does:
-#   1. Read the active openspec plan.json.
-#   2. For each task with status="available" whose deps are completed,
-#      enqueue a (sub_idx, title, plan_slug) work item.
-#   3. Walk the codex-fleet:<window>.* panes, find ones whose tail shows the
-#      default-prompt placeholder (idle worker) and no claim-in-flight.
-#   4. Send a Colony claim prompt to each idle pane via `tmux send-keys`.
+# Why multi-plan:
+#   When one plan is complete, workers pinned to it idle ("plan already
+#   complete"). The watcher should instead route them to ready work in
+#   any other openspec plan. force-claim now scans every plan.json
+#   under openspec/plans/, picks tasks whose deps are satisfied, and
+#   dispatches across the pool.
+#
+# Behavior:
+#   1. Enumerate plan.json under openspec/plans/*/
+#   2. For each non-empty plan, list (slug, idx, title) for tasks whose
+#      status=="available" and whose depends_on are all completed.
+#   3. Sort plans by newest-first (date suffix tiebreaker on mtime).
+#   4. Find idle codex panes (default-prompt placeholder, no Working /
+#      Reviewing approval state).
+#   5. Zip ready_tasks → panes 1:1 and send-keys a claim prompt.
 #
 # Operator-pre-approved: dispatching prompts into gx-fleet/codex-fleet
 # panes is an allowed flow (see ~/.claude memory feedback_gx_fleet_dispatch_authorized).
@@ -15,9 +24,10 @@
 # Usage:
 #   bash scripts/codex-fleet/force-claim.sh                 # one-shot
 #   bash scripts/codex-fleet/force-claim.sh --dry-run       # show plan, no dispatch
-#   bash scripts/codex-fleet/force-claim.sh --loop          # respawn every 10s
+#   bash scripts/codex-fleet/force-claim.sh --loop          # poll every 10s
 #   FORCE_CLAIM_SESSION=codex-fleet ...                      # tmux session override
 #   FORCE_CLAIM_WINDOW=1            ...                      # window with codex panes
+#   FORCE_CLAIM_PLAN_JSON=/path/plan.json                    # pin to single plan
 set -eo pipefail
 
 REPO="${FORCE_CLAIM_REPO:-/home/deadpool/Documents/recodee}"
@@ -34,41 +44,55 @@ for a in "$@"; do
   esac
 done
 
-_latest_plan() {
-  python3 - "$REPO" <<'PYEOF'
-import os, sys, re, glob
-repo = sys.argv[1]
-plans = glob.glob(f"{repo}/openspec/plans/*/plan.json")
-def key(p):
+# Emit ready (slug \t sub_idx \t title) across every non-empty plan, newest-first.
+# Pin via FORCE_CLAIM_PLAN_JSON if the operator wants single-plan behaviour.
+ready_tasks_all() {
+  python3 - "$REPO" "${FORCE_CLAIM_PLAN_JSON:-}" <<'PYEOF'
+import os, sys, re, glob, json
+repo, pin = sys.argv[1], sys.argv[2]
+
+if pin:
+    plans = [pin] if os.path.isfile(pin) else []
+else:
+    plans = glob.glob(f"{repo}/openspec/plans/*/plan.json")
+
+def keyfn(p):
     s = os.path.basename(os.path.dirname(p))
     m = re.search(r'(\d{4})-(\d{2})-(\d{2})$', s)
     d = (int(m[1]), int(m[2]), int(m[3])) if m else (0, 0, 0)
-    return (d, os.path.getmtime(p))
-plans.sort(key=key, reverse=True)
-print(plans[0] if plans else "")
+    try:
+        mt = os.path.getmtime(p)
+    except OSError:
+        mt = 0
+    return (d, mt)
+
+plans.sort(key=keyfn, reverse=True)
+
+for p in plans:
+    try:
+        data = json.load(open(p))
+    except Exception:
+        continue
+    tasks = data.get("tasks") or []
+    if not tasks:
+        continue
+    slug = os.path.basename(os.path.dirname(p))
+    status = {str(t["subtask_index"]): (t.get("status") or "available") for t in tasks}
+    for t in sorted(tasks, key=lambda x: x.get("subtask_index", 0)):
+        st = t.get("status") or "available"
+        if st != "available":
+            continue
+        deps = t.get("depends_on") or []
+        if not all(status.get(str(d)) == "completed" for d in deps):
+            continue
+        title = (t.get("title") or "").replace("\t", " ")
+        print(f"{slug}\t{t.get('subtask_index')}\t{title}")
 PYEOF
 }
 
-PLAN_JSON="${FORCE_CLAIM_PLAN_JSON:-$(_latest_plan)}"
-[[ -f "$PLAN_JSON" ]] || { echo "force-claim: no plan.json found" >&2; exit 2; }
-PLAN_SLUG=$(basename "$(dirname "$PLAN_JSON")")
-
-# Emit lines: <sub_idx>\t<title>  for tasks whose deps are all completed and
-# whose own status is "available". jq does the dependency check.
-ready_tasks() {
-  jq -r '
-    (.tasks | map({(.subtask_index|tostring): (.status // "available")}) | add) as $st
-    | .tasks | sort_by(.subtask_index) | .[]
-    | select(.status == "available" or .status == null)
-    | select((.depends_on // []) | all(. as $d | $st[($d|tostring)] == "completed"))
-    | "\(.subtask_index)\t\(.title)"
-  ' "$PLAN_JSON"
-}
-
-# Identify idle codex panes — pane whose last 12 lines contain a `› default
-# prompt` placeholder, no `Working (…)`, and no `Reviewing approval request`.
+# Identify idle codex panes — last 12 lines show the default-prompt placeholder,
+# no `Working (…)`, no `Reviewing approval request`.
 idle_panes() {
-  local pane idle_idxs=()
   while read -r pane_idx; do
     [[ -z "$pane_idx" ]] && continue
     local tail
@@ -82,28 +106,27 @@ idle_panes() {
 }
 
 dispatch() {
-  local pane_idx="$1" sub_idx="$2" title="$3"
+  local pane_idx="$1" slug="$2" sub_idx="$3" title="$4"
+  # Prompt explicitly overrides any pinned-plan worker prompt — workers
+  # that were told "PRIORITY plan = X" must switch to the named plan when
+  # the watcher dispatches.
   local prompt
-  prompt="Claim sub-task ${sub_idx} of plan ${PLAN_SLUG} via Colony task_plan_claim_subtask, then execute it. Title: ${title}. When done, post a Colony note with evidence and mark the sub-task completed."
+  prompt="OVERRIDE current plan pinning. Claim sub-task ${sub_idx} of plan ${slug} via Colony task_plan_claim_subtask (force the agent slug to your CODEX_FLEET_AGENT_NAME). Title: ${title}. Implement it on a fresh agent worktree per AGENTS.md, run the narrowest verification, open + merge a PR, post a Colony note with evidence (branch, PR URL, MERGED state), then mark the sub-task completed."
   if (( DRY == 1 )); then
-    printf '[dry] pane=%s sub=%s title=%s\n' "$pane_idx" "$sub_idx" "$title"
+    printf '[dry] pane=%s plan=%s sub=%s title=%s\n' "$pane_idx" "$slug" "$sub_idx" "$title"
     return
   fi
-  # Send the prompt, then Enter. Use -l so backslashes / special chars in
-  # the title don't trigger key parsing.
   tmux send-keys -t "$SESSION:$WINDOW.$pane_idx" -l "$prompt"
   tmux send-keys -t "$SESSION:$WINDOW.$pane_idx" Enter
-  printf '[dispatch] pane=%s sub=%s title=%s\n' "$pane_idx" "$sub_idx" "$title"
+  printf '[dispatch] pane=%s plan=%s sub=%s title=%s\n' "$pane_idx" "$slug" "$sub_idx" "$title"
 }
 
 one_pass() {
-  # Read ready tasks + idle panes once. Zip them: first idle pane gets first
-  # ready task, etc. Don't dispatch more than min(panes, tasks).
   local -a tasks=()
-  while IFS=$'\t' read -r idx title; do
-    [[ -z "$idx" ]] && continue
-    tasks+=("$idx"$'\t'"$title")
-  done < <(ready_tasks)
+  while IFS=$'\t' read -r slug idx title; do
+    [[ -z "$slug" ]] && continue
+    tasks+=("$slug"$'\t'"$idx"$'\t'"$title")
+  done < <(ready_tasks_all)
 
   local -a panes=()
   while read -r p; do
@@ -112,20 +135,20 @@ one_pass() {
   done < <(idle_panes)
 
   if (( ${#tasks[@]} == 0 )); then
-    printf '[%s] no ready tasks for %s\n' "$(date +%T)" "$PLAN_SLUG"
+    printf '[%s] no ready tasks across any plan\n' "$(date +%T)"
     return
   fi
   if (( ${#panes[@]} == 0 )); then
-    printf '[%s] no idle codex panes (claim count=%d)\n' "$(date +%T)" "${#tasks[@]}"
+    printf '[%s] no idle codex panes (ready tasks=%d)\n' "$(date +%T)" "${#tasks[@]}"
     return
   fi
 
   local n=${#tasks[@]}
   (( ${#panes[@]} < n )) && n=${#panes[@]}
-  local i sub title
+  local i slug sub title
   for ((i=0; i<n; i++)); do
-    IFS=$'\t' read -r sub title <<<"${tasks[$i]}"
-    dispatch "${panes[$i]}" "$sub" "$title"
+    IFS=$'\t' read -r slug sub title <<<"${tasks[$i]}"
+    dispatch "${panes[$i]}" "$slug" "$sub" "$title"
   done
 }
 
