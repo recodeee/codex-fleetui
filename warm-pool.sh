@@ -126,12 +126,23 @@ import sys
 seen = set()
 with open(sys.argv[1], "r", encoding="utf-8") as fh:
     for raw in fh:
-        if raw.lstrip().startswith("#"):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
             continue
-        match = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", raw)
-        if match and match.group(0) not in seen:
-            seen.add(match.group(0))
-            print(match.group(0))
+        parts = stripped.split()
+        if len(parts) >= 2:
+            email, verdict = parts[0], parts[1]
+            if verdict != "healthy":
+                continue
+        else:
+            # Legacy pool files briefly contained bare emails.
+            match = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", stripped)
+            if not match:
+                continue
+            email = match.group(0)
+        if email not in seen:
+            seen.add(email)
+            print(email)
 PY
 }
 
@@ -229,7 +240,11 @@ spawn_slot() {
 
   local home="$WORK_ROOT/warm-$slot"
   local pane_cmd
-  pane_cmd="env CODEX_GUARD_BYPASS=1 CODEX_HOME='$home' CODEX_FLEET_AGENT_NAME='codex-warm-$slot' CODEX_FLEET_ACCOUNT_EMAIL='$email' codex \"\$(cat '$PROMPT_FILE')\""
+  if [[ "${WARM_POOL_SMOKE_MODE:-0}" == "1" ]]; then
+    pane_cmd="env CODEX_GUARD_BYPASS=1 CODEX_HOME='$home' CODEX_FLEET_AGENT_NAME='codex-warm-$slot' CODEX_FLEET_ACCOUNT_EMAIL='$email' codex exec --skip-git-repo-check \"\$(cat '$PROMPT_FILE')\" </dev/null; sleep 300"
+  else
+    pane_cmd="env CODEX_GUARD_BYPASS=1 CODEX_HOME='$home' CODEX_FLEET_AGENT_NAME='codex-warm-$slot' CODEX_FLEET_ACCOUNT_EMAIL='$email' codex \"\$(cat '$PROMPT_FILE')\""
+  fi
 
   local pane_id
   if window_exists; then
@@ -322,16 +337,11 @@ steal() {
       pane_id="$row_pane"
       break
     fi
-    [[ -z "$pane_id" ]] && pane_id="$row_pane"
   done < <(tmux list-panes -t "$SESSION:$WINDOW" -F '#{pane_id}|#{@panel}|#{@warm_email}' 2>/dev/null | awk -F '|' '$2 ~ /^\[warm-[0-9]+\]$/')
 
-  [[ -n "$pane_id" ]] || die "no warm pane available to steal"
+  [[ -n "$pane_id" ]] || die "no warm pane for email=$new_email available to steal"
   local warm_slot
   warm_slot="$(tmux show-option -pqv -t "$pane_id" '@warm_slot' 2>/dev/null || true)"
-  row_email="$(tmux show-option -pqv -t "$pane_id" '@warm_email' 2>/dev/null || true)"
-  if [[ -n "$row_email" && "$row_email" != "$new_email" ]]; then
-    warn "stealing pane with email=$row_email for requested email=$new_email"
-  fi
 
   tmux set-option -p -t "$pane_id" '@panel' "[codex-$new_aid]" >/dev/null 2>&1 || true
   tmux set-option -p -t "$pane_id" '@warm_stolen' '1' >/dev/null 2>&1 || true
@@ -361,6 +371,12 @@ smoke() {
   local smoke_session="${SESSION}-warm-smoke-$$"
   SESSION="$smoke_session"
   POOL_SIZE=1
+  WARM_POOL_SMOKE_MODE=1
+  PROMPT_FILE="$WORK_ROOT/warm-smoke-prompt.md"
+  mkdir -p "$(dirname "$PROMPT_FILE")"
+  cat >"$PROMPT_FILE" <<'EOF'
+Reply with exactly warm-smoke-ok and then stop.
+EOF
 
   tmux new-session -d -s "$SESSION" -n seed "sleep 3600"
   trap 'tmux kill-session -t "$SESSION" >/dev/null 2>&1 || true' EXIT
@@ -394,4 +410,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${WARM_POOL_SOURCE_ONLY:-0}" != "1" ]]; then
+  main "$@"
+fi
