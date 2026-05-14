@@ -29,7 +29,7 @@ INTERVAL_S=$(awk -v ms="$INTERVAL_MS" 'BEGIN{printf "%.3f", ms/1000}')
 
 _latest_plan() {
   python3 - "$REPO" <<'PYEOF'
-import os, sys, re, glob
+import os, sys, re, glob, json
 repo = sys.argv[1]
 plans = glob.glob(f"{repo}/openspec/plans/*/plan.json")
 def key(p):
@@ -38,6 +38,16 @@ def key(p):
     d = (int(m[1]), int(m[2]), int(m[3])) if m else (0, 0, 0)
     return (d, os.path.getmtime(p))
 plans.sort(key=key, reverse=True)
+# Skip empty plans (.tasks == []) — picking one renders an empty pane.
+for p in plans:
+    try:
+        with open(p) as fh:
+            data = json.load(fh)
+        if data.get("tasks"):
+            print(p)
+            sys.exit(0)
+    except Exception:
+        continue
 print(plans[0] if plans else "")
 PYEOF
 }

@@ -2,11 +2,11 @@
 # waves-anim — calm animated WAVES v2 view for the codex-fleet waves tab.
 #
 # Design rules (matches plan-anim sibling):
-#   - 1000ms tick, in-place repaint (no full clear)
-#   - Spinner only on actually-claimed sub-tasks
-#   - Per-wave gradient progress bars so done/claimed/available is unmissable
-#   - 5-worker map shows wave + sub-task assignment with status icon
-#   - Idle screen is mostly static; only live work animates
+#   - Calm 800ms tick
+#   - Rounded iOS-style wave cards arranged in two columns
+#   - Header/body/footer inside each card
+#   - Claimed/in-flight chips pulse softly; idle cards stay static
+#   - Changed-row repaint to avoid flicker
 #
 # Usage:
 #   bash scripts/codex-fleet/waves-anim.sh           # loop
@@ -14,7 +14,7 @@
 set -eo pipefail
 
 ONCE=0
-INTERVAL_MS=1000
+INTERVAL_MS=800
 for a in "$@"; do
   case "$a" in
     --once) ONCE=1 ;;
@@ -65,26 +65,31 @@ SUB_TITLES=(
 
 # ── palette ───────────────────────────────────────────────────────────────────
 B=$'\033[1m'; D=$'\033[2m'; R=$'\033[0m'
-DIM=$'\033[38;5;240m'
-WHITE=$'\033[38;5;253m'
-TEAL=$'\033[38;5;73m'
-ICE=$'\033[38;5;117m'
-MAG=$'\033[38;5;176m'
-RED=$'\033[38;5;203m'
+IOS_BLUE=$'\033[38;2;0;122;255m'
+IOS_GREEN=$'\033[38;2;52;199;89m'
+IOS_RED=$'\033[38;2;255;59;48m'
+IOS_ORANGE=$'\033[38;2;255;149;0m'
+IOS_YELLOW=$'\033[38;2;255;204;0m'
+IOS_GRAY=$'\033[38;2;142;142;147m'
+IOS_GRAY2=$'\033[38;2;174;174;178m'
+IOS_GRAY6=$'\033[38;2;242;242;247m'
+IOS_WHITE=$'\033[38;2;255;255;255m'
+DIM="$IOS_GRAY"
+WHITE="$IOS_WHITE"
+TEAL="$IOS_BLUE"
+ICE="$IOS_BLUE"
+MAG="$IOS_ORANGE"
+RED="$IOS_RED"
 GRAD=(
-  $'\033[38;5;203m'  # red
-  $'\033[38;5;209m'  # red-orange
-  $'\033[38;5;215m'  # orange
-  $'\033[38;5;221m'  # yellow
-  $'\033[38;5;185m'  # yellow-green
-  $'\033[38;5;150m'  # lime
-  $'\033[38;5;83m'   # bright green
+  "$IOS_RED"
+  "$IOS_RED"
+  "$IOS_ORANGE"
+  "$IOS_YELLOW"
+  "$IOS_YELLOW"
+  "$IOS_GREEN"
+  "$IOS_GREEN"
 )
-BG_PH13=$'\033[48;5;94m'
-BG_PH14=$'\033[48;5;24m'
-BG_PH15=$'\033[48;5;52m'
-
-SPINNER=(◐ ◓ ◑ ◒)
+CARD_WIDTH=42
 
 load_state() {
   declare -gA SUBST
@@ -126,19 +131,44 @@ wave_color() {
   fi
 }
 
-# Status chip for a single sub-task, with optional spinner frame
-chip() {
-  local i="$1" f="$2"
-  local s="${SUBST[$i]%%|*}"
+strip_ansi() {
+  sed -E $'s/\x1B\\[[0-9;]*m//g' <<<"${1:-}"
+}
+
+visible_len() {
+  local clean
+  clean=$(strip_ansi "${1:-}")
+  printf '%d' "${#clean}"
+}
+
+pulse_color() {
+  local f="$1"
+  if (( (f / 2) % 2 == 0 )); then
+    printf '%s' "$IOS_BLUE"
+  else
+    printf '%s%s' "$D" "$IOS_BLUE"
+  fi
+}
+
+status_color() {
+  local s="$1" f="$2"
   case "$s" in
-    completed) printf '%s●%s' "${GRAD[6]}" "$R" ;;
-    claimed)   printf '%s%s%s' "${GRAD[3]}" "${SPINNER[$(( (f / 2) % 4 ))]}" "$R" ;;
-    blocked)   printf '%s✕%s' "$RED" "$R" ;;
-    *)         printf '%s◇%s' "$DIM" "$R" ;;
+    completed) printf '%s' "$IOS_GREEN" ;;
+    claimed)   pulse_color "$f" ;;
+    blocked)   printf '%s' "$IOS_RED" ;;
+    *)         printf '%s' "$IOS_GRAY2" ;;
   esac
 }
 
-# Fixed-width progress bar — filled cells gradient-colored
+# Rounded status chip for a single sub-task. Only claimed chips pulse.
+chip() {
+  local i="$1" f="$2"
+  local s="${SUBST[$i]%%|*}"
+  local col; col=$(status_color "$s" "$f")
+  printf '%s◖sub-%s◗%s' "$col" "$i" "$R"
+}
+
+# Mini iOS progress rail for a wave footer.
 fill_bar() {
   local n="$1" total="$2" width="$3"
   local col_idx pct=0; (( total > 0 )) && pct=$(( n * 100 / total ))
@@ -174,14 +204,101 @@ wave_chips() {
   printf '%s' "$out"
 }
 
-# Phase BG for a sub-task index
-phase_bg() {
-  local i="$1"
-  case "${PHASE_OF[$i]}" in
-    0) printf '%s' "$BG_PH13" ;;
-    1) printf '%s' "$BG_PH14" ;;
-    2) printf '%s' "$BG_PH15" ;;
-  esac
+card_line() {
+  local content="${1:-}" width="${2:-$CARD_WIDTH}"
+  local content_width=$(( width - 4 ))
+  local len pad
+  len=$(visible_len "$content")
+  pad=$(( content_width - len ))
+  (( pad < 0 )) && pad=0
+  printf '%s│%s %s%*s %s│%s' "$IOS_GRAY2" "$R" "$content" "$pad" "" "$IOS_GRAY2" "$R"
+}
+
+card_rule() {
+  local top="${1:-1}" width="${2:-$CARD_WIDTH}"
+  local fill_len=$(( width - 2 ))
+  local fill
+  printf -v fill '%*s' "$fill_len" ""
+  fill=${fill// /─}
+  if [[ "$top" == "1" ]]; then
+    printf '%s╭%s╮%s' "$IOS_GRAY2" "$fill" "$R"
+  else
+    printf '%s╰%s╯%s' "$IOS_GRAY2" "$fill" "$R"
+  fi
+}
+
+wave_status_label() {
+  local done_n="$1" total="$2" claimed_n="$3" f="$4"
+  if (( done_n == total )); then
+    printf '%sdone%s' "$IOS_GREEN" "$R"
+  elif (( claimed_n > 0 )); then
+    printf '%sin flight%s' "$(pulse_color "$f")" "$R"
+  elif (( done_n > 0 )); then
+    printf '%spartial%s' "$IOS_ORANGE" "$R"
+  else
+    printf '%swaiting%s' "$IOS_GRAY2" "$R"
+  fi
+}
+
+wave_card() {
+  local w="$1" f="$2"
+  local members="${WAVE_MEMBERS[$w]}"
+  local total=0 done_n=0 claimed_n=0
+  local i
+  for i in $members; do
+    total=$((total+1))
+    case "${SUBST[$i]%%|*}" in
+      completed) done_n=$((done_n+1)) ;;
+      claimed)   claimed_n=$((claimed_n+1)) ;;
+    esac
+  done
+  local wc; wc=$(wave_color "$done_n" "$total")
+  local task_word="tasks"
+  [[ "$total" == "1" ]] && task_word="task"
+  local status; status=$(wave_status_label "$done_n" "$total" "$claimed_n" "$f")
+  local chips; chips=$(wave_chips "$f" $members)
+  local rail; rail=$(fill_bar "$done_n" "$total" 12)
+
+  card_rule 1
+  printf '\n'
+  card_line "${B}${wc}W${w}${R} ${DIM}·${R} ${total} ${task_word} ${DIM}·${R} ${status}"
+  printf '\n'
+  card_line "$chips"
+  printf '\n'
+  card_line "${DIM}${done_n}/${total}${R} ${rail}"
+  printf '\n'
+  card_rule 0
+  printf '\n'
+}
+
+render_card_pair() {
+  local left_w="$1" right_w="$2" f="$3"
+  local -a left=() right=()
+  mapfile -t left < <(wave_card "$left_w" "$f")
+  mapfile -t right < <(wave_card "$right_w" "$f")
+  local i
+  for i in "${!left[@]}"; do
+    printf '  %s  %s\n' "${left[$i]}" "${right[$i]}"
+  done
+}
+
+declare -a PREV_FRAME=()
+
+paint_frame() {
+  local frame="$1"
+  local -a lines=()
+  mapfile -t lines <<< "$frame"
+
+  local i
+  for i in "${!lines[@]}"; do
+    if [[ "${PREV_FRAME[$i]-}" != "${lines[$i]}" ]]; then
+      printf '\033[%d;1H%s\033[K' "$((i + 1))" "${lines[$i]}"
+    fi
+  done
+  for ((i=${#lines[@]}; i<${#PREV_FRAME[@]}; i++)); do
+    printf '\033[%d;1H\033[K' "$((i + 1))"
+  done
+  PREV_FRAME=("${lines[@]}")
 }
 
 render() {
@@ -199,56 +316,14 @@ render() {
   done
   local total_available=$(( 12 - total_done - total_claimed ))
 
-  printf '\033[H'
-  printf '%s%s╭ WAVES%s  %sparallel execution model%s  %s·%s  %s%s%s   %slive%s   %s%s%s\n' \
-    "$B" "$TEAL" "$R" "$DIM" "$R" "$DIM" "$R" "$WHITE" "$PLAN_SLUG" "$R" "${GRAD[6]}" "$R" "$DIM" "$ts" "$R"
+  printf '%s%sWAVES · parallel execution · live%s  %s%s%s  %s%s%s\n' \
+    "$B" "$TEAL" "$R" "$WHITE" "$PLAN_SLUG" "$R" "$DIM" "$ts" "$R"
   printf '\n'
 
-  # Column header
-  printf '  %s%-4s  %-4s  %-12s  %-8s  %-22s  %s%s\n' \
-    "$B" "wave" "n" "members" "done" "progress" "status" "$R"
-  printf '  %s──────────────────────────────────────────────────────────────────────────────%s\n' "$TEAL" "$R"
-
-  # One row per wave
-  for w in 1 2 3 4 5 6 7 8; do
-    local members="${WAVE_MEMBERS[$w]}"
-    local total=0 done_n=0 claimed_n=0
-    for i in $members; do
-      total=$((total+1))
-      case "${SUBST[$i]%%|*}" in
-        completed) done_n=$((done_n+1)) ;;
-        claimed)   claimed_n=$((claimed_n+1)) ;;
-      esac
-    done
-    local wc; wc=$(wave_color "$done_n" "$total")
-    local sub_list=""
-    for i in $members; do sub_list+="sub-$i,"; done
-    sub_list="${sub_list%,}"
-    local chips; chips=$(wave_chips "$f" $members)
-    local bar; bar=$(fill_bar "$done_n" "$total" 16)
-    # status text
-    local status
-    if (( done_n == total )); then
-      status="${GRAD[6]}✓ all done${R}"
-    elif (( claimed_n > 0 )); then
-      status="${GRAD[3]}${claimed_n} in flight${R} ${DIM}·${R} ${DIM}$(( total - done_n - claimed_n )) waiting${R}"
-    elif (( done_n > 0 )); then
-      status="${GRAD[4]}${done_n}/${total}${R} ${DIM}$(( total - done_n )) waiting${R}"
-    else
-      status="${DIM}${total} waiting${R}"
-    fi
-    printf '  %s%sW%d%s    %s%-4s%s %-22s  %s%d/%d%s   %s   %s\n' \
-      "$B" "$wc" "$w" "$R" \
-      "$wc" "${total}t" "$R" \
-      "$sub_list" \
-      "$B" "$done_n" "$total" "$R" \
-      "$bar" \
-      "$status"
-    # second line with chips under the wave row, indented
-    printf '          %s%schips%s  %s\n' "$DIM" "" "$R" "$chips"
-  done
-
-  printf '  %s──────────────────────────────────────────────────────────────────────────────%s\n' "$TEAL" "$R"
+  render_card_pair 1 5 "$f"
+  render_card_pair 2 6 "$f"
+  render_card_pair 3 7 "$f"
+  render_card_pair 4 8 "$f"
 
   # Concurrency profile + live counts
   printf '  %sMAX PARALLEL%s  %sW2 = 4%s   %s(sub-1, sub-2, sub-3, sub-4 unblocked together)%s\n' \
@@ -280,11 +355,10 @@ render() {
             [[ "$i" == "$sub" ]] && cur_w=$w
           done
         done
-        local sp="${SPINNER[$(( (f / 2) % 4 ))]}"
-        printf '    %scodex-%-16s%s   %s→%s  %s%sW%s%s %s%s%s sub-%s  %s%s%s\n' \
+        printf '    %scodex-%-16s%s   %s→%s  %s%sW%s%s %s●%s sub-%s  %s%s%s\n' \
           "$ICE" "$aid" "$R" "$DIM" "$R" \
           "$B" "$ICE" "$cur_w" "$R" \
-          "${GRAD[3]}" "$sp" "$R" "$sub" \
+          "$IOS_BLUE" "$R" "$sub" \
           "$DIM" "${SUB_TITLES[$sub]}" "$R"
       else
         printf '    %scodex-%-16s%s   %s·%s  %spolling…%s\n' \
@@ -298,12 +372,9 @@ render() {
   printf '\n'
 
   # Legend
-  printf '  %sLEGEND%s  %sW#%s wave  bar length ∝ done/total   %s●%s done  %s%s%s claimed  %s◇%s available  %s✕%s blocked\n' \
-    "$DIM" "$R" "$ICE" "$R" "${GRAD[6]}" "$R" "${GRAD[3]}" "${SPINNER[$(( (f / 2) % 4 ))]}" "$R" "$DIM" "$R" "$RED" "$R"
+  printf '  %sLEGEND%s  %s◖sub-N◗%s chip   %s◾%s rail   %sdone%s   %sclaimed pulse%s   %savailable%s   %sblocked%s\n' \
+    "$DIM" "$R" "$IOS_GRAY2" "$R" "$IOS_GREEN" "$R" "$IOS_GREEN" "$R" "$IOS_BLUE" "$R" "$IOS_GRAY2" "$R" "$RED" "$R"
   printf '  %srefresh=%dms%s\n' "$DIM" "$INTERVAL_MS" "$R"
-
-  # Wipe leftover lines from prior frame
-  printf '\033[J'
 }
 
 if (( ONCE == 1 )); then
@@ -313,7 +384,7 @@ else
   trap 'printf "\033[?25h"; exit' INT TERM EXIT
   f=0
   while true; do
-    render "$f"
+    paint_frame "$(render "$f")"
     f=$((f+1))
     sleep "$INTERVAL_S"
   done
