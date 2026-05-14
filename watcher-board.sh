@@ -143,9 +143,14 @@ for line in sh("codex-auth", "list").splitlines():
     if not h5 or not wk: continue
     quotas[em.group(1)] = (int(h5.group(1)), int(wk.group(1)))
 
-# ── 5. Cap pool + healthy pool ────────────────────────────────────────
+# ── 5. Cap pool + healthy pool + per-email probe map ─────────────────
+# probe_map: {email -> (verdict, eta_str_or_None)} — used by FLEET PANES card
+# below as the live "5h" signal, since codex-auth list's 5h column reports the
+# API meter (often 100% used while the rolling cap is still fine) and is
+# misleading. cap-probe's verdict comes from an actual `codex exec` round-trip.
 cap_pool = []
 healthy_pool = []
+probe_map = {}
 for cf in glob.glob(f"{PROBE_CACHE}/*.json"):
     try:
         d = json.load(open(cf))
@@ -153,17 +158,20 @@ for cf in glob.glob(f"{PROBE_CACHE}/*.json"):
         continue
     email = os.path.basename(cf).rsplit(".", 1)[0]
     v = d.get("verdict", "unknown")
+    eta = None
     if v == "healthy":
         healthy_pool.append(email)
     elif v == "capped":
         until = d.get("until_epoch", 0) or 0
         if until <= now:
-            continue
-        delta = until - now
-        if delta > 24*3600: eta = f"{delta//(24*3600)}d"
-        elif delta > 3600:  eta = f"{delta//3600}h"
-        else:               eta = f"{delta//60}m"
-        cap_pool.append((until, email, d.get("until_text", "—"), eta))
+            v = "unknown"
+        else:
+            delta = until - now
+            if delta > 24*3600: eta = f"{delta//(24*3600)}d"
+            elif delta > 3600:  eta = f"{delta//3600}h"
+            else:               eta = f"{delta//60}m"
+            cap_pool.append((until, email, d.get("until_text", "—"), eta))
+    probe_map[email] = (v, eta)
 cap_pool.sort()
 
 working_n  = sum(1 for p in panes if p["state"] in ("working","approval"))
@@ -311,22 +319,29 @@ state_meta = {
 }
 out.append(card_top("FLEET PANES"))
 hdr = (f"{D}PANE  AGENT                          STATE          "
-       f"5h / WEEKLY      ACCOUNT{R}")
+       f"5h-LIVE   WK-USED   ACCOUNT{R}")
 out.append(card_row(hdr))
+# 5h column shows the live cap-probe verdict (healthy/capped/unknown) instead
+# of codex-auth's API-meter percentage. WK-USED matches the value `codex-auth
+# list` prints for `weekly=`, so the watcher reads identically to the shell.
 for p in panes:
     bg, icon, label = state_meta.get(p["state"], (BG_GRAY, "◇", p["state"]))
     email = id_to_email.get(p["agent"], "")
-    h5, wk = quotas.get(email, (None, None))
-    if h5 is None:
-        q_avail = f"{D}—{' '*16}{R}"
+    _h5, wk = quotas.get(email, (None, None))
+    pv, peta = probe_map.get(email, ("unknown", None))
+    if pv == "healthy":
+        five_chip = chip("✓ OK", BG_GREEN)
+    elif pv == "capped":
+        five_chip = chip(f"✕ {peta or 'cap'}", BG_RED)
     else:
-        # AVAILABLE-pct semantic: 100% = full bucket, green; 0% = capped, red
-        h5_a = 100 - h5
-        wk_a = 100 - wk
-        def qcol(v):
-            return IOS_GREEN if v >= 60 else (IOS_YELLOW if v >= 25 else IOS_RED)
-        q_avail = (f"{qcol(h5_a)}{h5_a:>3}%{R}{D} / {R}"
-                   f"{qcol(wk_a)}{wk_a:>3}%{R}     ")
+        five_chip = chip("? ??", BG_GRAY)
+    five_pad = max(0, 9 - visible_len(five_chip))
+    if wk is None:
+        wk_cell = f"{D}  —  {R}"
+    else:
+        wk_col = IOS_GREEN if wk <= 40 else (IOS_YELLOW if wk <= 75 else IOS_RED)
+        wk_cell = f"{wk_col}{wk:>3}%{R} "
+    q_avail = f"{five_chip}{' '*five_pad} {wk_cell}  "
     email_short = email.split("@")[0] if email else "—"
     pid_short = p["pid"].lstrip("%")[:4]
     agent_disp = p["agent"][:28].ljust(28)
