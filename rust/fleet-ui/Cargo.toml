@@ -8,6 +8,11 @@ publish = false
 [dependencies]
 crossterm = "0.28"
 ratatui = "0.28"
+# tab_strip reads /tmp/claude-viz/fleet-tab-counters.json for the per-tab badge
+# counters — re-introduced here when the strip module was reopened for the
+# fleet-tab-strip binary that hosts the overview header pane.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 insta = "1"

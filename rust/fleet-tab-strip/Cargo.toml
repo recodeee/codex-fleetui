@@ -1,0 +1,15 @@
+[package]
+name = "fleet-tab-strip"
+version = "0.0.1"
+edition = "2021"
+description = "Thin ratatui binary that renders fleet_ui::tab_strip into a 1-row tmux header pane — used to give windows that aren't a full ratatui dashboard (e.g. the overview worker grid) the same navigation strip the dashboards draw."
+publish = false
+
+[[bin]]
+name = "fleet-tab-strip"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+fleet-ui = { path = "../fleet-ui" }

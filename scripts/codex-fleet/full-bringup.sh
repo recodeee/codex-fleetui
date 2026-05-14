@@ -400,25 +400,92 @@ tmux set-option -w -t "$SESSION:overview" remain-on-exit on
 # global numeric `status N` style-tabs sets, clamping back to 1 row and
 # silently hiding the tab strip.
 
-# 9. Split overview into N panes (default 2 columns x 4 rows = 8)
-ROWS=$((N_PANES / 2))
-tmux split-window -h -t "$SESSION:overview" -p 50
-# Column A: split horizontally (rows-1) times
-for i in $(seq 1 $((ROWS - 1))); do
-  pct=$((100 - 100 / (ROWS - i + 1)))
-  tmux split-window -v -t "$SESSION:overview.$((i - 1))" -p "$pct"
-done
-# Column B: similar
-COL_B_START=$ROWS
-for i in $(seq 1 $((ROWS - 1))); do
-  pct=$((100 - 100 / (ROWS - i + 1)))
-  tmux split-window -v -t "$SESSION:overview.$((COL_B_START + i - 1))" -p "$pct"
-done
-tmux select-layout -t "$SESSION:overview" tiled
+# 8.5 Reserve a 1-row top pane on overview for fleet-tab-strip. The five
+# ratatui dashboards (windows 1-5) draw the in-binary tab strip themselves;
+# overview is a tmux worker grid (no ratatui binary) so it needs an
+# explicit header pane to carry the same nav surface. Split MUST happen
+# now, while overview has a single pane spanning the full window — once
+# the worker tile lands, splitting above a column produces a zero-height
+# pane (no caller can shrink the rest of the column to make room).
+# CODEX_FLEET_OVERVIEW_HEADER_ROWS=0 skips the header entirely.
+HEADER_ROWS="${CODEX_FLEET_OVERVIEW_HEADER_ROWS:-1}"
+HEADER_PANE_ID=""
+WORKER_ROOT_PANE_ID="$(tmux list-panes -t "$SESSION:overview" -F '#{pane_id}' | head -1)"
+if (( HEADER_ROWS > 0 )); then
+  STRIP_BIN="$REPO/rust/target/release/fleet-tab-strip"
+  [ -x "$STRIP_BIN" ] || STRIP_BIN="$REPO/rust/target/debug/fleet-tab-strip"
+  if [ -x "$STRIP_BIN" ]; then
+    tmux split-window -vb -t "$WORKER_ROOT_PANE_ID" -l "$HEADER_ROWS" \
+      "env CODEX_FLEET_SESSION='$SESSION' '$STRIP_BIN'"
+    # `split-window -vb` puts the new pane ABOVE; it now has the smallest pane_top.
+    HEADER_PANE_ID="$(tmux list-panes -t "$SESSION:overview" -F '#{pane_top}|#{pane_id}' \
+      | sort -t'|' -k1,1n | head -1 | cut -d'|' -f2)"
+    tmux set-option -p -t "$HEADER_PANE_ID" '@panel' '[codex-fleet-tab-strip]'
+    tmux set-option -p -t "$HEADER_PANE_ID" remain-on-exit off
+    # Refocus the worker root so subsequent split-window calls target it
+    # (not the header pane that split-window just left focused).
+    tmux select-pane -t "$WORKER_ROOT_PANE_ID"
+    log "overview header pane installed → $HEADER_PANE_ID ($HEADER_ROWS row(s), bin=$STRIP_BIN)"
+  else
+    warn "fleet-tab-strip not built — overview header skipped (run: cargo build --release -p fleet-tab-strip)"
+  fi
+fi
 
-# 10. Spawn codex into each pane with CODEX_GUARD_BYPASS=1
+# 9. Split overview into N panes (default 2 columns x 4 rows = 8). All
+# splits target the captured worker root pane ID (not `overview.N` indices)
+# so the header pane (if any) is never accidentally targeted by an index
+# the header now occupies. The downward cascade in each column tracks the
+# newly-created bottom-most worker pane by `pane_top` lookup so it works
+# regardless of how tmux assigns indices.
+ROWS=$((N_PANES / 2))
+tmux split-window -h -t "$WORKER_ROOT_PANE_ID" -p 50
+
+# Identify the two columns by their left coordinate. Column A is the
+# worker root (still left); column B is the newest non-header pane with a
+# larger `pane_left` value. Lookups exclude the header marker so the
+# selectors stay correct whether the header is present or not.
+COL_A_LEFT="$(tmux display-message -t "$WORKER_ROOT_PANE_ID" -p '#{pane_left}')"
+col_a_id="$WORKER_ROOT_PANE_ID"
+col_b_id="$(tmux list-panes -t "$SESSION:overview" -F '#{@panel}|#{pane_left}|#{pane_id}' \
+  | awk -F'|' -v lefte="$COL_A_LEFT" \
+      '$1 != "[codex-fleet-tab-strip]" && ($2 + 0) > (lefte + 0) { print $3 }' \
+  | head -1)"
+COL_B_LEFT="$(tmux display-message -t "$col_b_id" -p '#{pane_left}')"
+
+# Column A: split downward ROWS-1 times. After each split, capture the
+# bottom-most pane in that column as the next cursor.
+for i in $(seq 1 $((ROWS - 1))); do
+  pct=$((100 - 100 / (ROWS - i + 1)))
+  tmux split-window -v -t "$col_a_id" -p "$pct"
+  col_a_id="$(tmux list-panes -t "$SESSION:overview" -F '#{@panel}|#{pane_left}|#{pane_top}|#{pane_id}' \
+    | awk -F'|' -v lefte="$COL_A_LEFT" \
+        '$1 != "[codex-fleet-tab-strip]" && $2 == lefte' \
+    | sort -t'|' -k3,3nr | head -1 | cut -d'|' -f4)"
+done
+
+# Column B: mirror Column A.
+for i in $(seq 1 $((ROWS - 1))); do
+  pct=$((100 - 100 / (ROWS - i + 1)))
+  tmux split-window -v -t "$col_b_id" -p "$pct"
+  col_b_id="$(tmux list-panes -t "$SESSION:overview" -F '#{@panel}|#{pane_left}|#{pane_top}|#{pane_id}' \
+    | awk -F'|' -v lefte="$COL_B_LEFT" \
+        '$1 != "[codex-fleet-tab-strip]" && $2 == lefte' \
+    | sort -t'|' -k3,3nr | head -1 | cut -d'|' -f4)"
+done
+
+# Tile the workers. With a header installed, `select-layout tiled` would
+# flatten the layout and lose the header's 1-row constraint; skip it then
+# and rely on the proportional `-p` splits above for an even worker grid.
+if [ -z "$HEADER_PANE_ID" ]; then
+  tmux select-layout -t "$SESSION:overview" tiled
+fi
+
+# 10. Spawn codex into each pane with CODEX_GUARD_BYPASS=1. Filter the
+# pane list to exclude the header pane so workers don't get spawned on
+# top of the strip.
 log "launching $N_PANES codex workers"
-PANE_IDS=( $(tmux list-panes -t "$SESSION:overview" -F '#{pane_id}') )
+PANE_IDS=( $(tmux list-panes -t "$SESSION:overview" -F '#{@panel}|#{pane_id}' \
+  | awk -F'|' '$1 != "[codex-fleet-tab-strip]" { print $2 }') )
 i=0
 while IFS='|' read -r id email tier specialty; do
   [ -z "$id" ] && continue

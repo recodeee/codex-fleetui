@@ -199,6 +199,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-tab-strip"
+version = "0.0.1"
+dependencies = [
+ "crossterm",
+ "fleet-ui",
+ "ratatui",
+]
+
+[[package]]
 name = "fleet-tui-poc"
 version = "0.0.1"
 dependencies = [
@@ -213,6 +222,8 @@ dependencies = [
  "crossterm",
  "insta",
  "ratatui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

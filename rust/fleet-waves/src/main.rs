@@ -1,11 +1,16 @@
 // fleet-waves — Gantt-style spawn-timeline view of the active openspec plan.
 //
-// Layout (no in-binary tab strip per PR #30 — tmux's status bar owns nav):
-//   rows 0..=2:  header card — caption "WAVES", big "Wn · status · NN% of
+// Layout (post-PR #35 — tmux status bar is now hidden, so the binary owns
+// the nav surface again):
+//   row 0:       in-binary tab strip — six pills matching the actual
+//                full-bringup.sh windows (overview / fleet / plan / waves /
+//                watcher / design). Left-click on a pill fires
+//                `tmux select-window -t codex-fleet:<idx>`.
+//   rows 1..=3:  header card — caption "WAVES", big "Wn · status · NN% of
 //                plan", right-aligned action pills (Re-spawn / Spawn next
-//                wave). Pills are visual only — wiring needs a dispatcher
-//                this binary doesn't have yet.
-//   rows 3..=n:  gantt grid wrapped in a rounded IOS_HAIRLINE block, one row
+//                wave). The action pills are visual only — wiring needs a
+//                dispatcher this binary doesn't have yet.
+//   rows 4..=n:  gantt grid wrapped in a rounded IOS_HAIRLINE block, one row
 //                per Kahn topological wave. Each row: wave label, status
 //                chip, cascade-positioned bar with the wave's first task
 //                title, agent-initial badges on the right.
@@ -28,10 +33,12 @@
 //     in plan.json today, so the mockup's "+Nm" duration axis is omitted
 //     rather than rendered with a fake number.
 
-use std::{io, path::PathBuf, time::Duration};
+use std::{io, path::PathBuf, process::Command, time::Duration};
 
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -49,8 +56,24 @@ use ratatui::{
     Terminal,
 };
 
+// In-binary tab strip — re-introduced post-PR #35 (tmux status bar is now
+// hidden, so the binary owns the nav surface). Tabs mirror the actual tmux
+// windows in `full-bringup.sh`. `ACTIVE_TAB` points at `waves` so its pill
+// renders in IOS_TINT while the others stay muted.
+const TABS: &[(&str, &str)] = &[
+    ("0", "overview"),
+    ("1", "fleet"),
+    ("2", "plan"),
+    ("3", "waves"),
+    ("4", "watcher"),
+    ("5", "design"),
+];
+const ACTIVE_TAB: usize = 3;
+
 struct App {
     plan: Option<Plan>,
+    /// Click-target table populated each render: rect → tmux window index.
+    tab_rects: Vec<(Rect, usize)>,
 }
 
 impl App {
@@ -60,8 +83,43 @@ impl App {
             .or_else(|| Some("/home/deadpool/Documents/recodee".to_string()))
             .and_then(|root| plan::newest_plan(&PathBuf::from(root)).ok().flatten())
             .and_then(|p| plan::load(&p).ok());
-        Self { plan }
+        Self { plan, tab_rects: Vec::new() }
     }
+
+    fn handle_click(&self, col: u16, row: u16) -> Option<usize> {
+        self.tab_rects
+            .iter()
+            .find(|(r, _)| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height)
+            .map(|(_, i)| *i)
+    }
+}
+
+fn render_tab_strip(frame: &mut ratatui::Frame, area: Rect, active: usize, app: &mut App) {
+    app.tab_rects.clear();
+    let mut x = area.x;
+    for (i, (idx, name)) in TABS.iter().enumerate() {
+        let label = format!(" {} {} ", idx, name);
+        let w = label.chars().count() as u16;
+        if x + w + 1 >= area.x + area.width {
+            break;
+        }
+        let r = Rect { x, y: area.y, width: w, height: 1 };
+        let style = if i == active {
+            Style::default().fg(IOS_FG).bg(IOS_TINT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(IOS_FG_MUTED).bg(IOS_CHIP_BG)
+        };
+        frame.render_widget(Paragraph::new(Span::styled(label, style)), r);
+        app.tab_rects.push((r, i));
+        x += w + 1;
+    }
+}
+
+fn select_window(idx: usize) {
+    let session = std::env::var("CODEX_FLEET_SESSION").unwrap_or_else(|_| "codex-fleet".to_string());
+    let _ = Command::new("tmux")
+        .args(["select-window", "-t", &format!("{}:{}", session, idx)])
+        .status();
 }
 
 // Kahn topological levels — assign each subtask to a wave such that all
@@ -418,35 +476,38 @@ fn render_wave_bar(
     }
 }
 
-fn render(frame: &mut ratatui::Frame, app: &App) {
+fn render(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
-    if area.width < 40 || area.height < 6 {
+    if area.width < 40 || area.height < 7 {
         return;
     }
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1), // tab strip
             Constraint::Length(3), // header: caption + title + spacer
             Constraint::Min(0),    // gantt card
         ])
         .split(area);
+
+    render_tab_strip(frame, rows[0], ACTIVE_TAB, app);
 
     let waves_v: Vec<Vec<u32>> = match app.plan.as_ref() {
         Some(p) => waves(&p.tasks),
         None => Vec::new(),
     };
 
-    render_header(frame, rows[0], app.plan.as_ref(), &waves_v);
+    render_header(frame, rows[1], app.plan.as_ref(), &waves_v);
 
     if let Some(plan) = app.plan.as_ref() {
-        render_gantt(frame, rows[1], plan, &waves_v);
+        render_gantt(frame, rows[2], plan, &waves_v);
     } else {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "  no plan.json under openspec/plans/*/plan.json",
                 Style::default().fg(IOS_FG_FAINT),
             )),
-            rows[1],
+            rows[2],
         );
     }
 }
@@ -454,24 +515,34 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
 fn main() -> io::Result<()> {
     enable_raw_mode()?;
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen)?;
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
-    let app = App::new();
+    let mut app = App::new();
     let result: io::Result<()> = (|| {
         loop {
-            terminal.draw(|f| render(f, &app))?;
+            terminal.draw(|f| render(f, &mut app))?;
             if event::poll(Duration::from_millis(250))? {
-                if let Event::Key(k) = event::read()? {
-                    if matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
-                        break;
+                match event::read()? {
+                    Event::Key(k) => {
+                        if matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
+                            break;
+                        }
                     }
+                    Event::Mouse(m) => {
+                        if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+                            if let Some(idx) = app.handle_click(m.column, m.row) {
+                                select_window(idx);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
         Ok(())
     })();
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     result
 }
