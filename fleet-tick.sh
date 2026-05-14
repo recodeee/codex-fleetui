@@ -464,17 +464,17 @@ while true; do
       h5=${pair%% *}; wk=${pair##* }
       aid=${AID[$email]}
       st=${ALIVE[$aid]:-}
-      # 5h / WEEKLY columns are rendered as AVAILABLE-tokens-pct so the
-      # natural read "100% = full → green, 0% = empty → red" matches the
-      # battery metaphor. codex-auth gives us % USED; flip it on display.
+      # Display raw USED-% from codex-auth list, no inversion. The previous
+      # 100-x flip rendered every account as "0% / N%" remaining, which read
+      # as "exhausted" even when the cap was fine — and disagreed with what
+      # the operator sees in their shell. Color comes from ios_axis_color
+      # with axis=usage: high% = red (bad), low% = green.
       wk_num=${wk%\%}; h5_num=${h5%\%}
       [[ "$wk_num" =~ ^[0-9]+$ ]] || wk_num=0
       [[ "$h5_num" =~ ^[0-9]+$ ]] || h5_num=0
-      h5_avail=$(( 100 - h5_num )); (( h5_avail < 0 )) && h5_avail=0
-      wk_avail=$(( 100 - wk_num )); (( wk_avail < 0 )) && wk_avail=0
-      h5="${h5_avail}%"; wk="${wk_avail}%"
-      wkc=$(pct_color "$wk_avail"); h5c=$(pct_color "$h5_avail")
-      wk_bar=$(ios_progress_rail "$wk_avail" available); h5_bar=$(ios_progress_rail "$h5_avail" available)
+      h5="${h5_num}%"; wk="${wk_num}%"
+      h5c=$(ios_axis_color "$h5_num" usage); wkc=$(ios_axis_color "$wk_num" usage)
+      h5_bar=$(ios_progress_rail "$h5_num" usage); wk_bar=$(ios_progress_rail "$wk_num" usage)
       # Worker status
       live_kind="idle"
       if [[ -n "${EXHAUSTED[$aid]:-}" ]]; then
@@ -539,7 +539,7 @@ while true; do
     local email aid row st pair wk_pct wk_av pidx
     local -a EMAILS_VIEW=()
     ios_card_top "$title"
-    ios_card_row "${B}${TEAL}ACCOUNT       5h      WEEKLY    WORKER       WORKING ON${R}"
+    ios_card_row "${B}${TEAL}ACCOUNT       5h-USED WK-USED   WORKER       WORKING ON${R}"
     ios_card_row "${IOS_GRAY6}────────────────────────────────────────────────────────────${R}"
 
     # ACTIVE keeps the on-screen order codex panes occupy (left-to-right by
