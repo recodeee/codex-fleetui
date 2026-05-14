@@ -18,6 +18,7 @@
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use fleet_data::plan::{self, Plan, Subtask};
@@ -42,8 +43,12 @@ use tuirealm::subscription::{EventClause, Sub, SubClause};
 use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 
 const DEFAULT_PIN_FILE: &str = "/tmp/claude-viz/plan-tree-pin.txt";
-const DEFAULT_REPO_ROOT: &str = "/home/deadpool/Documents/codex-fleet";
+const DEFAULT_REPO_ROOT: &str = "/home/deadpool/Documents/codex-fleetui";
 const RELOAD_EVERY: Duration = Duration::from_millis(1000);
+/// Recent-merges section refreshes less often than plan state — a git
+/// invocation per second is fine but wasteful. 5s feels live without
+/// burning CPU.
+const RELOAD_GIT_EVERY: Duration = Duration::from_secs(5);
 const PILL_WIDTH: u16 = 22;
 
 // ---------- Messages and component IDs ----------
@@ -65,6 +70,11 @@ struct PlanView {
     plan: Option<Plan>,
     plan_path: Option<PathBuf>,
     last_reload: Instant,
+    /// Last 5 lines of `git log --oneline origin/main`. Rendered in the
+    /// RECENT MERGES footer card so the operator sees PR landings without
+    /// leaving the dashboard.
+    recent_prs: Vec<String>,
+    last_git_reload: Instant,
     props: Props,
 }
 
@@ -72,22 +82,79 @@ impl Default for PlanView {
     fn default() -> Self {
         let plan_path = resolve_plan_path();
         let plan = plan_path.as_ref().and_then(|p| plan::load(p).ok());
-        Self { plan, plan_path, last_reload: Instant::now(), props: Props::default() }
+        let mut view = Self {
+            plan,
+            plan_path,
+            last_reload: Instant::now(),
+            recent_prs: Vec::new(),
+            // Force the first git refresh on the next tick by backdating.
+            last_git_reload: Instant::now()
+                .checked_sub(RELOAD_GIT_EVERY)
+                .unwrap_or_else(Instant::now),
+            props: Props::default(),
+        };
+        view.refresh_git();
+        view
     }
 }
 
 impl PlanView {
     fn maybe_reload(&mut self) {
-        if self.last_reload.elapsed() < RELOAD_EVERY {
-            return;
+        if self.last_reload.elapsed() >= RELOAD_EVERY {
+            self.last_reload = Instant::now();
+            if let Some(p) = &self.plan_path {
+                if let Ok(plan) = plan::load(p) {
+                    self.plan = Some(plan);
+                }
+            }
         }
-        self.last_reload = Instant::now();
-        if let Some(p) = &self.plan_path {
-            if let Ok(plan) = plan::load(p) {
-                self.plan = Some(plan);
+        if self.last_git_reload.elapsed() >= RELOAD_GIT_EVERY {
+            self.last_git_reload = Instant::now();
+            self.refresh_git();
+        }
+    }
+
+    /// Shell `git log --oneline -5 origin/main` against the active repo
+    /// root. Cheap (<50ms on this repo) and fenced to once per ~5s by
+    /// [`Self::maybe_reload`], so the per-render cost stays near zero.
+    fn refresh_git(&mut self) {
+        let repo = std::env::var("CODEX_FLEET_PLAN_REPO_ROOT")
+            .or_else(|_| std::env::var("FLEET_PLAN_REPO_ROOT"))
+            .unwrap_or_else(|_| DEFAULT_REPO_ROOT.to_string());
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["log", "--oneline", "-5", "origin/main"])
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                self.recent_prs = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(|s| s.to_string())
+                    .collect();
             }
         }
     }
+}
+
+/// Strip the `codex-` prefix common to every fleet agent name so the
+/// ACTIVE NOW row stays narrow. `codex-zeus-magnolia` → `zeus-magnolia`.
+fn short_agent(agent: &str) -> &str {
+    agent.strip_prefix("codex-").unwrap_or(agent)
+}
+
+fn truncate_chars(s: &str, n: usize) -> String {
+    let mut out = String::new();
+    let mut chars = 0;
+    for c in s.chars() {
+        if chars + 1 > n {
+            out.push('…');
+            break;
+        }
+        out.push(c);
+        chars += 1;
+    }
+    out
 }
 
 impl Component for PlanView {
@@ -95,12 +162,22 @@ impl Component for PlanView {
         if area.width < 30 || area.height < 8 {
             return;
         }
-        let rows = Layout::default()
+
+        // Vertical layout: header(3) + body(rest) + recent-merges(8).
+        // body is then split into ACTIVE NOW + WAVES, sized by how many
+        // sub-tasks are currently `claimed` so the active list always
+        // shows everyone but never starves the wave grid.
+        let recent_h: u16 = if self.recent_prs.is_empty() { 0 } else { 8 };
+        let outer = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(recent_h),
+            ])
             .split(area);
 
-        // Header card with slug + live rollup chips.
+        // ── Header card with slug + live rollup chips ──────────────────────
         let title = match self.plan.as_ref() {
             Some(p) => {
                 let (a, c, d, b) = rollup(p);
@@ -116,15 +193,7 @@ impl Component for PlanView {
             }
             None => "PLAN TREE · no plan found".to_string(),
         };
-        let header = card(Some(&title), false);
-        frame.render_widget(header, rows[0]);
-
-        let block = card(
-            Some("WAVES W1 → Wn (Kahn topological levels via fleet-data::plan)"),
-            false,
-        );
-        let inner = block.inner(rows[1]);
-        frame.render_widget(block, rows[1]);
+        frame.render_widget(card(Some(&title), false), outer[0]);
 
         let Some(plan) = self.plan.as_ref() else {
             frame.render_widget(
@@ -132,64 +201,27 @@ impl Component for PlanView {
                     "  no plan available — set CODEX_FLEET_PLAN_REPO_ROOT or pin via plan-tree-pin.sh",
                     Style::default().fg(IOS_FG_MUTED),
                 ))),
-                Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+                Rect { x: outer[1].x, y: outer[1].y, width: outer[1].width, height: 1 },
             );
+            render_recent_merges(frame, outer[2], &self.recent_prs);
             return;
         };
 
-        let label_width: u16 = 8;
-        let pills_per_row: u16 = ((inner.width.saturating_sub(label_width)) / PILL_WIDTH).max(1);
+        // ── Body: ACTIVE NOW (claimed list) + WAVES (Kahn grid) ────────────
+        let claimed: Vec<&Subtask> = plan.tasks.iter().filter(|t| t.status == "claimed").collect();
+        // 2 rows of chrome (top + bottom of card) + 1 per claimed worker;
+        // collapsed to 3 rows when nothing is claimed (placeholder row).
+        let active_h: u16 = (claimed.len() as u16 + 2).clamp(3, 12);
+        let body = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(active_h), Constraint::Min(0)])
+            .split(outer[1]);
 
-        let mut y = inner.y;
-        for (w, indices) in waves(&plan.tasks).into_iter().enumerate() {
-            if indices.is_empty() {
-                continue;
-            }
-            let wave_label = format!("  W{} · ", w + 1);
-            let mut emitted_label = false;
+        render_active_now(frame, body[0], &claimed);
+        render_waves(frame, body[1], plan);
 
-            for chunk in indices.chunks(pills_per_row as usize) {
-                if y >= inner.y + inner.height {
-                    break;
-                }
-                let mut spans: Vec<Span> = Vec::new();
-                let prefix = if !emitted_label {
-                    emitted_label = true;
-                    wave_label.clone()
-                } else {
-                    " ".repeat(label_width as usize)
-                };
-                spans.push(Span::styled(
-                    prefix,
-                    Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
-                ));
-                for idx in chunk {
-                    let s = match plan.tasks.iter().find(|t| t.subtask_index == *idx) {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    let kind = match s.status.as_str() {
-                        "completed" => ChipKind::Done,
-                        "claimed" => ChipKind::Working,
-                        "blocked" => ChipKind::Blocked,
-                        _ => ChipKind::Idle,
-                    };
-                    spans.extend(status_chip(kind));
-                    spans.push(Span::styled(
-                        format!(" sub-{} ", s.subtask_index),
-                        Style::default().fg(IOS_FG),
-                    ));
-                }
-                frame.render_widget(
-                    Paragraph::new(Line::from(spans)),
-                    Rect { x: inner.x, y, width: inner.width, height: 1 },
-                );
-                y += 1;
-            }
-            if y < inner.y + inner.height {
-                y += 1;
-            }
-        }
+        // ── Footer: recent merges (latest 5 PRs on origin/main) ────────────
+        render_recent_merges(frame, outer[2], &self.recent_prs);
     }
 
     fn query(&self, attr: Attribute) -> Option<QueryResult<'_>> {
@@ -223,7 +255,172 @@ impl AppComponent<Msg, NoUserEvent> for PlanView {
     }
 }
 
-// ---------- Helpers (unchanged) ----------
+// ---------- Section renderers ----------
+
+/// ACTIVE NOW card — one row per `status=claimed` sub-task.
+/// Format: ` ● <agent-name>  sub-<N>  <truncated title>`
+/// When nothing is claimed, show a placeholder so the layout stays stable.
+fn render_active_now(frame: &mut Frame, area: Rect, claimed: &[&Subtask]) {
+    let block = card(Some("ACTIVE NOW · agents on Colony tasks"), false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    if claimed.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  no active claims — workers polling for work",
+                Style::default().fg(IOS_FG_MUTED),
+            ))),
+            Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+        );
+        return;
+    }
+    for (i, s) in claimed.iter().enumerate() {
+        let y = inner.y + i as u16;
+        if y >= inner.y + inner.height {
+            break;
+        }
+        let agent = s
+            .claimed_by_agent
+            .as_deref()
+            .map(short_agent)
+            .unwrap_or("(unknown)");
+        // Agent column is fixed-width 20 so titles align vertically. The
+        // title gets whatever remains after agent + sub-N + chrome.
+        let agent_col_w: usize = 22;
+        let sub_col_w: usize = 8;
+        let chrome_w: usize = 4; // ` ● ` + trailing spacer
+        let title_budget = (inner.width as usize)
+            .saturating_sub(agent_col_w + sub_col_w + chrome_w);
+        let title = truncate_chars(&s.title, title_budget);
+        let agent_str = format!("{:<width$}", agent, width = agent_col_w);
+        let sub_str = format!("sub-{:<3}", s.subtask_index);
+        let spans = vec![
+            Span::styled(" ● ", Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                agent_str,
+                Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(sub_str, Style::default().fg(IOS_FG_MUTED)),
+            Span::raw("  "),
+            Span::styled(title, Style::default().fg(IOS_FG)),
+        ];
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect { x: inner.x, y, width: inner.width, height: 1 },
+        );
+    }
+}
+
+fn render_waves(frame: &mut Frame, area: Rect, plan: &Plan) {
+    let block = card(
+        Some("WAVES W1 → Wn (Kahn topological levels via fleet-data::plan)"),
+        false,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let label_width: u16 = 8;
+    let pills_per_row: u16 = ((inner.width.saturating_sub(label_width)) / PILL_WIDTH).max(1);
+    let mut y = inner.y;
+    for (w, indices) in waves(&plan.tasks).into_iter().enumerate() {
+        if indices.is_empty() {
+            continue;
+        }
+        let wave_label = format!("  W{} · ", w + 1);
+        let mut emitted_label = false;
+        for chunk in indices.chunks(pills_per_row as usize) {
+            if y >= inner.y + inner.height {
+                break;
+            }
+            let mut spans: Vec<Span> = Vec::new();
+            let prefix = if !emitted_label {
+                emitted_label = true;
+                wave_label.clone()
+            } else {
+                " ".repeat(label_width as usize)
+            };
+            spans.push(Span::styled(
+                prefix,
+                Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
+            ));
+            for idx in chunk {
+                let s = match plan.tasks.iter().find(|t| t.subtask_index == *idx) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let kind = match s.status.as_str() {
+                    "completed" => ChipKind::Done,
+                    "claimed" => ChipKind::Working,
+                    "blocked" => ChipKind::Blocked,
+                    _ => ChipKind::Idle,
+                };
+                spans.extend(status_chip(kind));
+                spans.push(Span::styled(
+                    format!(" sub-{} ", s.subtask_index),
+                    Style::default().fg(IOS_FG),
+                ));
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(spans)),
+                Rect { x: inner.x, y, width: inner.width, height: 1 },
+            );
+            y += 1;
+        }
+        if y < inner.y + inner.height {
+            y += 1;
+        }
+    }
+}
+
+/// RECENT MERGES card — last 5 `git log --oneline origin/main` rows.
+/// Dim sha + bright subject so the operator scans the merge column.
+fn render_recent_merges(frame: &mut Frame, area: Rect, prs: &[String]) {
+    if area.height == 0 {
+        return;
+    }
+    let block = card(Some("RECENT MERGES · git log --oneline -5 origin/main"), false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    if prs.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  (git unreachable from this pane)",
+                Style::default().fg(IOS_FG_MUTED),
+            ))),
+            Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+        );
+        return;
+    }
+    for (i, line) in prs.iter().take(inner.height as usize).enumerate() {
+        let y = inner.y + i as u16;
+        if y >= inner.y + inner.height {
+            break;
+        }
+        let (sha, subject) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+        let max_subj = (inner.width as usize).saturating_sub(sha.chars().count() + 4);
+        let subject = truncate_chars(subject, max_subj);
+        let spans = vec![
+            Span::raw("  "),
+            Span::styled(sha.to_string(), Style::default().fg(IOS_FG_MUTED)),
+            Span::raw("  "),
+            Span::styled(subject, Style::default().fg(IOS_FG)),
+        ];
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect { x: inner.x, y, width: inner.width, height: 1 },
+        );
+    }
+}
+
+// ---------- Helpers (path resolution + plan math) ----------
 
 fn resolve_plan_path() -> Option<PathBuf> {
     let pin_file = std::env::var("PLAN_TREE_ANIM_PIN_FILE")
