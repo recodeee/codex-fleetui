@@ -6,6 +6,6 @@ pub mod keymap;
 pub mod modal;
 
 pub use action::Action;
-pub use context::{ContextLayer, ContextStack};
-pub use keymap::{KeyBinding, KeyPattern, Matcher};
+pub use context::ContextStack;
+pub use keymap::{KeyBinding, Matcher};
 pub use modal::ModalStack;
