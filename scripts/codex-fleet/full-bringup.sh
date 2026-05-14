@@ -16,7 +16,11 @@
 
 set -eo pipefail
 
-REPO="${REPO:-/home/deadpool/Documents/recodee}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Autodetect REPO from the clone location; env override wins. Lets the
+# same script run from any path (e.g. ~/codex-fleet/) and lets operators
+# point CODEX_FLEET_REPO_ROOT at a separate project root for plan lookup.
+REPO="${REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 WAKE="${WAKE:-/tmp/codex-fleet-wake-prompt.md}"
 N_PANES=8
 ATTACH=1
@@ -111,7 +115,7 @@ fi
 # 5. Verify wake prompt exists
 if [ ! -f "$WAKE" ]; then
   warn "wake prompt missing at $WAKE; using scripts/codex-fleet/worker-prompt.md"
-  WAKE="$REPO/scripts/codex-fleet/worker-prompt.md"
+  WAKE="$SCRIPT_DIR/worker-prompt.md"
   [ -f "$WAKE" ] || die "no wake prompt found at $WAKE either"
 fi
 
@@ -145,7 +149,7 @@ CAND_N=$(printf "%s\n" "$CANDIDATES" | wc -l)
 log "ranked $CAND_N candidates by codex-auth score; running live probe..."
 
 # (b) Live probe — keep only candidates whose codex CLI is actually usable.
-HEALTHY_EMAILS=$(bash "$REPO/scripts/codex-fleet/cap-probe.sh" "$N_PANES" $CANDIDATES 2>/tmp/cap-probe.err) || true
+HEALTHY_EMAILS=$(bash "$SCRIPT_DIR/cap-probe.sh" "$N_PANES" $CANDIDATES 2>/tmp/cap-probe.err) || true
 HEALTHY_N=$(printf "%s\n" "$HEALTHY_EMAILS" | grep -c "@" || true)
 if [ "$HEALTHY_N" -lt "$N_PANES" ]; then
   warn "cap-probe found only $HEALTHY_N/$N_PANES healthy accounts"
@@ -224,11 +228,11 @@ done <<< "$ACCOUNTS"
 
 # 11. Create fleet / plan / waves windows
 log "creating fleet / plan / waves windows"
-tmux new-window -d -t "$SESSION:" -n fleet "bash $REPO/scripts/codex-fleet/fleet-state-anim.sh"
-tmux new-window -d -t "$SESSION:" -n plan  "bash $REPO/scripts/codex-fleet/plan-tree-anim.sh"
-tmux new-window -d -t "$SESSION:" -n waves "bash $REPO/scripts/codex-fleet/waves-anim-generic.sh"
-tmux new-window -d -t "$SESSION:" -n review  "bash $REPO/scripts/codex-fleet/review-board.sh"
-tmux new-window -d -t "$SESSION:" -n watcher "bash $REPO/scripts/codex-fleet/watcher-board.sh"
+tmux new-window -d -t "$SESSION:" -n fleet "bash $SCRIPT_DIR/fleet-state-anim.sh"
+tmux new-window -d -t "$SESSION:" -n plan  "bash $SCRIPT_DIR/plan-tree-anim.sh"
+tmux new-window -d -t "$SESSION:" -n waves "bash $SCRIPT_DIR/waves-anim-generic.sh"
+tmux new-window -d -t "$SESSION:" -n review  "bash $SCRIPT_DIR/review-board.sh"
+tmux new-window -d -t "$SESSION:" -n watcher "bash $SCRIPT_DIR/watcher-board.sh"
 # legacy plain watcher (replaced by graphical watcher-board.sh):
 # tmux new-window ... "watch -n 2 -t -c 'cat /tmp/claude-viz/cap-swap-status.txt 2>/dev/null; echo; echo --- recent swaps ---; tail -20 /tmp/claude-viz/cap-swap.log 2>/dev/null'"
 tmux set-option -w -t "$SESSION:plan"  remain-on-exit on
@@ -238,7 +242,7 @@ tmux set-option -w -t "$SESSION:waves" remain-on-exit on
 # borders with `▭ #{@panel}` headers, sticky right-click menu). Runs after
 # windows exist so window-status-format covers all six tabs.
 log "applying iOS-style chrome"
-CODEX_FLEET_SESSION="$SESSION" bash "$REPO/scripts/codex-fleet/style-tabs.sh" >/dev/null 2>&1 \
+CODEX_FLEET_SESSION="$SESSION" bash "$SCRIPT_DIR/style-tabs.sh" >/dev/null 2>&1 \
   || warn "style-tabs.sh failed (chrome will fall back to tmux defaults)"
 
 # 12. Sibling fleet-ticker session: ticker + cap-swap + state-pump
@@ -259,10 +263,10 @@ mkdir -p "$FLEET_STATE_DIR/supervisor"
 # ticker uses fleet-tick-daemon.sh wrapper — re-spawn-safe vs the raw
 # fleet-tick.sh which `set -eo pipefail`-crashes mid-tick on any failed
 # regex / capture-pane and silently halts the live viz.
-tmux new-session -d -s "$TICKER_SESSION" -n ticker     "bash $REPO/scripts/codex-fleet/fleet-tick-daemon.sh"
-tmux new-window  -d -t "$TICKER_SESSION:" -n cap-swap  "bash $REPO/scripts/codex-fleet/cap-swap-daemon.sh"
-tmux new-window  -d -t "$TICKER_SESSION:" -n state-pump "bash $REPO/scripts/codex-fleet/colony-state-pump.sh"
-tmux new-window  -d -t "$TICKER_SESSION:" -n review-detector "bash $REPO/scripts/codex-fleet/plan-complete-detector.sh"
+tmux new-session -d -s "$TICKER_SESSION" -n ticker     "bash $SCRIPT_DIR/fleet-tick-daemon.sh"
+tmux new-window  -d -t "$TICKER_SESSION:" -n cap-swap  "bash $SCRIPT_DIR/cap-swap-daemon.sh"
+tmux new-window  -d -t "$TICKER_SESSION:" -n state-pump "bash $SCRIPT_DIR/colony-state-pump.sh"
+tmux new-window  -d -t "$TICKER_SESSION:" -n review-detector "bash $SCRIPT_DIR/plan-complete-detector.sh"
 # force-claim scans ALL openspec plans every 15s, finds deps-satisfied
 # `available` tasks, and dispatches them onto idle codex panes via
 # tmux send-keys. Keeps the fleet pulled into ready work when its
@@ -273,7 +277,7 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n review-detector "bash $REPO/scripts
 # is wrong here because we have 6 windows and `1` maps to `fleet`, the
 # state-anim viz pane — so without this override the daemon reported
 # "no idle codex panes" forever while the actual workers idled in window 0.
-tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "FORCE_CLAIM_WINDOW=overview bash $REPO/scripts/codex-fleet/force-claim.sh --loop --interval=15"
+tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "FORCE_CLAIM_WINDOW=overview bash $SCRIPT_DIR/force-claim.sh --loop --interval=15"
 
 # claim-release-supervisor scans all openspec plans every 60s, finds claims
 # held by agents whose codex pane has gone back to the default prompt
@@ -282,7 +286,7 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "FORCE_CLAIM_WINDOW=ove
 # stranded --apply so force-claim can re-route them. Distinct from
 # supervisor.sh (kitty-spawning quota replacement, opt-in via
 # CODEX_FLEET_SUPERVISOR=1) — this watcher only mutates Colony state.
-tmux new-window  -d -t "$TICKER_SESSION:" -n claim-release "CR_SUP_SESSION=$SESSION CR_SUP_WINDOW=overview bash $REPO/scripts/codex-fleet/claim-release-supervisor.sh --loop --interval=60"
+tmux new-window  -d -t "$TICKER_SESSION:" -n claim-release "CR_SUP_SESSION=$SESSION CR_SUP_WINDOW=overview bash $SCRIPT_DIR/claim-release-supervisor.sh --loop --interval=60"
 
 # stall-watcher: every 60s, `colony rescue stranded --apply` releases claims
 # held > 30m without progress, then enqueues a takeover_recommended event
@@ -292,16 +296,16 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n claim-release "CR_SUP_SESSION=$SESS
 # per takeover event, which conflicts with the single-kitty-with-tmux-tabs
 # fleet UX. Re-enable per-bringup with CODEX_FLEET_SUPERVISOR=1, or run
 # `bash scripts/codex-fleet/supervisor.sh` manually when auto-rescue is wanted.
-tmux new-window  -d -t "$TICKER_SESSION:" -n stall-watcher "bash $REPO/scripts/codex-fleet/stall-watcher.sh"
+tmux new-window  -d -t "$TICKER_SESSION:" -n stall-watcher "bash $SCRIPT_DIR/stall-watcher.sh"
 if [ "${CODEX_FLEET_SUPERVISOR:-0}" = "1" ]; then
-  tmux new-window  -d -t "$TICKER_SESSION:" -n supervisor    "bash $REPO/scripts/codex-fleet/supervisor.sh"
+  tmux new-window  -d -t "$TICKER_SESSION:" -n supervisor    "bash $SCRIPT_DIR/supervisor.sh"
 else
   log "supervisor window skipped (set CODEX_FLEET_SUPERVISOR=1 to enable auto-takeover spawns)"
 fi
 
 # 12b. Chrome the ticker session too so attaching to it shows the same iOS
 # tab strip / rounded pane borders / sticky menu as the main session.
-CODEX_FLEET_SESSION="$TICKER_SESSION" bash "$REPO/scripts/codex-fleet/style-tabs.sh" >/dev/null 2>&1 \
+CODEX_FLEET_SESSION="$TICKER_SESSION" bash "$SCRIPT_DIR/style-tabs.sh" >/dev/null 2>&1 \
   || warn "style-tabs.sh failed for $TICKER_SESSION"
 
 # 12c. Verify chrome actually rendered (catches the session-local `status on`

@@ -23,7 +23,7 @@ CACHE_DIR="${CACHE_DIR:-/tmp/claude-viz/cap-probe-cache}"
 POOL_FILE="${POOL_FILE:-/tmp/claude-viz/healthy-pool.txt}"
 LOG="${LOG:-/tmp/claude-viz/proactive-probe.log}"
 PROBE_PROACTIVE_INTERVAL="${PROBE_PROACTIVE_INTERVAL:-300}"
-CAP_PROBE_SCRIPT="${CAP_PROBE_SCRIPT:-$REPO/scripts/codex-fleet/cap-probe.sh}"
+CAP_PROBE_SCRIPT="${CAP_PROBE_SCRIPT:-$SCRIPT_DIR/cap-probe.sh}"
 ONCE=0
 
 usage() {

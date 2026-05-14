@@ -12,8 +12,10 @@
 #   FLEET_TICK_INTERVAL=2 bash scripts/codex-fleet/fleet-tick-daemon.sh
 set +e
 
-REPO="${FLEET_TICK_DAEMON_REPO:-/home/deadpool/Documents/recodee}"
-SCRIPT="$REPO/scripts/codex-fleet/fleet-tick.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Autodetect REPO from the clone location; env override wins.
+REPO="${FLEET_TICK_DAEMON_REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
+SCRIPT="$SCRIPT_DIR/fleet-tick.sh"
 INTERVAL="${FLEET_TICK_INTERVAL:-2}"
 LOG_DIR="${FLEET_TICK_DAEMON_LOG_DIR:-/tmp/claude-viz}"
 mkdir -p "$LOG_DIR"

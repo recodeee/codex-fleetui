@@ -7,7 +7,7 @@ set -eo pipefail
 
 INTERVAL="${FLEET_TICK_INTERVAL:-5}"
 TMUX_SESSION="${CODEX_FLEET_SESSION:-codex-fleet}"
-REPO="${FLEET_TICK_REPO:-/home/deadpool/Documents/recodee}"
+REPO="${FLEET_TICK_REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 PLAN_JSON="${FLEET_TICK_PLAN_JSON:-$REPO/openspec/plans/rust-ph13-14-15-completion-2026-05-13/plan.json}"
 STATE_OUT="${FLEET_TICK_STATE_OUT:-/tmp/claude-viz/live-fleet-state.txt}"
 PLAN_OUT="${FLEET_TICK_PLAN_OUT:-/tmp/claude-viz/live-plan-design.txt}"

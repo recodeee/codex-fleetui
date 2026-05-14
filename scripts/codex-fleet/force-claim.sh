@@ -41,7 +41,9 @@
 #   CODEX_FLEET_CLAIM_MODE=both|event|poll                   # default: both
 set -eo pipefail
 
-REPO="${FORCE_CLAIM_REPO:-/home/deadpool/Documents/recodee}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Autodetect REPO from the clone location; env override wins.
+REPO="${FORCE_CLAIM_REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 SESSION="${FORCE_CLAIM_SESSION:-codex-fleet}"
 WINDOW="${FORCE_CLAIM_WINDOW:-overview}"
 LOOP=0
@@ -216,7 +218,7 @@ start_claim_trigger() {
     return 0
   fi
 
-  local trigger="$REPO/scripts/codex-fleet/claim-trigger.sh"
+  local trigger="$SCRIPT_DIR/claim-trigger.sh"
   if [[ ! -x "$trigger" ]]; then
     printf '[%s] claim-trigger unavailable at %s; continuing with poll mode\n' "$(date +%T)" "$trigger" >&2
     return 0

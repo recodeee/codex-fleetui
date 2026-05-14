@@ -23,7 +23,7 @@ for a in "$@"; do
 done
 INTERVAL_S=$(awk -v ms="$INTERVAL_MS" 'BEGIN{printf "%.3f", ms/1000}')
 
-REPO="${WAVES_ANIM_REPO:-/home/deadpool/Documents/recodee}"
+REPO="${WAVES_ANIM_REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 PLAN_JSON="${WAVES_ANIM_PLAN_JSON:-$REPO/openspec/plans/rust-ph13-14-15-completion-2026-05-13/plan.json}"
 PLAN_SLUG="$(basename "$(dirname "$PLAN_JSON")")"
 ACTIVE_FILE="${WAVES_ANIM_ACTIVE_FILE:-/tmp/claude-viz/fleet-active-accounts.txt}"

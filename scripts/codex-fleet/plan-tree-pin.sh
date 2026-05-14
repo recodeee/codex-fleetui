@@ -13,7 +13,7 @@
 #   bash scripts/codex-fleet/plan-tree-pin.sh --show            # print current pin
 set -eo pipefail
 
-REPO="${PLAN_TREE_PIN_REPO:-/home/deadpool/Documents/recodee}"
+REPO="${PLAN_TREE_PIN_REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 PIN_FILE="${PLAN_TREE_ANIM_PIN_FILE:-/tmp/claude-viz/plan-tree-pin.txt}"
 mkdir -p "$(dirname "$PIN_FILE")"
 
