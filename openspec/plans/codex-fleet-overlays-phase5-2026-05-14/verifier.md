@@ -1,0 +1,13 @@
+# Verifier
+
+Plan: `codex-fleet-overlays-phase5-2026-05-14`
+
+## Responsibility
+
+Prove completion with focused tests and explicit evidence.
+
+## Checkpoints
+
+- [ ] Read `plan.md`, `tasks.md`, and `checkpoints.md`.
+- [ ] Record decisions or blockers in the plan workspace before handoff.
+- [ ] Keep task-thread status aligned with local files.
