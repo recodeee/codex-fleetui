@@ -246,6 +246,16 @@ log "creating sibling session: $TICKER_SESSION"
 if tmux has-session -t "$TICKER_SESSION" 2>/dev/null; then
   tmux kill-session -t "$TICKER_SESSION"
 fi
+
+# Reset stale supervisor + active-account state so zombie takeover events from
+# prior fleet runs don't immediately re-spawn `codex-takeover-*` kitty windows
+# the moment supervisor.sh starts its tail -F. (Symptom seen 2026-05-14: 322
+# queued events from a 2h-old run fired 7+ kittys before any new event landed.)
+log "resetting stale supervisor + active-account state"
+: > "$FLEET_STATE_DIR/supervisor-queue.jsonl" 2>/dev/null || true
+: > "$FLEET_STATE_DIR/fleet-active-accounts.txt" 2>/dev/null || true
+mkdir -p "$FLEET_STATE_DIR/supervisor"
+: > "$FLEET_STATE_DIR/supervisor/processed.keys" 2>/dev/null || true
 # ticker uses fleet-tick-daemon.sh wrapper — re-spawn-safe vs the raw
 # fleet-tick.sh which `set -eo pipefail`-crashes mid-tick on any failed
 # regex / capture-pane and silently halts the live viz.

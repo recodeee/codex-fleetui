@@ -140,6 +140,19 @@ pick_replacement() {
     [[ "$weekly" =~ ^[0-9]+$ ]] || continue
     (( weekly < 90 )) || continue
 
+    # codex CLI's 5h rolling cap is a separate meter from `weekly=` —
+    # an account can read weekly<90% and still error with "You've hit
+    # your usage limit" on the first request. Live-probe via
+    # cap-probe.sh (cached) before promoting; skip if not healthy.
+    if [[ -x "$SCRIPT_DIR/cap-probe.sh" ]]; then
+      local probe_out
+      probe_out="$(bash "$SCRIPT_DIR/cap-probe.sh" 1 "$email" 2>/dev/null || true)"
+      if ! printf '%s\n' "$probe_out" | grep -Fxq "$email"; then
+        echo "info: skipping $account_id ($email) — cap-probe verdict not healthy" >&2
+        continue
+      fi
+    fi
+
     printf '%s\t%s\t%s\n' "$account_id" "$email" "$weekly"
     return 0
   done < <(parse_accounts)
