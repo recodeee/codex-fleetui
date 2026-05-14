@@ -1,0 +1,16 @@
+[package]
+name = "fleet-waves"
+version = "0.0.1"
+edition = "2021"
+description = "ratatui port of fleet-waves-anim.sh."
+publish = false
+
+[[bin]]
+name = "fleet-waves"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+fleet-ui = { path = "../fleet-ui" }
+fleet-data = { path = "../fleet-data" }

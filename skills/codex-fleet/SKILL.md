@@ -47,24 +47,41 @@ bash scripts/codex-fleet/full-bringup.sh --plan-slug <slug> --n 8 --no-attach
 
 This is the operator-approved design language as of 2026-05-14. Do NOT regress to simpler renderers unless explicitly asked.
 
-| Tab | Renderer                                            | Visual                                             |
-|-----|-----------------------------------------------------|----------------------------------------------------|
-| `0 watcher`  | `scripts/codex-fleet/watcher-board.sh`     | Header banner (ALL CLEAR/DEGRADED/STALLED) + 4 stat cards (PANES/CAPPED/SWAPPED/RANKED) + account-pool summary + per-pane table + CAP POOL sorted by reset ETA + filtered recent activity |
-| `1 overview` | 8 codex worker panes                       | 2×4 grid; each pane runs codex with `CODEX_GUARD_BYPASS=1`         |
-| `2 fleet`    | `scripts/codex-fleet/fleet-state-anim.sh`  | iOS cockpit: rounded card header (palette=#007AFF/#34C759/#FF3B30/#FF9500), ACTIVE table (account · 5h · WEEKLY · WORKER · WORKING ON), RESERVE table, FLEET FOOTER (active workers · refresh · tick) |
-| `3 plan`     | `scripts/codex-fleet/plan-tree-anim.sh`    | PLAN TREE header + W1→Wn DAG of sub-task chips → PROPOSALS rounded cards (file · deps · 👤worker · ✓PR# badge) + TOTAL bar + LEGEND (`● done · ◐ claimed · ✕ blocked · ◇ available`) |
-| `4 waves`    | `scripts/codex-fleet/waves-anim-generic.sh`| Vertical wave flow `W1 → W2 → … → Wn`, each sub-N with status dot + title + `done` / `claimed` / `available` tag |
+| Tab | Renderer (Rust default `FLEET_DASHBOARD_RENDERER=rust`) | Bash fallback (`FLEET_DASHBOARD_RENDERER=bash`) | Visual |
+|-----|--------------------------------------|--------------------------------------|--------|
+| `0 watcher`  | `rust/target/release/fleet-watcher` | `scripts/codex-fleet/watcher-board.sh`     | Header banner (ALL CLEAR/DEGRADED/STALLED) + 4 stat cards (PANES/CAPPED/SWAPPED/RANKED) + account-pool summary + per-pane table + CAP POOL sorted by reset ETA + filtered recent activity |
+| `1 overview` | 8 codex worker panes                | (unchanged)                                | 2×4 grid; each pane runs codex with `CODEX_GUARD_BYPASS=1`         |
+| `2 fleet`    | `rust/target/release/fleet-state`   | `scripts/codex-fleet/fleet-state-anim.sh`  | iOS cockpit: rounded card header (palette=#0a84ff/#30d158/#ff453a/#ff9f0a), ACTIVE table (account · 5h · WEEKLY · WORKER · WORKING ON), RESERVE table, FLEET FOOTER (active workers · refresh · tick) |
+| `3 plan`     | `rust/target/release/fleet-plan-tree`| `scripts/codex-fleet/plan-tree-anim.sh`    | PLAN TREE header + W1→Wn DAG of sub-task chips → PROPOSALS rounded cards (file · deps · 👤worker · ✓PR# badge) + TOTAL bar + LEGEND (`● done · ◐ claimed · ✕ blocked · ◇ available`) |
+| `4 waves`    | `rust/target/release/fleet-waves`   | `scripts/codex-fleet/waves-anim-generic.sh`| Vertical wave flow `W1 → W2 → … → Wn`, each sub-N with status dot + title + `done` / `claimed` / `available` tag |
 
-**Palette (iOS system colors on black):**
+**Rust renderer self-contained tab clicks:** every Rust bin renders its own
+in-binary tab strip at the top of its frame. Clicking a tab dispatches a
+`tmux select-window` call via the bin's crossterm mouse handler — bypasses
+tmux's `MouseDown1Status` routing entirely and works in kitty+tmux even
+when status-bar click routing fails (cf. fleet-tui-ratatui-port-2026-05-14
+acceptance criterion #8).
+
+**Build the Rust bins** (one-time per fresh clone or after a pull):
+
+```bash
+cd "$CODEX_FLEET_REPO_ROOT/rust" && cargo build --release
+```
+
+The bash `*-anim.sh` scripts stay one release as the `FLEET_DASHBOARD_RENDERER=bash` fallback in case a Rust bin regresses; after one quiet release they're deleted (Phase 6 of the migration plan).
+
+**Palette (iOS dark UIKit on black) — canonical hex set defined in `rust/fleet-ui/src/palette.rs`:**
 
 | Token        | Hex      | Use                          |
 |--------------|----------|------------------------------|
-| systemBlue   | `#007AFF`| `working` chip background    |
-| systemGreen  | `#34C759`| `done`, `running`, healthy   |
-| systemRed    | `#FF3B30`| `blocked`, capped, error     |
-| systemOrange | `#FF9500`| `polling`, mid-tier warning  |
-| systemYellow | `#FFCC00`| `claimed` spinner pulse      |
-| systemGray   | `#8E8E93`| muted labels                 |
+| systemBlue   | `#0a84ff`| `working` chip background    |
+| systemGreen  | `#30d158`| `done`, `running`, healthy   |
+| systemRed    | `#ff453a`| `blocked`, capped, error     |
+| systemOrange | `#ff9f0a`| `polling`, mid-tier warning  |
+| systemYellow | `#ffd60a`| `claimed` spinner pulse      |
+| systemPurple | `#bf5af2`| spawn / boot                 |
+| label        | `#f2f2f7`| primary fg                   |
+| secondaryLabel | `#a0a0aa`| muted labels               |
 
 **Chrome rules:**
 
