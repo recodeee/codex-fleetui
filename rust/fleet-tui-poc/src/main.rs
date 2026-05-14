@@ -91,6 +91,9 @@ enum Overlay {
     Spotlight,
     ActionSheet,
     SessionSwitcher,
+    /// Tab-triggered ⌘K-style jump grid: pick a tmux window inside the
+    /// active codex-fleet session.
+    SectionJump,
 }
 
 // Spotlight catalogue — all commands the palette filters over. Each row is
@@ -143,6 +146,11 @@ struct App {
     events: Vec<String>,
     chip_rect: Option<Rect>,
     overlay: Overlay,
+    /// (rect, shortcut_char) for each rendered context-menu item — populated
+    /// each frame in render_context_menu so the mouse handler can look up
+    /// which row was clicked and dispatch the same tmux command as the
+    /// keyboard shortcut.
+    ctx_menu_items: Vec<(Rect, char)>,
     // Spotlight state — query the user is typing + which result row is
     // selected (0 = top hit, 1..N = grouped results).
     spotlight_query: String,
@@ -154,6 +162,11 @@ struct App {
     // footer flashes as visual feedback on the next frame.
     card_buttons: Vec<(Rect, CardAction)>,
     last_action: Option<String>,
+    /// When the section-jump overlay opens, this is the tmux window the
+    /// invoker says is currently focused — render_section_jump uses it to
+    /// highlight the matching card in iOS-blue. None falls back to "the
+    /// first card", matching the screenshot's default state.
+    section_active: Option<String>,
 }
 
 impl App {
@@ -162,11 +175,13 @@ impl App {
             events: vec!["click the systemBlue chip — coords land here".into()],
             chip_rect: None,
             overlay: Overlay::None,
+            ctx_menu_items: Vec::new(),
             spotlight_query: String::new(),
             spotlight_selected: 0,
             spotlight_tick: 0,
             card_buttons: Vec::new(),
             last_action: None,
+            section_active: None,
         }
     }
 
@@ -1709,6 +1724,255 @@ fn render_session_card(
     }
 }
 
+// ────────────────────────── 5 · section-jump grid ──────────────────────────
+// ⌘K-style window-jump overlay. Tab opens this; number keys 1–5 select a
+// card and dispatch `tmux select-window -t <session>:<window>`; Esc / 0 / q
+// dismiss. The card metadata mirrors the live codex-fleet tabs (Overview,
+// Fleet, Plan, Waves, Review). The active section can be marked by the
+// caller via `--active <name>` so the matching card renders in iOS-blue.
+
+struct Section {
+    /// Number key (1-5) that selects this card. Also drawn as the in-card
+    /// badge in the upper-right.
+    key: char,
+    /// Display title.
+    title: &'static str,
+    /// One-line description shown under the title.
+    sub: &'static str,
+    /// Single-line footer ("7 workers", "12 tasks", "1 pending", …).
+    footer: &'static str,
+    /// tmux window name to target via `select-window -t <session>:<name>`.
+    window: &'static str,
+    /// Single-glyph icon drawn in the upper-left badge of the card.
+    icon: &'static str,
+}
+
+const SECTIONS: &[Section] = &[
+    Section {
+        key: '1',
+        title: "Overview",
+        sub: "7 workers · 1 awaiting review",
+        footer: "7 workers",
+        window: "overview",
+        icon: "▦",
+    },
+    Section {
+        key: '2',
+        title: "Fleet",
+        sub: "Live worker panes & tmux layout",
+        footer: "7 workers",
+        window: "fleet",
+        icon: "◫",
+    },
+    Section {
+        key: '3',
+        title: "Plan",
+        sub: "codex-fleet-extract-p1-2026-05-14",
+        footer: "12 tasks",
+        window: "plan",
+        icon: "≡",
+    },
+    Section {
+        key: '4',
+        title: "Waves",
+        sub: "Spawn cycles & rebalancing",
+        footer: "3 cycles",
+        window: "waves",
+        icon: "∿",
+    },
+    Section {
+        key: '5',
+        title: "Review",
+        sub: "Approval queue · auto-reviewer log",
+        footer: "1 pending",
+        window: "review",
+        icon: "✓",
+    },
+];
+
+fn section_jump_tmux_args(key: char, session: &str) -> Option<Vec<String>> {
+    let s = SECTIONS.iter().find(|s| s.key == key)?;
+    Some(vec![
+        "select-window".into(),
+        "-t".into(),
+        format!("{}:{}", session, s.window),
+    ])
+}
+
+fn render_section_jump(frame: &mut ratatui::Frame, area: Rect, active_window: Option<&str>) {
+    // 3 columns × 2 rows grid; the 6th cell sits empty. Card geometry
+    // matches the screenshot reference (rounded corners via card_shadow +
+    // glass_block, ~22-wide cards, 6-high cards).
+    let card_w: u16 = 22;
+    let card_h: u16 = 6;
+    let gap: u16 = 1;
+    let cols: u16 = 3;
+    let rows: u16 = 2;
+
+    let title_block_h: u16 = 3; // title row + sub row + hairline pad
+    let footer_h: u16 = 1;
+    let menu_w: u16 = 2 + (card_w * cols) + (gap * (cols - 1)) + 2;
+    let menu_h: u16 = 2 + title_block_h + (card_h * rows) + (gap * (rows - 1)) + 1 + footer_h + 2;
+
+    let rect = center_rect(area, menu_w, menu_h);
+    card_shadow(frame, rect, area);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(glass_block(None, IOS_TINT, false), rect);
+
+    let inner = Rect {
+        x: rect.x + 2,
+        y: rect.y + 1,
+        width: rect.width.saturating_sub(4),
+        height: rect.height.saturating_sub(2),
+    };
+
+    // ── Title row: "codex-fleet"  +  "Jump to section" (muted) ────────────
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "codex-fleet",
+                Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Jump to section",
+            Style::default().fg(IOS_FG_MUTED),
+        ))),
+        Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
+    );
+
+    // Hairline under the title block
+    let hairline = "─".repeat(inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            hairline.clone(),
+            Style::default().fg(IOS_HAIRLINE),
+        )),
+        Rect { x: inner.x, y: inner.y + 2, width: inner.width, height: 1 },
+    );
+
+    // ── Card grid ─────────────────────────────────────────────────────────
+    let grid_y0 = inner.y + 3 + 1; // +1 for breathing room under hairline
+    for (idx, sec) in SECTIONS.iter().enumerate() {
+        let col = (idx as u16) % cols;
+        let row = (idx as u16) / cols;
+        let cx = inner.x + col * (card_w + gap);
+        let cy = grid_y0 + row * (card_h + gap);
+        let cr = Rect { x: cx, y: cy, width: card_w, height: card_h };
+        let is_active = active_window.map(|w| w == sec.window).unwrap_or(idx == 0);
+        render_jump_card(frame, cr, sec, is_active);
+    }
+
+    // ── Footer: "1-5 jump   ↵ open   esc close              ● Live" ──────
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    let hints: Vec<Span> = vec![
+        Span::styled("1–5", Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD)),
+        Span::styled(" jump   ", Style::default().fg(IOS_FG_MUTED)),
+        Span::styled("↵", Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD)),
+        Span::styled(" open   ", Style::default().fg(IOS_FG_MUTED)),
+        Span::styled("esc", Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD)),
+        Span::styled(" close", Style::default().fg(IOS_FG_MUTED)),
+    ];
+    frame.render_widget(
+        Paragraph::new(Line::from(hints)),
+        Rect { x: inner.x, y: footer_y, width: inner.width.saturating_sub(8), height: 1 },
+    );
+    let live = " ● Live ";
+    let live_w = live.chars().count() as u16;
+    if inner.width > live_w {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                live,
+                Style::default().fg(IOS_GREEN).add_modifier(Modifier::BOLD),
+            ))),
+            Rect {
+                x: inner.x + inner.width - live_w,
+                y: footer_y,
+                width: live_w,
+                height: 1,
+            },
+        );
+    }
+}
+
+fn render_jump_card(frame: &mut ratatui::Frame, rect: Rect, sec: &Section, active: bool) {
+    let (bg, fg, sub_fg, badge_bg, badge_fg) = if active {
+        (IOS_TINT, IOS_FG, Color::Rgb(220, 232, 255), IOS_TINT_DARK, IOS_FG)
+    } else {
+        (IOS_CARD_BG, IOS_FG, IOS_FG_MUTED, IOS_ICON_CHIP, IOS_FG_MUTED)
+    };
+    let card = Block::default()
+        .borders(Borders::NONE)
+        .style(Style::default().bg(bg));
+    frame.render_widget(card, rect);
+
+    let inner = Rect {
+        x: rect.x + 1,
+        y: rect.y,
+        width: rect.width.saturating_sub(2),
+        height: rect.height,
+    };
+
+    // Top row: icon badge (left) + key badge (right).
+    let icon_span = Span::styled(
+        format!(" {} ", sec.icon),
+        Style::default().fg(fg).bg(badge_bg).add_modifier(Modifier::BOLD),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(icon_span)),
+        Rect { x: inner.x, y: inner.y, width: 3, height: 1 },
+    );
+    let key_span = Span::styled(
+        format!(" {} ", sec.key),
+        Style::default().fg(badge_fg).bg(badge_bg).add_modifier(Modifier::BOLD),
+    );
+    let key_w = 3u16;
+    if inner.width > key_w {
+        frame.render_widget(
+            Paragraph::new(Line::from(key_span)),
+            Rect {
+                x: inner.x + inner.width - key_w,
+                y: inner.y,
+                width: key_w,
+                height: 1,
+            },
+        );
+    }
+
+    // Title (bold) + subtitle on the middle rows.
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            sec.title,
+            Style::default().fg(fg).add_modifier(Modifier::BOLD),
+        ))),
+        Rect { x: inner.x, y: inner.y + 2, width: inner.width, height: 1 },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            sec.sub,
+            Style::default().fg(sub_fg),
+        ))),
+        Rect { x: inner.x, y: inner.y + 3, width: inner.width, height: 1 },
+    );
+
+    // Footer line at the bottom of the card.
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            sec.footer,
+            Style::default().fg(sub_fg).add_modifier(Modifier::ITALIC),
+        ))),
+        Rect {
+            x: inner.x,
+            y: inner.y + rect.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        },
+    );
+}
+
 // ─────────────────────────── validation harness ────────────────────────────
 // Original Phase-0 POC view — chip on top, hint line, event log. Stays as
 // the default (`0` / Esc) so the three risk checks still drive the binary.
@@ -1782,13 +2046,16 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
             render_session_switcher(frame, area, app);
             app.chip_rect = None;
         }
-        Overlay::ContextMenu | Overlay::Spotlight | Overlay::ActionSheet => {
+        Overlay::ContextMenu | Overlay::Spotlight | Overlay::ActionSheet | Overlay::SectionJump => {
             render_terminal_backdrop(frame, area);
             dim_backdrop(frame, area);
             match app.overlay {
                 Overlay::ContextMenu => render_context_menu(frame, area),
                 Overlay::Spotlight => render_spotlight(frame, area, app),
                 Overlay::ActionSheet => render_action_sheet(frame, area),
+                Overlay::SectionJump => {
+                    render_section_jump(frame, area, app.section_active.as_deref());
+                }
                 _ => unreachable!(),
             }
             app.chip_rect = None;
@@ -1796,7 +2063,13 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
-fn run(initial: Overlay, single_shot: bool, pane_id: Option<String>) -> io::Result<()> {
+fn run(
+    initial: Overlay,
+    single_shot: bool,
+    pane_id: Option<String>,
+    session: String,
+    active_section: Option<String>,
+) -> io::Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
@@ -1807,6 +2080,7 @@ fn run(initial: Overlay, single_shot: bool, pane_id: Option<String>) -> io::Resu
     if initial != Overlay::None {
         app.overlay = initial;
     }
+    app.section_active = active_section;
     // Action dispatched on Enter / a shortcut key in single-shot mode. We run
     // the tmux subprocess *after* tearing down raw mode so the spawned cmd
     // sees a clean terminal state.
@@ -1851,6 +2125,51 @@ fn run(initial: Overlay, single_shot: bool, pane_id: Option<String>) -> io::Resu
                             }
                             _ => {}
                         }
+                    } else if app.overlay == Overlay::SectionJump {
+                        // Tab-triggered window jumper. Number keys 1–5 dispatch
+                        // `tmux select-window` then exit (single-shot) or close
+                        // the overlay (preview mode). Esc / 0 / q / Tab close.
+                        match k.code {
+                            KeyCode::Esc
+                            | KeyCode::Char('q')
+                            | KeyCode::Char('0')
+                            | KeyCode::Tab => {
+                                if single_shot {
+                                    break;
+                                }
+                                app.overlay = Overlay::None;
+                            }
+                            KeyCode::Char(c) if c.is_ascii_digit() => {
+                                if let Some(args) =
+                                    section_jump_tmux_args(c, &session)
+                                {
+                                    pending_tmux = Some(args);
+                                    break;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                // Enter confirms the currently-highlighted card;
+                                // falls back to section #1 when no caller-marked
+                                // active window is known.
+                                let key = app
+                                    .section_active
+                                    .as_deref()
+                                    .and_then(|w| {
+                                        SECTIONS
+                                            .iter()
+                                            .find(|s| s.window == w)
+                                            .map(|s| s.key)
+                                    })
+                                    .unwrap_or('1');
+                                if let Some(args) =
+                                    section_jump_tmux_args(key, &session)
+                                {
+                                    pending_tmux = Some(args);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
                     } else if single_shot && app.overlay == Overlay::ContextMenu {
                         // Live-fleet mode: render the iOS context menu, dispatch
                         // a tmux command on the matching shortcut, then exit.
@@ -1875,10 +2194,12 @@ fn run(initial: Overlay, single_shot: bool, pane_id: Option<String>) -> io::Resu
                                 }
                                 app.overlay = Overlay::None;
                             }
+                            KeyCode::Tab => app.overlay = Overlay::SectionJump,
                             KeyCode::Char('1') => app.overlay = Overlay::ContextMenu,
                             KeyCode::Char('2') => app.open_spotlight(),
                             KeyCode::Char('3') => app.overlay = Overlay::ActionSheet,
                             KeyCode::Char('4') => app.overlay = Overlay::SessionSwitcher,
+                            KeyCode::Char('5') => app.overlay = Overlay::SectionJump,
                             _ => {}
                         }
                     }
@@ -1944,15 +2265,19 @@ fn parse_overlay(name: &str) -> Overlay {
         "spotlight" | "search" => Overlay::Spotlight,
         "action-sheet" | "action_sheet" | "sheet" => Overlay::ActionSheet,
         "session-switcher" | "switcher" => Overlay::SessionSwitcher,
+        "section-jump" | "section_jump" | "jump" => Overlay::SectionJump,
         _ => Overlay::None,
     }
 }
 
 fn main() -> io::Result<()> {
-    // Minimal CLI: --overlay <name>  --pane <id>
+    // Minimal CLI: --overlay <name>  --pane <id>  --session <name>  --active <window>
     let mut overlay = Overlay::None;
     let mut single_shot = false;
     let mut pane_id: Option<String> = None;
+    let mut session: String = std::env::var("CODEX_FLEET_TMUX_SESSION")
+        .unwrap_or_else(|_| "codex-fleet".to_string());
+    let mut active_section: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if let Some(v) = a.strip_prefix("--overlay=") {
@@ -1967,7 +2292,17 @@ fn main() -> io::Result<()> {
             pane_id = Some(v.to_string());
         } else if a == "--pane" {
             pane_id = args.next();
+        } else if let Some(v) = a.strip_prefix("--session=") {
+            session = v.to_string();
+        } else if a == "--session" {
+            if let Some(v) = args.next() {
+                session = v;
+            }
+        } else if let Some(v) = a.strip_prefix("--active=") {
+            active_section = Some(v.to_string());
+        } else if a == "--active" {
+            active_section = args.next();
         }
     }
-    run(overlay, single_shot, pane_id)
+    run(overlay, single_shot, pane_id, session, active_section)
 }

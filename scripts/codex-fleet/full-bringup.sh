@@ -395,7 +395,7 @@ while IFS='|' read -r id email tier specialty; do
   # "Tier + specialty gate" — pane post-skips tasks beyond its tier or
   # outside its specialty prefixes.
   tmux respawn-pane -k -t "$pid" \
-    "env CODEX_GUARD_BYPASS=1 CODEX_HOME=/tmp/codex-fleet/$id CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email CODEX_FLEET_TIER=${tier:-high} CODEX_FLEET_SPECIALTY=\"$specialty\" codex $ADD_DIR_FLAGS \"\$(cat $WAKE)\""
+    "env CODEX_GUARD_BYPASS=1 CODEX_HOME=/tmp/codex-fleet/$id CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email CODEX_FLEET_TIER=${tier:-high} CODEX_FLEET_SPECIALTY=\"$specialty\" codex --dangerously-bypass-approvals-and-sandbox $ADD_DIR_FLAGS \"\$(cat $WAKE)\""
   i=$((i + 1))
 done <<< "$ACCOUNTS"
 
