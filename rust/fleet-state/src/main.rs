@@ -37,7 +37,7 @@ use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
 use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Paragraph};
+use tuirealm::ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use tuirealm::ratatui::Frame;
 use tuirealm::state::State;
 use tuirealm::subscription::{EventClause, Sub, SubClause};
@@ -114,7 +114,7 @@ impl Component for FleetView {
         // Design G layout:
         //   Row 0..=4   header block (FLEET caption / big stat / button row)
         //   Row 5       column header row (ACCOUNT, WEEKLY · 5H, WORKER · 5H, STATUS, WORKING ON, PANE)
-        //   Row 6..N    worker rows, 2 lines each (avatar+email / sub+rails+status+working+pane)
+        //   Row 6..N    worker row cards, 2 content lines each (avatar+email / sub+rails+status+working+pane)
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -146,8 +146,9 @@ impl Component for FleetView {
         frame.render_widget(rows_block, layout[2]);
         match &self.rows {
             Some(worker_rows) if !worker_rows.is_empty() => {
-                // 2 lines per worker row + a 1-line gap between, capped by area.
-                let row_h: u16 = 2;
+                // 2 content lines inside a rounded hairline row card, plus a
+                // 1-line gap between rows, capped by area.
+                let row_h: u16 = 4;
                 let gap: u16 = 1;
                 let unit = row_h + gap;
                 let max_rows = (body.height / unit) as usize;
@@ -165,6 +166,7 @@ impl Component for FleetView {
                             height: row_h,
                         },
                         row,
+                        i,
                     );
                 }
             }
@@ -279,6 +281,9 @@ const COL_RAIL_DUAL: u16 = 15; // for both WEEKLY · 5H and WORKER · 5H
 const COL_STATUS: u16 = 14;
 const COL_PANE: u16 = 8;
 const COL_SEP: u16 = 2;
+// Temporary row tones until fleet-ui exposes IOS_ROW_BG_LIGHT / DARK.
+const IOS_ROW_BG_LIGHT: Color = Color::Rgb(44, 44, 48);
+const IOS_ROW_BG_DARK: Color = Color::Rgb(38, 38, 40);
 
 /// Header card matching design G — small caption + big stat + Filter/New pills.
 fn render_header(frame: &mut Frame, area: Rect, summary: Option<&FleetSummary>) {
@@ -438,15 +443,26 @@ fn avatar_color(agent_id: &str) -> Color {
 /// 2-line worker row matching Design G:
 ///   Line 1: [avatar]  email                     ▕rail▏  ▕rail▏      [chip]    working_on            #N >
 ///   Line 2:           got X.X high              5h sub-text          (pane sub)
-fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
-    if area.height < 2 || area.width < 60 {
+fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow, row_index: usize) {
+    if area.height < 4 || area.width < 60 {
         return;
     }
-    let y1 = area.y;
-    let y2 = area.y + 1;
+    let row_bg = if row_index % 2 == 0 { IOS_ROW_BG_LIGHT } else { IOS_ROW_BG_DARK };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(IOS_HAIRLINE_STRONG))
+        .style(Style::default().bg(row_bg).fg(IOS_FG));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height < 2 || inner.width < 58 {
+        return;
+    }
+    let y1 = inner.y;
+    let y2 = inner.y + 1;
 
     // ── ACCOUNT (avatar + email + sub) ────────────────────────────────────
-    let mut x = area.x + 1;
+    let mut x = inner.x + 1;
     // Avatar block: 4 cells wide, colored bg, 2-char initials centered.
     let avatar = format!(" {} ", avatar_initials(&row.agent_id));
     frame.render_widget(
@@ -501,7 +517,7 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
             height: 1,
         },
     );
-    x = area.x + 1 + COL_ACCOUNT + COL_SEP;
+    x = inner.x + 1 + COL_ACCOUNT + COL_SEP;
 
     // ── WEEKLY · 5H dual rails ────────────────────────────────────────────
     // Two stacked rails — WEEKLY on row 1, 5H label on row 2 ("X% / Y%"
@@ -575,9 +591,7 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
     x += COL_STATUS + COL_SEP;
 
     // ── WORKING ON (2-line) ──────────────────────────────────────────────
-    let working_w = area
-        .width
-        .saturating_sub(x - area.x + COL_PANE + COL_SEP + 1);
+    let working_w = inner.width.saturating_sub(x - inner.x + COL_PANE + COL_SEP + 1);
     if row.working_on.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
