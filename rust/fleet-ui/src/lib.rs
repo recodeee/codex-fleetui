@@ -10,6 +10,7 @@ pub mod overlay;
 pub mod palette;
 pub mod rail;
 pub mod segmented_control;
+pub mod spotlight_filter;
 pub mod tab_strip;
 pub mod text_input;
 pub mod tool_tip;
