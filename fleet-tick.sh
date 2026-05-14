@@ -464,17 +464,17 @@ while true; do
       h5=${pair%% *}; wk=${pair##* }
       aid=${AID[$email]}
       st=${ALIVE[$aid]:-}
-      # Display raw USED-% from codex-auth list, no inversion. The previous
-      # 100-x flip rendered every account as "0% / N%" remaining, which read
-      # as "exhausted" even when the cap was fine — and disagreed with what
-      # the operator sees in their shell. Color comes from ios_axis_color
-      # with axis=usage: high% = red (bad), low% = green.
+      # Display raw USED-% from codex-auth list. Operator request: color
+      # the value/bar on the `available` (battery) axis so 100% reads
+      # green and 0% reads red regardless of what the number means.
+      # The displayed value still matches `codex-auth list` exactly; only
+      # the color gradient changed direction.
       wk_num=${wk%\%}; h5_num=${h5%\%}
       [[ "$wk_num" =~ ^[0-9]+$ ]] || wk_num=0
       [[ "$h5_num" =~ ^[0-9]+$ ]] || h5_num=0
       h5="${h5_num}%"; wk="${wk_num}%"
-      h5c=$(ios_axis_color "$h5_num" usage); wkc=$(ios_axis_color "$wk_num" usage)
-      h5_bar=$(ios_progress_rail "$h5_num" usage); wk_bar=$(ios_progress_rail "$wk_num" usage)
+      h5c=$(ios_axis_color "$h5_num" available); wkc=$(ios_axis_color "$wk_num" available)
+      h5_bar=$(ios_progress_rail "$h5_num" available); wk_bar=$(ios_progress_rail "$wk_num" available)
       # Worker status
       live_kind="idle"
       if [[ -n "${EXHAUSTED[$aid]:-}" ]]; then
