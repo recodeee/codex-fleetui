@@ -180,10 +180,26 @@ def visible_len(s):
     return len(strip_ansi(s))
 
 CARD_W_DEFAULT = 120
+# `tput cols` reads a controlling tty; when run from a subprocess piped from
+# python it falls back to 80. Prefer tmux's own pane width — that's always
+# correct. Fall back to COLUMNS env, then tput, then 120.
+cols = 0
 try:
-    cols = int(sh("tput", "cols", default="120") or "120")
+    pw = sh("tmux", "display-message", "-p", "#{pane_width}")
+    if pw.isdigit():
+        cols = int(pw)
 except Exception:
-    cols = 120
+    pass
+if cols < 40:
+    try:
+        cols = int(os.environ.get("COLUMNS", "0")) or cols
+    except Exception:
+        pass
+if cols < 40:
+    try:
+        cols = int(sh("tput", "cols", default="120") or "120")
+    except Exception:
+        cols = 120
 CARD_W = max(70, min(cols - 4, 180))
 
 def card_top(title, w=CARD_W):
@@ -198,8 +214,10 @@ def card_bottom(w=CARD_W):
     return f"{IOS_GRAY2}╰{'─'*(w-2)}╯{R}"
 
 def card_row(content, w=CARD_W):
+    # Total width math: │ + "  " + content + pad + "  " + │ = 6 + vis + pad
+    # So pad = w - 6 - vis (not w - 4 — that's an off-by-2 bug).
     vis = visible_len(content)
-    pad = w - 4 - vis
+    pad = w - 6 - vis
     if pad < 0: pad = 0
     return f"{IOS_GRAY2}│{R}  {content}{' '*pad}  {IOS_GRAY2}│{R}"
 
@@ -235,12 +253,13 @@ out.append(CLR)
 # ── Stat cards row — 4 mini iOS cards, rounded ────────────────────────
 MINI_W = 26
 def mini_card(label, value, value_color, sub):
-    title_pad = MINI_W - 4 - len(label)
+    # Same off-by-2 fix as card_row: chrome is 6 chars (│ + 2 margin + 2 margin + │).
+    title_pad = MINI_W - 6 - len(label)
     if title_pad < 0: title_pad = 0
     value_vis = len(value)
-    value_pad = MINI_W - 4 - value_vis
+    value_pad = MINI_W - 6 - value_vis
     if value_pad < 0: value_pad = 0
-    sub_pad = MINI_W - 4 - len(sub)
+    sub_pad = MINI_W - 6 - len(sub)
     if sub_pad < 0: sub_pad = 0
     return [
       f"{IOS_GRAY2}╭{'─'*(MINI_W-2)}╮{R}",
