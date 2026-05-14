@@ -81,11 +81,25 @@ This is intentional:
 The worker prompt in `worker-prompt.md` codifies these rules in the
 codex pane's behavior.
 
+## Claim dispatch mode
+
+`force-claim.sh --loop` starts `claim-trigger.sh` in the background and
+keeps a slower 30s polling pass as a backstop. The trigger watches
+`openspec/plans/*/plan.json` plus Colony WAL/event files under
+`~/.colony`, then wakes the first idle `codex-fleet:overview` pane.
+
+Set `CODEX_FLEET_CLAIM_MODE` to choose the path:
+
+- `both` (default): event trigger plus 30s poll backstop
+- `event`: event trigger only
+- `poll`: polling only, no trigger
+
 ## Requirements
 
 - `tmux` on PATH
 - `codex` on PATH (the actual CLI, not just `codex login` — must run a
   worker-loop session)
+- `inotifywait` on PATH for event-driven claim dispatch
 - `python3` on PATH (used by the YAML parser in `up.sh` to avoid a
   hard `yq` dep)
 - Auth files staged at `~/.codex/accounts/<email>.json` for every
