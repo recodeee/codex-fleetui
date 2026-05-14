@@ -122,10 +122,56 @@ fi
 log "plan=$PLAN_SLUG  N=$N  active-file=$ACTIVE_FILE"
 
 # Pick N healthy account IDs not already in $ACTIVE_FILE.
-# Prefers cap-probe.sh when present (it caches 5h-cap reset times); falls
-# back to parsing `codex-auth list` directly with the standard filter.
+#
+# Source priority (first to yield ≥1 row wins):
+#   1. lib/discover-accounts.sh — every authenticated codex CLI home on
+#      disk (/tmp/codex-fleet/*/auth.json). This is the canonical pool
+#      because accounts.yml historically lagged: tonight the fleet had 18
+#      authenticated accounts on disk but accounts.yml declared only 4,
+#      so add-workers couldn't grow beyond 4. The discoverer closes that
+#      gap with zero manual upkeep.
+#   2. cap-probe.sh — same emails but pre-filtered through the 5h/weekly
+#      cap budget. Use when present so we don't pick a capped account.
+#   3. codex-auth list — legacy fallback for hosts without cap-probe.
+#
+# Each path emits TSV: `<aid>\t<email>` lines. Accounts already in
+# $ACTIVE_FILE are filtered out at every layer.
 pick_accounts() {
   local need="$1"
+  # ── Source 1: disk discovery ─────────────────────────────────────────────
+  if [ -x "$SCRIPT_DIR/lib/discover-accounts.sh" ]; then
+    local discovered_tmp
+    discovered_tmp="$(mktemp)"
+    local discover_session="${CODEX_FLEET_SESSION:-codex-fleet${FLEET_ID:+-$FLEET_ID}}"
+    ACTIVE_FILE="$ACTIVE_FILE" bash "$SCRIPT_DIR/lib/discover-accounts.sh" \
+      --exclude-active --exclude-tmux "$discover_session" \
+      > "$discovered_tmp" 2>/dev/null || true
+    if [ -s "$discovered_tmp" ]; then
+      # Optionally filter through cap-probe to drop capped accounts. If
+      # cap-probe isn't available, take everything discovered as-is.
+      if [ -x "$SCRIPT_DIR/cap-probe.sh" ]; then
+        local healthy_emails
+        healthy_emails="$(bash "$SCRIPT_DIR/cap-probe.sh" "$need" 2>/dev/null || true)"
+        if [ -n "$healthy_emails" ]; then
+          # Intersection: discovered ∩ healthy.
+          while IFS=$'\t' read -r aid email; do
+            [ -n "$aid" ] || continue
+            if printf '%s\n' "$healthy_emails" | grep -Fxq "$email"; then
+              printf '%s\t%s\n' "$aid" "$email"
+            fi
+          done < "$discovered_tmp" | head -n "$need"
+          rm -f "$discovered_tmp"
+          return
+        fi
+      fi
+      # No cap-probe (or it returned nothing): take the first N discovered.
+      head -n "$need" "$discovered_tmp"
+      rm -f "$discovered_tmp"
+      return
+    fi
+    rm -f "$discovered_tmp"
+  fi
+  # ── Source 2: cap-probe + accounts.yml email→aid map ────────────────────
   if [ -x "$SCRIPT_DIR/cap-probe.sh" ]; then
     local emails
     emails="$(bash "$SCRIPT_DIR/cap-probe.sh" "$need" 2>/dev/null || true)"
