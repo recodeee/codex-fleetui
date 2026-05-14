@@ -228,15 +228,44 @@ done <<< "$ACCOUNTS"
 
 # 11. Create fleet / plan / waves windows
 log "creating fleet / plan / waves windows"
-tmux new-window -d -t "$SESSION:" -n fleet "bash $SCRIPT_DIR/fleet-state-anim.sh"
-tmux new-window -d -t "$SESSION:" -n plan  "bash $SCRIPT_DIR/plan-tree-anim.sh"
-tmux new-window -d -t "$SESSION:" -n waves "bash $SCRIPT_DIR/waves-anim-generic.sh"
-tmux new-window -d -t "$SESSION:" -n review  "bash $SCRIPT_DIR/review-board.sh"
-tmux new-window -d -t "$SESSION:" -n watcher "bash $SCRIPT_DIR/watcher-board.sh"
-# legacy plain watcher (replaced by graphical watcher-board.sh):
-# tmux new-window ... "watch -n 2 -t -c 'cat /tmp/claude-viz/cap-swap-status.txt 2>/dev/null; echo; echo --- recent swaps ---; tail -20 /tmp/claude-viz/cap-swap.log 2>/dev/null'"
-tmux set-option -w -t "$SESSION:plan"  remain-on-exit on
-tmux set-option -w -t "$SESSION:waves" remain-on-exit on
+
+# Open a dashboard window only if its script exists. After the extraction split
+# from recodee, not every renderer is present on every install — e.g. the
+# codex-fleet repo has `waves-anim.sh` but not the older `waves-anim-generic.sh`;
+# `review-board.sh` may or may not have migrated. With `set -eo pipefail`,
+# `tmux new-window -d -t SESSION: -n NAME "bash MISSING.sh"` succeeds in
+# creating the window, the spawned bash exits status 127, tmux closes the
+# window immediately, and the following `set-option -w -t SESSION:NAME` fires
+# `no such window` and aborts the bringup before the sibling ticker session is
+# created (memory: 2026-05-14 bringup miss on waves).
+#
+# `open_window` skips silently if the script is missing and only sets the
+# remain-on-exit flag once we know the window stuck. The waves slot also tries
+# `waves-anim.sh` as a fallback for the historical generic name.
+open_window() {
+  local name="$1" script="$2" remain="$3"
+  if [ ! -f "$script" ]; then
+    warn "dashboard script missing: $script — skipping '$name' window"
+    return 0
+  fi
+  tmux new-window -d -t "$SESSION:" -n "$name" "bash $script" || {
+    warn "tmux new-window failed for '$name'"
+    return 0
+  }
+  if [ "$remain" = "remain" ]; then
+    tmux set-option -w -t "$SESSION:$name" remain-on-exit on 2>/dev/null \
+      || warn "could not set remain-on-exit on '$name'"
+  fi
+}
+
+waves_script="$SCRIPT_DIR/waves-anim-generic.sh"
+[ -f "$waves_script" ] || waves_script="$SCRIPT_DIR/waves-anim.sh"
+
+open_window fleet   "$SCRIPT_DIR/fleet-state-anim.sh" ""
+open_window plan    "$SCRIPT_DIR/plan-tree-anim.sh"   remain
+open_window waves   "$waves_script"                   remain
+open_window review  "$SCRIPT_DIR/review-board.sh"     ""
+open_window watcher "$SCRIPT_DIR/watcher-board.sh"    ""
 
 # 11b. Apply canonical iOS-style chrome (3-row tab strip at top, rounded pane
 # borders with `▭ #{@panel}` headers, sticky right-click menu). Runs after
