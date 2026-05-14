@@ -52,39 +52,30 @@ boundary is: anything that *renders a frame* moves to Rust; anything that
   four-small-binaries shape is chosen first because it migrates
   incrementally — see design.md "binary shape" for rationale.
 
-## Repo decision: codex-fleet only
+## Status: NOT YET STARTED
 
-The `fleet-ui`, `fleet-data`, and `fleet-*` binary crates live in
-**`recodeee/codex-fleet`**, under the existing `rust/` tree alongside
-the POC. They do **not** go into `recodeee/recodee`.
+This change is **captured but not in flight**. Implementation must defer
+until the codex-fleet extraction PRs (in flight as of 2026-05-14:
+`codex-fleet-extract-p1-source-env-in-launch`,
+`parameterize-codex-fleet-for-extraction`, plus several agent
+worktrees touching the dashboards) have merged and the agent
+worktree count is back to 1.
 
-Rationale: codex-fleet was extracted to its own repo on 2026-05-14
-specifically to decouple the worker-pool product from the recodee
-monorepo. Putting the new Rust crates in recodee would re-couple
-them — a fleet-only consumer would have to depend on the recodee
-workspace. Keeping everything in codex-fleet preserves the extraction
-and lets the fleet ship as an independent product.
+Justification: memory rule `feedback_freeze_before_cross_cutting_reorg`
+— T3 cross-cutting reorgs collide with parallel agent worktrees that
+read/write the files being moved. This proposal renames the rendering
+path for all four dashboards, which is exactly that shape.
 
-Side effect: this **removes** the freeze-gate dependency on recodee's
-`agent/*` worktree count. Workers operating on codex-fleet do not
-collide with recodee worktrees (different repo, different file tree),
-so implementation can start as soon as the POC validates its three
-risks. The freeze rule still applies to any work that *also* touches
-recodee (e.g. updating `~/Documents/recodee/scripts/codex-fleet/`
-references), but the rust/ port itself is unblocked.
+## Validation gate before unfreeze
 
-## Status: POC IN FLIGHT, PHASE 1 PENDING POC VALIDATION
+```bash
+git -C ~/Documents/recodee worktree list | grep -c '^.*agent/'
+# expected: 0 (or 1 if the implementer themselves opened it)
+```
 
-Sequencing:
-
-1. POC (this PR) — operator runs `cargo run --release -p fleet-tui-poc`
-   inside a fleet tmux pane, ticks the three boxes in `tasks.md`.
-2. Once POC validates, Phase 1 (the real `fleet-ui` crate) starts.
-3. Phases 2–6 follow as documented in `design.md`.
-
-If the POC reveals an unexpected failure mode (e.g. tmux quantises
-truecolor on the operator's terminal, double-framing happens, mouse
-events don't pass through), the design adapts before Phase 1 starts.
+Once the gate passes, the work flows in phases (see design.md). Each
+phase ships an independent PR; do **not** merge until the prior phase's
+runtime evidence is recorded in tasks.md.
 
 ## Companion deliverable: POC (this PR)
 
