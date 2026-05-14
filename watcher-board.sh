@@ -8,8 +8,12 @@ LOG="${LOG:-/tmp/claude-viz/cap-swap.log}"
 PROBE_CACHE="${PROBE_CACHE:-/tmp/claude-viz/cap-probe-cache}"
 INTERVAL_MS="${WATCHER_INTERVAL_MS:-1000}"
 
-trap 'printf "\033[?25h"; echo; exit' INT TERM EXIT
-printf "\033[?25l"
+# Use the alternate screen buffer so each frame draws on a fresh canvas with
+# no scrollback. Without this, a previous taller frame's tail rows linger
+# above the new HOME row when content shrinks or the pane is resized, which
+# made the watcher appear to render twice.
+trap 'printf "\033[?25h\033[?1049l"; exit' INT TERM EXIT
+printf "\033[?1049h\033[?25l\033[2J\033[H"
 
 INTERVAL_S=$(python3 -c "print(${INTERVAL_MS}/1000)")
 f=0
@@ -42,7 +46,11 @@ TEAL = E+"[38;5;73m"
 ICE  = E+"[38;5;117m"
 
 CLR = "\033[K"
-HOME = "\033[H"
+# Frame-start: erase the entire viewport then home the cursor. Alt-screen mode
+# (entered by the outer bash wrapper) prevents scrollback bleed across frames;
+# this second clear guards against intra-frame growth that would otherwise let
+# the previous frame's tail rows show through.
+HOME = "\033[2J\033[H"
 CLR_EOS = "\033[J"
 
 def sh(*a, default=""):
