@@ -10,14 +10,12 @@ name = "fleet-tab-strip"
 path = "src/main.rs"
 
 [dependencies]
-# Workspace now on ratatui 0.30 (bumped from 0.28 in this same PR) so we
-# share Frame/Rect types with tuirealm 4.1 — fleet-ui's TabStrip widget is
-# imported directly, no inline duplication of the render code.
 ratatui = "0.30"
 crossterm = "0.29"
 fleet-ui = { path = "../fleet-ui" }
-# tuirealm — React/Elm-inspired component framework for ratatui.
-# fleet-tab-strip is the proof-of-concept binary for the migration; the
-# other dashboards (fleet-state, fleet-plan-tree, fleet-waves,
-# fleet-watcher, fleet-tui-poc) follow in subsequent lanes.
 tuirealm = "4.1"
+# Shared tuirealm helpers — terminal-adapter setup, shutdown, and
+# tmux select-window dispatch. Replaces the open-coded versions of
+# init_adapter / select_window that every dashboard binary writes.
+# fleet-tab-strip is the first consumer.
+fleet-components = { path = "../fleet-components" }
