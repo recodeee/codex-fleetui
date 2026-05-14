@@ -1,0 +1,109 @@
+# codex-fleet pane config — rendered into each staged CODEX_HOME.
+#
+# Stays deliberately minimal. The fleet worker prompt only calls
+# `mcp__colony__*`; every other MCP server in the operator's interactive
+# `~/.codex/config.toml` is dead weight here and adds 30-60s of startup
+# blocking per pane when its backing daemon is down (e.g. recodee on
+# :2455, drawio @drawio/mcp, Higgsfield SaaS).
+#
+# Tokens substituted by fleet_render_config() in lib/mcp-preflight.sh
+# (placeholders wrapped in double underscores below — listed here without
+# the wrapper so this comment block does not get rewritten in the
+# rendered output):
+#
+#   COLONY_ENABLED        true / false  (from mcp-preflight.sh)
+#   COLONY_HOME           absolute path to COLONY_HOME (from preflight)
+#   COLONY_BIN            absolute path to the `colony` binary
+#   COLONY_TIMEOUT_SEC    integer seconds for startup_timeout_sec
+#   PATH                  shell PATH the codex pane should inherit
+#   REASONING_EFFORT      "xhigh" | "medium" | "low" — tiered per pane.
+#                         Driven by the `tier` field in accounts.yml
+#                         (high→xhigh, medium→medium, low→low). Codex
+#                         locks reasoning effort at startup, so this is
+#                         the only knob for cheap panes.
+#
+# Anything not substituted is intentionally static — edit this file, not
+# the per-pane copy.
+
+# Autonomous-worker policy. The fleet panes execute the worker-loop
+# prompt without a human at the keyboard, so on-request approval would
+# stall every Colony MCP call against the guardian_subagent reviewer
+# (see the "Request denied for codex to run colony mcp" symptom in the
+# Phase-5 screenshot). `never` immediately returns execution failures to
+# the model instead of blocking on approval — the right shape for a
+# pull-loop worker.
+approval_policy = "never"
+cli_auth_credentials_store = "file"
+model = "gpt-5.5"
+model_reasoning_effort = "__REASONING_EFFORT__"
+personality = "pragmatic"
+# Workers do write files (claim → edit → commit). Read-only would
+# silently break every task. workspace-write keeps the sandbox on but
+# allows edits inside the working tree.
+sandbox_mode = "workspace-write"
+suppress_unstable_features_warning = true
+
+[features]
+external_migration = true
+goals = true
+memories = true
+prevent_idle_sleep = true
+terminal_resize_reflow = true
+
+# Only Colony is enabled. Every other MCP from the operator's interactive
+# config is intentionally omitted — the worker prompt does not call them
+# and slow / unreachable servers (drawio's @drawio/mcp, recodee at
+# 127.0.0.1:2455 when the daemon is down) would otherwise burn 30s of
+# pane startup time and trip the "MCP startup incomplete" banner.
+[mcp_servers.colony]
+args = ["mcp"]
+command = "__COLONY_BIN__"
+enabled = __COLONY_ENABLED__
+startup_timeout_sec = __COLONY_TIMEOUT_SEC__
+
+[mcp_servers.colony.env]
+COLONY_HOME = "__COLONY_HOME__"
+COLONY_MCP_METRICS_MAX = "5000"
+COLONY_OBSERVATIONS_TTL_DAYS = "30"
+COLONY_SESSION_TTL_DAYS = "14"
+NODE_OPTIONS = "--max-old-space-size=1024"
+
+[notice]
+fast_default_opt_out = true
+hide_full_access_warning = true
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+hide_gpt5_1_migration_prompt = true
+hide_rate_limit_model_nudge = true
+
+# Trust the fleet's working roots so the workspace-write sandbox doesn't
+# escalate on every edit. Mirrors the operator's interactive trust list
+# for the project paths the fleet actually touches.
+[projects."/home/deadpool"]
+trust_level = "trusted"
+
+[projects."/home/deadpool/Documents"]
+trust_level = "trusted"
+
+[projects."/home/deadpool/Documents/codex-fleet"]
+trust_level = "trusted"
+
+[projects."/home/deadpool/Documents/recodee"]
+trust_level = "trusted"
+
+[projects."/home/deadpool/Documents/recodee/colony"]
+trust_level = "trusted"
+
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+PATH = "__PATH__"
+
+[tui]
+status_line = [
+    "model-with-reasoning",
+    "git-branch",
+    "context-remaining",
+    "five-hour-limit",
+    "weekly-limit",
+]

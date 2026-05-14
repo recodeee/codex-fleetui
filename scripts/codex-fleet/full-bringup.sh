@@ -27,6 +27,7 @@ ATTACH=1
 PLAN_SLUG=""
 FLEET_ID="${FLEET_ID:-}"
 AUTO_FLEET_ID=0
+NO_CAP_CACHE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -35,6 +36,7 @@ while [ $# -gt 0 ]; do
     --no-attach) ATTACH=0; shift ;;
     --fleet-id) FLEET_ID="$2"; shift 2 ;;
     --auto-fleet-id) AUTO_FLEET_ID=1; shift ;;
+    --no-cap-cache) NO_CAP_CACHE=1; shift ;;
     *) echo "unknown arg: $1"; exit 2 ;;
   esac
 done
@@ -42,6 +44,17 @@ done
 log() { printf '\033[36m[full-bringup]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[full-bringup]\033[0m %s\n' "$*"; }
 die() { printf '\033[31m[full-bringup] FATAL:\033[0m %s\n' "$*"; exit 1; }
+
+# Source the MCP preflight so stage_account() (below) renders a fleet-local
+# config.toml driven by FLEET_COLONY_* + FLEET_PATH. The preflight is
+# best-effort: an unhealthy Colony degrades the staged config rather than
+# failing bringup, matching the worker-prompt's shell-CLI fallback.
+preflight_log() { log "preflight: $*"; }
+preflight_warn() { warn "preflight: $*"; }
+# shellcheck source=lib/mcp-preflight.sh
+. "$SCRIPT_DIR/lib/mcp-preflight.sh"
+
+FLEET_CONFIG_TMPL="${CODEX_FLEET_CONFIG_TMPL:-$SCRIPT_DIR/fleet-config.toml.tmpl}"
 
 cd "$REPO"
 
@@ -99,17 +112,61 @@ fi
 [ -f "openspec/plans/$PLAN_SLUG/plan.json" ] || die "plan workspace missing: openspec/plans/$PLAN_SLUG/plan.json"
 log "priority plan: $PLAN_SLUG"
 
+# 2b. Build --add-dir flags from plan metadata.writable_roots (schema:
+# scripts/codex-fleet/lib/plan-meta.md). Falls back to the recodee +
+# codex-fleet pair when the plan declares nothing.
+ADD_DIR_FLAGS=$(PLAN_FILE="openspec/plans/$PLAN_SLUG/plan.json" python3 - <<'PY'
+import json, os
+p = os.environ["PLAN_FILE"]
+try:
+    with open(p) as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+roots = (data.get("metadata") or {}).get("writable_roots") or []
+if not roots:
+    roots = ["/home/deadpool/Documents/recodee", "/home/deadpool/Documents/codex-fleet"]
+print(" ".join(f"--add-dir {r}" for r in roots))
+PY
+)
+[ -n "$ADD_DIR_FLAGS" ] || die "failed to compute ADD_DIR_FLAGS for plan $PLAN_SLUG"
+
+# Preflight every writable root: must exist + be writable by the current user.
+add_count=0
+for path in $(printf '%s\n' "$ADD_DIR_FLAGS" | awk '{for(i=1;i<=NF;i++) if($i=="--add-dir"){print $(i+1)}}'); do
+  [ -d "$path" ] || die "writable root unreachable: $path (chmod / chown / mount?)"
+  [ -w "$path" ] || die "writable root unreachable: $path (chmod / chown / mount?)"
+  add_count=$((add_count + 1))
+done
+log "writable roots ok: $add_count root(s)"
+
 # 3. Pre-spawn git cleanup (prevents 'incorrect old value provided' inside agent-branch-start.sh)
 log "pruning stale remote refs"
 git -C "$REPO" remote prune origin 2>&1 | sed 's/^/  /' || true
 git -C "$REPO" fetch --prune origin 2>&1 | sed 's/^/  /' >/dev/null || true
 
-# 4. Ensure the plan is published to Colony so task_plan_list shows it
-log "ensuring plan is published"
-if colony plan publish "$PLAN_SLUG" --agent claude --session "full-bringup-$(date +%s)" 2>&1 | sed 's/^/  /'; then
-  log "publish: ok (or already published — publish is idempotent)"
-else
-  warn "publish returned non-zero; check above. Workers may not see this plan in task_ready_for_agent."
+# 4. Ensure the plan is published to Colony so task_plan_list shows it.
+# 5-min publish cache short-circuits the second/third bringup of the same
+# plan slug — colony plan publish is idempotent but the round-trip costs
+# ~2-3s and an MCP call.
+PLAN_PUBLISH_MARK="/tmp/codex-fleet/.plan-publish.$PLAN_SLUG.mark"
+mkdir -p /tmp/codex-fleet
+plan_publish_skip=0
+if [ -f "$PLAN_PUBLISH_MARK" ]; then
+  mark_age=$(( $(date +%s) - $(stat -c %Y "$PLAN_PUBLISH_MARK" 2>/dev/null || echo 0) ))
+  if [ "$mark_age" -lt 300 ]; then
+    log "plan publish: cache hit, skipping (age=${mark_age}s)"
+    plan_publish_skip=1
+  fi
+fi
+if [ "$plan_publish_skip" = "0" ]; then
+  log "ensuring plan is published"
+  if colony plan publish "$PLAN_SLUG" --agent claude --session "full-bringup-$(date +%s)" 2>&1 | sed 's/^/  /'; then
+    log "publish: ok (or already published — publish is idempotent)"
+    touch "$PLAN_PUBLISH_MARK"
+  else
+    warn "publish returned non-zero; check above. Workers may not see this plan in task_ready_for_agent."
+  fi
 fi
 
 # 5. Verify wake prompt exists
@@ -149,39 +206,147 @@ CAND_N=$(printf "%s\n" "$CANDIDATES" | wc -l)
 log "ranked $CAND_N candidates by codex-auth score; running live probe..."
 
 # (b) Live probe — keep only candidates whose codex CLI is actually usable.
-HEALTHY_EMAILS=$(bash "$SCRIPT_DIR/cap-probe.sh" "$N_PANES" $CANDIDATES 2>/tmp/cap-probe.err) || true
+# 5-min cache short-circuits back-to-back bringups (each probe spawns N codex
+# subprocesses and takes 30-90s). Bypass with --no-cap-cache.
+CAP_PROBE_CACHE="/tmp/codex-fleet/.cap-probe-cache.json"
+mkdir -p /tmp/codex-fleet
+HEALTHY_EMAILS=""
+cap_cache_hit=0
+if [ "$NO_CAP_CACHE" = "0" ] && [ -f "$CAP_PROBE_CACHE" ]; then
+  HEALTHY_EMAILS=$(CACHE="$CAP_PROBE_CACHE" python3 - <<'PY'
+import json, os, time, sys
+try:
+    with open(os.environ["CACHE"]) as f:
+        data = json.load(f)
+    ts = int(data.get("ts", 0))
+    age = int(time.time()) - ts
+    if age < 300 and isinstance(data.get("emails"), list) and data["emails"]:
+        print(age)
+        for e in data["emails"]:
+            print(e)
+except Exception:
+    pass
+PY
+)
+  if [ -n "$HEALTHY_EMAILS" ]; then
+    cache_age=$(printf "%s\n" "$HEALTHY_EMAILS" | head -n1)
+    HEALTHY_EMAILS=$(printf "%s\n" "$HEALTHY_EMAILS" | tail -n +2)
+    log "cap-probe cache hit (age=${cache_age}s)"
+    cap_cache_hit=1
+  fi
+fi
+if [ "$cap_cache_hit" = "0" ]; then
+  HEALTHY_EMAILS=$(bash "$SCRIPT_DIR/cap-probe.sh" "$N_PANES" $CANDIDATES 2>/tmp/cap-probe.err) || true
+fi
 HEALTHY_N=$(printf "%s\n" "$HEALTHY_EMAILS" | grep -c "@" || true)
 if [ "$HEALTHY_N" -lt "$N_PANES" ]; then
   warn "cap-probe found only $HEALTHY_N/$N_PANES healthy accounts"
   warn "$(cat /tmp/cap-probe.err 2>/dev/null)"
   [ "$HEALTHY_N" -eq 0 ] && die "no healthy accounts; check /tmp/claude-viz/cap-probe.log"
 fi
+if [ "$cap_cache_hit" = "0" ] && [ "$HEALTHY_N" -gt 0 ]; then
+  # Atomic write: tmp + rename so a concurrent reader never sees half a file.
+  CACHE_TMP="${CAP_PROBE_CACHE}.tmp.$$"
+  EMAILS="$HEALTHY_EMAILS" python3 - <<PY > "$CACHE_TMP"
+import json, os, time
+emails = [e.strip() for e in os.environ.get("EMAILS","").splitlines() if e.strip()]
+print(json.dumps({"ts": int(time.time()), "emails": emails}))
+PY
+  mv "$CACHE_TMP" "$CAP_PROBE_CACHE"
+fi
 log "$HEALTHY_N healthy account(s) confirmed by live probe"
 
-# Map healthy emails to id|email format expected downstream
-ACCOUNTS=$(printf "%s\n" "$HEALTHY_EMAILS" | python3 -c '
-import sys
-m={"magnoliavilag":"magnolia","gitguardex":"gg","pipacsclub":"pipacs"}
+# Map healthy emails to id|email|tier|specialty format. `tier` + `specialty`
+# are looked up from accounts.yml by email; missing entries default to
+# tier=high (xhigh reasoning) and specialty="" (generalist). The downstream
+# stage + spawn loops read 4 fields per line.
+ACCOUNTS_YAML="${ACCOUNTS_YAML:-$SCRIPT_DIR/accounts.yml}"
+ACCOUNTS=$(printf "%s\n" "$HEALTHY_EMAILS" | ACCOUNTS_YAML="$ACCOUNTS_YAML" python3 -c '
+import sys, os, re
+acct_yml = os.environ.get("ACCOUNTS_YAML", "")
+by_email = {}
+if acct_yml and os.path.exists(acct_yml):
+    cur = None
+    with open(acct_yml) as fh:
+        for raw in fh:
+            line = raw.rstrip()
+            s = line.lstrip()
+            if not s or s.startswith("#"):
+                continue
+            if s.startswith("- id:"):
+                if cur is not None and cur.get("email"):
+                    by_email[cur["email"]] = cur
+                cur = {}
+                continue
+            if cur is None:
+                continue
+            mm = re.match(r"^\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*?)$", line)
+            if not mm: continue
+            k, v = mm.group(1), mm.group(2).strip()
+            if v.startswith("[") and v.endswith("]"):
+                v = [x.strip().strip("\"").strip("\x27") for x in v[1:-1].split(",") if x.strip()]
+            else:
+                v = v.strip("\"").strip("\x27")
+            cur[k] = v
+    if cur is not None and cur.get("email"):
+        by_email[cur["email"]] = cur
+dommap = {"magnoliavilag":"magnolia","gitguardex":"gg","pipacsclub":"pipacs"}
 for line in sys.stdin:
     email = line.strip()
     if not email: continue
     part, dom = email.split("@", 1)
     dom = dom.split(".", 1)[0]
-    dom = m.get(dom, dom)
-    print(f"{part}-{dom}|{email}")
+    dom = dommap.get(dom, dom)
+    aid = f"{part}-{dom}"
+    info = by_email.get(email, {})
+    tier = info.get("tier", "high")
+    spec = info.get("specialty", "")
+    if isinstance(spec, list):
+        spec = ",".join(spec)
+    print(f"{aid}|{email}|{tier}|{spec}")
 ')
 COUNT=$(echo "$ACCOUNTS" | grep -c "|")
-log "final account list: $COUNT"
+log "final account list: $COUNT (tier+specialty from $ACCOUNTS_YAML)"
 
 # 7. Stage CODEX_HOMEs
 log "staging per-account CODEX_HOMEs"
-while IFS='|' read -r id email; do
+# Map tier (from accounts.yml) → codex `model_reasoning_effort`. Consumed by
+# fleet_render_config's __REASONING_EFFORT__ substitution.
+tier_to_effort() {
+  case "$1" in
+    low)    echo "low" ;;
+    medium) echo "medium" ;;
+    *)      echo "xhigh" ;;  # high or unset
+  esac
+}
+while IFS='|' read -r id email tier specialty; do
   [ -z "$id" ] && continue
   d="/tmp/codex-fleet/$id"
   mkdir -p "$d"
   cp "$HOME/.codex/accounts/$email.json" "$d/auth.json"
   chmod 600 "$d/auth.json"
-  [ -e "$d/config.toml" ] || ln -s "$HOME/.codex/config.toml" "$d/config.toml"
+  export FLEET_REASONING_EFFORT="$(tier_to_effort "$tier")"
+  # Render a fleet-local config.toml (Colony only, pre-approved, sandbox
+  # workspace-write) instead of symlinking the operator's interactive
+  # `~/.codex/config.toml`. The old symlink dragged in drawio / recodee /
+  # Higgsfield / coolify / hostinger-api / soul-skills MCPs that the
+  # worker prompt never calls — and when any of their backends were down
+  # (recodee daemon on :2455, @drawio/mcp), every pane blocked 30-60s on
+  # MCP startup and tripped the "MCP startup incomplete" banner. A stale
+  # symlink target is replaced on every bringup so re-staging fixes a
+  # config that drifted.
+  if [ -L "$d/config.toml" ] || [ -e "$d/config.toml" ]; then
+    rm -f "$d/config.toml"
+  fi
+  if [ -f "$FLEET_CONFIG_TMPL" ]; then
+    if ! fleet_render_config "$FLEET_CONFIG_TMPL" "$d/config.toml"; then
+      warn "failed to render fleet config for $id; falling back to symlink"
+      ln -s "$HOME/.codex/config.toml" "$d/config.toml"
+    fi
+  else
+    warn "fleet template missing ($FLEET_CONFIG_TMPL); falling back to symlinking ~/.codex/config.toml"
+    ln -s "$HOME/.codex/config.toml" "$d/config.toml"
+  fi
 done <<< "$ACCOUNTS"
 
 # 8. Create the main session with overview window
@@ -217,12 +382,20 @@ tmux select-layout -t "$SESSION:overview" tiled
 log "launching $N_PANES codex workers"
 PANE_IDS=( $(tmux list-panes -t "$SESSION:overview" -F '#{pane_id}') )
 i=0
-while IFS='|' read -r id email; do
+while IFS='|' read -r id email tier specialty; do
   [ -z "$id" ] && continue
   pid="${PANE_IDS[$i]}"
   tmux set-option -p -t "$pid" '@panel' "[codex-$id]"
+  # --add-dir is required when the active plan touches paths outside the
+  # codex-fleet repo (e.g. /home/deadpool/Documents/recodee for gx-fleet-*
+  # plans). Without it, `workspace-write` blocks all writes and the worker
+  # spins on `outside writable roots` / `.git/FETCH_HEAD: Read-only file
+  # system` for the entire session.
+  # CODEX_FLEET_TIER + CODEX_FLEET_SPECIALTY are read by worker-prompt.md's
+  # "Tier + specialty gate" — pane post-skips tasks beyond its tier or
+  # outside its specialty prefixes.
   tmux respawn-pane -k -t "$pid" \
-    "env CODEX_GUARD_BYPASS=1 CODEX_HOME=/tmp/codex-fleet/$id CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email codex --dangerously-bypass-approvals-and-sandbox \"\$(cat $WAKE)\""
+    "env CODEX_GUARD_BYPASS=1 CODEX_HOME=/tmp/codex-fleet/$id CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email CODEX_FLEET_TIER=${tier:-high} CODEX_FLEET_SPECIALTY=\"$specialty\" codex --dangerously-bypass-approvals-and-sandbox $ADD_DIR_FLAGS \"\$(cat $WAKE)\""
   i=$((i + 1))
 done <<< "$ACCOUNTS"
 
@@ -306,6 +479,17 @@ else
   open_window watcher "$SCRIPT_DIR/watcher-board.sh"    ""
 fi
 
+# Design preview — fleet-tui-poc renders the glass-dock floating nav + the
+# iOS overlay surfaces (ContextMenu / Spotlight / ActionSheet) as a live
+# reference for design work inside the running fleet. Optional: skip
+# silently when the release bin isn't built so design work doesn't gate
+# bringup on a non-essential window. Inside the pane, press 1/2/3 to open
+# ContextMenu / Spotlight / ActionSheet and reveal the terminal-backdrop
+# preview underneath.
+if [ -x "$rust_bin_dir/fleet-tui-poc" ]; then
+  open_window design "$rust_bin_dir/fleet-tui-poc" remain
+fi
+
 # 11b. Apply canonical iOS-style chrome (3-row tab strip at top, rounded pane
 # borders with `▭ #{@panel}` headers, sticky right-click menu). Runs after
 # windows exist so window-status-format covers all six tabs.
@@ -377,14 +561,30 @@ CODEX_FLEET_SESSION="$TICKER_SESSION" bash "$SCRIPT_DIR/style-tabs.sh" >/dev/nul
   || warn "style-tabs.sh failed for $TICKER_SESSION"
 
 # 12c. Verify chrome actually rendered (catches the session-local `status on`
-# shadow regression where tmux clamps to 1 row and silently hides the tab
-# strip). Expected: status_height=3.
-chrome_h=$(tmux display-message -p -t "$SESSION:overview" '#{?status_height,#{status_height},#{e|-|:#{client_height},#{window_height}}}' 2>/dev/null || echo "?")
-if [ "$chrome_h" = "3" ]; then
-  log "iOS chrome verified: status_height=$chrome_h"
-else
-  warn "iOS chrome looks wrong: status_height=$chrome_h (expected 3)"
-fi
+# shadow regression where tmux clamps the bar away and silently hides the tab
+# strip). The acceptable height is whatever STYLE_TABS_HEIGHT asked for —
+# default 1 (single-row, clicks work), 2-5 for opt-in floating-dock padding.
+#
+# Older revisions of this check read the per-client `status_height` format
+# var and fell back to `client_height - window_height` when it was empty.
+# Both are client-scoped — when full-bringup runs with no client attached
+# (--no-attach, or while we're still spawning the ticker session) tmux
+# returns `''` for status_height and `-<window_height>` for the subtraction
+# (we logged `-76`), tripping the alarm even though the chrome was fine.
+#
+# Instead, read the GLOBAL `status` option directly: `on`/`off`/`1..5`.
+# style-tabs.sh wipes the session-local override before re-setting the
+# global, so any non-`off` global value means the chrome is in place.
+expected_h="${STYLE_TABS_HEIGHT:-1}"
+chrome_status=$(tmux show-options -gv status 2>/dev/null || echo "")
+case "$chrome_status" in
+  ''|off|0)
+    warn "iOS chrome looks wrong: global status='$chrome_status' (expected on or ${expected_h})"
+    ;;
+  *)
+    log "iOS chrome verified: status=$chrome_status (target ${expected_h})"
+    ;;
+esac
 
 log "DONE."
 log "  main session:    tmux attach -t $SESSION"

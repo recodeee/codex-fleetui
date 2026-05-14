@@ -8,24 +8,49 @@
 #
 # Copy this file to `accounts.yml` and adjust to your real accounts:
 #   cp scripts/codex-fleet/accounts.example.yml scripts/codex-fleet/accounts.yml
+#
+# Schema (per account):
+#   id              short pane id (kebab/snake)
+#   email           account auth filename in ~/.codex/accounts/
+#   skills          [list] informational, surfaced to Colony
+#   rate_limit_tier "high" | "standard" — legacy quota hint
+#   tier            "low" | "medium" | "high" (default "high")
+#                   Drives model_reasoning_effort at spawn AND which task
+#                   difficulties this pane will accept:
+#                     high   → reasoning=xhigh; accepts hard/standard/trivial
+#                     medium → reasoning=medium; accepts standard/trivial
+#                     low    → reasoning=low;    accepts trivial only
+#                   The worker prompt's tier gate releases tasks that
+#                   exceed pane capacity back to the queue.
+#   specialty       [list of plan-slug prefixes] (default [] = generalist)
+#                   Pane prefers tasks whose `plan_slug` starts with one of
+#                   these prefixes. Empty list = accept all plans.
 
 accounts:
   - id: research
     email: admin@gitguardex.com
     skills: [research, planning, deep-analysis]
     rate_limit_tier: high
+    tier: high
+    specialty: []
 
   - id: coding
     email: admin@magnoliavilag.hu
     skills: [implementation, testing]
     rate_limit_tier: standard
+    tier: medium
+    specialty: ["codex-fleet", "recodee"]
 
   - id: review
     email: admin@mite.hu
     skills: [code-review, security]
     rate_limit_tier: standard
+    tier: low
+    specialty: []
 
   - id: docs
     email: dpq@recodee.online
     skills: [documentation, refactor]
     rate_limit_tier: standard
+    tier: low
+    specialty: ["docs"]
