@@ -189,7 +189,11 @@ for a in json.load(sys.stdin):
   # previous shape) made codex exit on EOF, killing the pane immediately.
   # Use --prompt-file when available (codex >= 0.x), otherwise fall back
   # to passing the file contents as the positional argument.
-  pane_cmd="env ${pane_env[*]} codex \"\$(cat '$PROMPT_FILE')\""
+  # --dangerously-bypass-approvals-and-sandbox: auto-approve all MCP tool
+  # calls and shell commands. Fleet workers run unattended; without this
+  # every Colony MCP call would hit the "Allow / Always allow / Cancel"
+  # gate and stall the pull-loop.
+  pane_cmd="env ${pane_env[*]} codex --dangerously-bypass-approvals-and-sandbox \"\$(cat '$PROMPT_FILE')\""
   if [[ $FIRST -eq 1 ]]; then
     tmux new-session -d -s "$SESSION" -n "codex-$acct_id" "$pane_cmd"
     FIRST=0
