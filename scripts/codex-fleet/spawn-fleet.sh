@@ -19,20 +19,47 @@
 #   bash scripts/codex-fleet/spawn-fleet.sh --fleet-id 3              # explicit ID
 #   bash scripts/codex-fleet/spawn-fleet.sh --fleet-id 3 --plan-slug <slug>
 #   bash scripts/codex-fleet/spawn-fleet.sh --n 4 --no-attach         # smaller fleet, no attach
+#   bash scripts/codex-fleet/spawn-fleet.sh --runtime claude          # Claude CLI workers (fallback when codex is capped)
+#
+# Runtime selection:
+#   --runtime codex   (default) spawn `codex --dangerously-bypass-approvals-and-sandbox`
+#                     in each pane, authed against the matching account row from
+#                     scripts/codex-fleet/accounts.yml. Requires healthy codex accounts.
+#   --runtime claude  Spawn `claude --print --permission-mode bypassPermissions <wake>`
+#                     in each pane instead. Use when every codex account is capped
+#                     or the worker pool is exhausted. Trade-off: claude CLI has
+#                     its own auth + permission flow; the wake-prompt is identical
+#                     so the worker behaviour matches once authed.
 
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLEET_ID=""
+RUNTIME=""
 PASSTHROUGH=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --fleet-id) FLEET_ID="$2"; shift 2 ;;
+    --runtime) RUNTIME="$2"; shift 2 ;;
+    --runtime=*) RUNTIME="${1#*=}"; shift ;;
     -h|--help) sed -n '1,22p' "$0"; exit 0 ;;
     *) PASSTHROUGH+=("$1"); shift ;;
   esac
 done
+
+# Forward the runtime choice through to full-bringup.sh / the pane respawn
+# step. `codex` is the default (the existing CODEX_HOME + auth flow).
+# `claude` is the fallback for when every codex account is capped /
+# unavailable — it spawns the local `claude` CLI with the worker prompt
+# instead of `codex`. The actual branching lives in full-bringup.sh's
+# pane-spawn block; here we just export the choice.
+if [ -n "$RUNTIME" ]; then
+  case "$RUNTIME" in
+    codex|claude) export CODEX_FLEET_RUNTIME="$RUNTIME" ;;
+    *) echo "[spawn-fleet] fatal: unknown --runtime '$RUNTIME' (expected codex|claude)" >&2; exit 2 ;;
+  esac
+fi
 
 # Auto-pick when no explicit ID given.
 if [ -z "$FLEET_ID" ]; then
