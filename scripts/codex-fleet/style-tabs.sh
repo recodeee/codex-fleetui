@@ -41,6 +41,12 @@
 # label row. Hence: uniform dark BG for padding rows, no per-tab geometry.
 set -eo pipefail
 
+# Route every `tmux ...` call through scripts/codex-fleet/lib/_tmux.sh — when
+# CODEX_FLEET_TMUX_SOCKET is set in the env (e.g. by full-bringup.sh), this
+# transparently rewrites the call to `tmux -L $SOCKET ...`. Default behavior
+# (env unset) is identical to the prior `tmux` binary call.
+source "$(dirname "${BASH_SOURCE[0]}")/lib/_tmux.sh"
+
 SESSION="${CODEX_FLEET_SESSION:-codex-fleet}"
 # Default to single-row status. tmux 3.6 does NOT fire MouseDown1Status when
 # the click lands on a custom status-format[N] row (verified by binding the

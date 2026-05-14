@@ -26,6 +26,12 @@
 # contract — drop a path into /tmp/claude-viz/review-pending to surface it.
 set -eo pipefail
 
+# Route every `tmux ...` call through scripts/codex-fleet/lib/_tmux.sh — when
+# CODEX_FLEET_TMUX_SOCKET is set in the env (e.g. by full-bringup.sh), this
+# transparently rewrites the call to `tmux -L $SOCKET ...`. Default behavior
+# (env unset) is identical to the prior `tmux` binary call.
+source "$(dirname "${BASH_SOURCE[0]}")/_tmux.sh"
+
 TAB="${1:-}"
 SESSION="${CODEX_FLEET_SESSION:-codex-fleet}"
 REPO_ROOT="${CODEX_FLEET_REPO_ROOT:-$HOME/Documents/codex-fleet}"

@@ -13,6 +13,12 @@
 # replacements because cap-probe filters them.
 set -eo pipefail
 
+# Route every `tmux ...` call through scripts/codex-fleet/lib/_tmux.sh — when
+# CODEX_FLEET_TMUX_SOCKET is set in the env (e.g. by full-bringup.sh), this
+# transparently rewrites the call to `tmux -L $SOCKET ...`. Default behavior
+# (env unset) is identical to the prior `tmux` binary call.
+source "$(dirname "${BASH_SOURCE[0]}")/lib/_tmux.sh"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Autodetect REPO from the clone location; env override wins.
 REPO="${REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
