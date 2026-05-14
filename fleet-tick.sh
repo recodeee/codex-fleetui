@@ -20,30 +20,31 @@ if [[ "${FLEET_TICK_SOURCE_ONLY:-0}" != "1" ]]; then
   echo $$ > "$PID_FILE"
 fi
 
-declare -A SHORT=(
-  [koncita@pipacsclub.hu]=koncita     [mesi@lebenyse.hu]=mesi
-  [matt@gitguardex.com]=matt          [recodee@mite.hu]=recodee
-  [fico@magnoliavilag.hu]=fico        [ricsi@zazrifka.sk]=ricsi
-  [odin@mite.hu]=odin-m               [lili@gitguardex.com]=lili
-  [admin@mite.hu]=admin-m             [odin@gitguardex.com]=odin-g
-  [viktor@gitguardex.com]=viktor      [zeus@magnoliavilag.hu]=zeus-m
-  [admin@zazrifka.sk]=admin-z         [zeus@mite.hu]=zeus-mi
-)
-FLEET_EMAILS=(
-  koncita@pipacsclub.hu mesi@lebenyse.hu matt@gitguardex.com recodee@mite.hu
-  fico@magnoliavilag.hu ricsi@zazrifka.sk odin@mite.hu lili@gitguardex.com
-  admin@mite.hu odin@gitguardex.com viktor@gitguardex.com
-  zeus@magnoliavilag.hu admin@zazrifka.sk zeus@mite.hu
-)
-declare -A AID=(
-  [koncita@pipacsclub.hu]=koncita-pipacs   [mesi@lebenyse.hu]=mesi-lebenyse
-  [matt@gitguardex.com]=matt-gg            [recodee@mite.hu]=recodee-mite
-  [fico@magnoliavilag.hu]=fico-magnolia    [ricsi@zazrifka.sk]=ricsi-zazrifka
-  [odin@mite.hu]=odin-mite                 [lili@gitguardex.com]=lili-gg
-  [admin@mite.hu]=admin-mite               [odin@gitguardex.com]=odin-gg
-  [viktor@gitguardex.com]=viktor-gg        [zeus@magnoliavilag.hu]=zeus-magnolia
-  [admin@zazrifka.sk]=admin-zazrifka       [zeus@mite.hu]=zeus-mite
-)
+# AID, SHORT, FLEET_EMAILS, IS_CURRENT are populated every tick by the
+# discovery block in the main loop, sourced from `codex-auth list` so any
+# account the cap-swap-daemon swaps in (or the operator newly logs in) shows
+# up automatically.
+declare -A AID
+declare -A SHORT
+declare -a FLEET_EMAILS=()
+declare -A IS_CURRENT
+CURRENT_EMAIL=""
+
+# Canonical email→id derivation. Mirrors:
+#   scripts/codex-fleet/cap-swap-daemon.sh::email_to_id
+#   scripts/codex-fleet/full-bringup.sh (Python id map)
+derive_aid() {
+  local email="$1" part dom
+  part="${email%%@*}"
+  dom="${email#*@}"
+  dom="${dom%%.*}"
+  case "$dom" in
+    magnoliavilag) dom=magnolia ;;
+    gitguardex)    dom=gg ;;
+    pipacsclub)    dom=pipacs ;;
+  esac
+  printf '%s-%s' "$part" "$dom"
+}
 
 # Sub-task evidence files scored by subtask_progress_pct for fractional progress.
 SUB_EVIDENCE=(
@@ -370,31 +371,63 @@ fi
 while true; do
   ts=$(date '+%H:%M:%S')
 
-  # ── 1. usage from codex-auth ───────────────────────────────────────────────
+  # ── 1. Discover accounts + usage from codex-auth list ─────────────────────
+  # codex-auth list output:
+  #   *  zeus@kollarrobert.sk  type=ChatGPT seat (Business)  5h=100%  weekly=36%
+  # The leading "*" marks the currently-authenticated CLI account. Every email
+  # in the output becomes part of the live fleet view; no more hardcoded list.
   declare -A USAGE
+  declare -A SHORT_LOCAL_COUNT
+  FLEET_EMAILS=()
+  IS_CURRENT=()
+  CURRENT_EMAIL=""
   while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    is_cur=0
+    [[ "$line" =~ ^[[:space:]]*\* ]] && is_cur=1
     email=$(grep -oP '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}' <<<"$line" | head -1)
     [[ -z "$email" ]] && continue
     h5=$(grep -oP '5h=\K[0-9]+%' <<<"$line" | head -1)
     wk=$(grep -oP 'weekly=\K[0-9]+%' <<<"$line" | head -1)
     USAGE[$email]="${h5:--} ${wk:--}"
+    FLEET_EMAILS+=("$email")
+    if (( is_cur )); then
+      CURRENT_EMAIL="$email"
+      IS_CURRENT[$email]=1
+    fi
+    local_part="${email%%@*}"
+    SHORT_LOCAL_COUNT[$local_part]=$(( ${SHORT_LOCAL_COUNT[$local_part]:-0} + 1 ))
   done < <(codex-auth list 2>/dev/null || true)
 
-  # ── 2. liveness from tmux pane cmds ────────────────────────────────────────
+  # Populate AID + SHORT now that we know the full email set (so SHORT can
+  # disambiguate collisions like admin@mite.hu vs admin@pipacsclub.hu with a
+  # 2-char domain stem).
+  AID=()
+  SHORT=()
+  for email in "${FLEET_EMAILS[@]}"; do
+    AID[$email]=$(derive_aid "$email")
+    local_part="${email%%@*}"
+    if (( ${SHORT_LOCAL_COUNT[$local_part]:-0} > 1 )); then
+      dom_stem="${email#*@}"; dom_stem="${dom_stem%%.*}"
+      SHORT[$email]="${local_part}-${dom_stem:0:2}"
+    else
+      SHORT[$email]="$local_part"
+    fi
+  done
+
+  # ── 2. liveness from tmux pane @panel option ──────────────────────────────
+  # @panel is set by full-bringup.sh / cap-swap-daemon.sh to "[codex-<aid>]"
+  # for every codex worker pane. This is the authoritative signal — it stays
+  # accurate even when ACTIVE_FILE drifts (cap-swap-daemon doesn't update it).
   declare -A ALIVE
+  declare -A PANE_FOR_AID
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    mapfile -t ACTIVE < "$ACTIVE_FILE" 2>/dev/null || ACTIVE=()
-    # tmux panes 2..6 (after fleet-state + codex0 + plan-design split) are codexes
-    # but pane indices may vary; query by left>0
-    declare -a CODEX_PANES
-    while IFS='|' read -r pid pane_idx left cmd; do
-      [[ "$left" -gt 0 && "$cmd" == "node" ]] && CODEX_PANES+=("$pane_idx")
-    done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
-    i=0
-    for aid in "${ACTIVE[@]}"; do
-      [[ $i -lt ${#CODEX_PANES[@]} ]] && ALIVE[$aid]=running
-      i=$((i+1))
-    done
+    while IFS='|' read -r pane_idx cmd panel; do
+      [[ "$cmd" == "node" ]] || continue
+      [[ "$panel" =~ \[codex-([a-z0-9._-]+)\] ]] || continue
+      ALIVE["${BASH_REMATCH[1]}"]=running
+      PANE_FOR_AID["${BASH_REMATCH[1]}"]="$pane_idx"
+    done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_index}|#{pane_current_command}|#{@panel}' 2>/dev/null)
   fi
 
 
@@ -422,11 +455,8 @@ while true; do
   build_worker_sub_map
 
   # ── 4. render live-fleet-state.txt ─────────────────────────────────────────
-  declare -A ACTIVE_SET
-  mapfile -t ACTIVE_STATE < "$ACTIVE_FILE" 2>/dev/null || ACTIVE_STATE=()
-  for active_aid in "${ACTIVE_STATE[@]}"; do
-    ACTIVE_SET[$active_aid]=1
-  done
+  # ACTIVE / RESERVE membership now derives from ALIVE/PANE_FOR_AID (step 2)
+  # rather than the legacy positional ACTIVE_FILE.
 
   fleet_state_row() {
       local email="$1"
@@ -460,18 +490,9 @@ while true; do
         live_kind="working"
         working="${C}→ sub-$sub_idx${R} ${DIM}${SUB_TITLES[$sub_idx]}${R}"
       elif [[ "$st" == "running" ]]; then
-        # Find the tmux pane for this agent and parse its tail
-        pane_for_agent=""
-        i_p=0
-        mapfile -t ACTIVE3 < "$ACTIVE_FILE" 2>/dev/null || ACTIVE3=()
-        declare -a NP=()
-        while IFS='|' read -r _pid _idx _left _cmd; do
-          [[ "$_left" -gt 0 && "$_cmd" == "node" ]] && NP+=("$_idx")
-        done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
-        for a in "${ACTIVE3[@]}"; do
-          [[ "$a" == "$aid" && $i_p -lt ${#NP[@]} ]] && pane_for_agent="${NP[$i_p]}"
-          i_p=$((i_p+1))
-        done
+        # Pane lookup uses the @panel-derived map (step 2 above) so we don't
+        # depend on the legacy positional ACTIVE_FILE.
+        pane_for_agent="${PANE_FOR_AID[$aid]:-}"
         if [[ -n "$pane_for_agent" ]]; then
           tail=$(tmux capture-pane -t "$TMUX_SESSION:overview.$pane_for_agent" -p -S -25 2>/dev/null)
           # Strip ANSI for matching
@@ -502,34 +523,55 @@ while true; do
           else
             working="${DIM}polling…${R}"
           fi
-          unset NP; declare -a NP=()
         fi
       fi
       live=$(ios_worker_chip "$live_kind")
+      label="${SHORT[$email]:-${email%%@*}}"
+      [[ -n "${IS_CURRENT[$email]:-}" ]] && label="★${label}"
       printf "${B}%-12s${R}  ${h5c}%-4s${R} %s  ${wkc}%-5s${R} %s  %b  %b" \
-        "${SHORT[$email]:-$email}" "$h5" "$h5_bar" "$wk" "$wk_bar" "$live" "$working"
+        "$label" "$h5" "$h5_bar" "$wk" "$wk_bar" "$live" "$working"
   }
 
   render_fleet_section() {
     local title="$1"
     local mode="$2"
     local rendered=0
-    local email aid row st
+    local email aid row st pair wk_pct wk_av pidx
+    local -a EMAILS_VIEW=()
     ios_card_top "$title"
     ios_card_row "${B}${TEAL}ACCOUNT       5h      WEEKLY    WORKER       WORKING ON${R}"
     ios_card_row "${IOS_GRAY6}────────────────────────────────────────────────────────────${R}"
-    for email in "${FLEET_EMAILS[@]}"; do
-      aid=${AID[$email]}
-      if [[ "$mode" == "active" && -z "${ACTIVE_SET[$aid]:-}" ]]; then
-        continue
-      fi
-      if [[ "$mode" == "reserve" && -n "${ACTIVE_SET[$aid]:-}" ]]; then
-        continue
-      fi
-      st=${ALIVE[$aid]:-}
-      if [[ "$st" == "running" && -z "${EXHAUSTED[$aid]:-}" ]]; then
-        n_alive=$((n_alive+1))
-      fi
+
+    # ACTIVE keeps the on-screen order codex panes occupy (left-to-right by
+    # pane index). RESERVE sorts by usable weekly DESC so the freshest
+    # account sits at the top.
+    if [[ "$mode" == "active" ]]; then
+      mapfile -t EMAILS_VIEW < <(
+        for email in "${FLEET_EMAILS[@]}"; do
+          aid=${AID[$email]}
+          [[ -n "${ALIVE[$aid]:-}" ]] || continue
+          pidx="${PANE_FOR_AID[$aid]:-99}"
+          printf '%03d|%s\n' "$pidx" "$email"
+        done | sort -t'|' -k1,1n | cut -d'|' -f2
+      )
+    elif [[ "$mode" == "reserve" ]]; then
+      mapfile -t EMAILS_VIEW < <(
+        for email in "${FLEET_EMAILS[@]}"; do
+          aid=${AID[$email]}
+          [[ -n "${ALIVE[$aid]:-}" ]] && continue
+          pair="${USAGE[$email]:-- -}"
+          wk_pct=${pair##* }; wk_pct=${wk_pct%\%}
+          [[ "$wk_pct" =~ ^[0-9]+$ ]] || wk_pct=100
+          wk_av=$(( 100 - wk_pct )); (( wk_av < 0 )) && wk_av=0
+          # Reverse-pad so sort -k1,1nr gives largest-first.
+          printf '%03d|%s\n' "$wk_av" "$email"
+        done | sort -t'|' -k1,1nr | cut -d'|' -f2
+      )
+    else
+      EMAILS_VIEW=("${FLEET_EMAILS[@]}")
+    fi
+
+    for email in "${EMAILS_VIEW[@]}"; do
       row=$(fleet_state_row "$email")
       ios_card_row "$row"
       rendered=$((rendered+1))
@@ -541,7 +583,6 @@ while true; do
   }
 
   {
-    n_alive=0
     ios_card_top "CODEX-FLEET LIVE STATE"
     ios_card_row "${B}${IOS_WHITE}fleet cockpit${R} ${DIM}iOS system palette · rounded cards${R}"
     ios_card_row "${DIM}updated=${ts}  repo=${REPO##*/}  palette=#007AFF/#34C759/#FF3B30/#FF9500${R}"
@@ -551,17 +592,19 @@ while true; do
     echo
     render_fleet_section "RESERVE" "reserve"
     echo
-    # color the active-workers count by saturation (5/5 green, 0/5 dim)
-    if   (( n_alive >= 5 )); then awc=$GRAD6
-    elif (( n_alive >= 3 )); then awc=$GRAD4
-    elif (( n_alive >= 1 )); then awc=$GRAD3
+    # Footer counts: live = panes actually running codex (regardless of cap),
+    # capped = those marked EXHAUSTED at 5h=100%, accounts = full codex-auth set.
+    n_panes=${#PANE_FOR_AID[@]}
+    n_capped=${#EXHAUSTED[@]}
+    if   (( n_panes >= 5 )); then awc=$GRAD6
+    elif (( n_panes >= 3 )); then awc=$GRAD4
+    elif (( n_panes >= 1 )); then awc=$GRAD3
     else                          awc=$DIM; fi
     ios_card_top "FLEET FOOTER"
-    ios_card_row "${DIM}active workers=${R}${B}${awc}${n_alive}/5${R}   ${DIM}refresh=${INTERVAL}s   tick=$$${R}"
+    ios_card_row "${DIM}live=${R}${B}${awc}${n_panes}${R}   ${DIM}accounts=${R}${B}${#FLEET_EMAILS[@]}${R}   ${DIM}capped(5h≥100%)=${R}${B}${RED}${n_capped}${R}   ${DIM}refresh=${INTERVAL}s   tick=$$${R}"
     ios_card_bottom
   } > "$STATE_OUT.tmp"
   mv -f "$STATE_OUT.tmp" "$STATE_OUT"
-  unset ACTIVE_SET ACTIVE_STATE
 
   # ── 5. render live-plan-design.txt (graphical wave tree) ───────────────────
   # Precompute subtask state and evidence completeness independently.
@@ -693,9 +736,8 @@ while true; do
   } > "$PLAN_OUT.tmp"
   mv -f "$PLAN_OUT.tmp" "$PLAN_OUT"
 
-  unset USAGE ALIVE CODEX_PANES
-  declare -A USAGE ALIVE
-  declare -a CODEX_PANES
+  unset USAGE ALIVE PANE_FOR_AID SHORT_LOCAL_COUNT EXHAUSTED IS_CURRENT
+  declare -A USAGE ALIVE PANE_FOR_AID SHORT_LOCAL_COUNT EXHAUSTED IS_CURRENT
 
 
   # ── 5b. render live-waves.txt — parallel execution model ───────────────────
@@ -803,17 +845,10 @@ while true; do
 
   # ── 6. refresh tmux pane titles (codex auto-rename keeps overwriting) ──────
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    mapfile -t ACTIVE2 < "$ACTIVE_FILE" 2>/dev/null || ACTIVE2=()
-    pane_i=0
-    declare -a NODE_PANES
-    while IFS='|' read -r pid pane_idx left cmd; do
-      if [[ "$left" -gt 0 && "$cmd" == "node" ]]; then
-        NODE_PANES+=("$pane_idx")
-      fi
-    done < <(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_current_command}' 2>/dev/null)
-    for aid in "${ACTIVE2[@]}"; do
-      [[ $pane_i -lt ${#NODE_PANES[@]} ]] || break
-      pidx=${NODE_PANES[$pane_i]}
+    # Iterate the @panel-derived map so each pane refreshes its own title
+    # regardless of pane-index order or ACTIVE_FILE freshness.
+    for aid in "${!PANE_FOR_AID[@]}"; do
+      pidx=${PANE_FOR_AID[$aid]}
       agent_key="codex-$aid"
       sub="${WORKER_SUB[$agent_key]:-}"
       # Scrape pane scrollback for branch + PR URL + PR state
@@ -866,7 +901,6 @@ while true; do
       fi
       title="$(tmux_status_chip "$pane_status_kind") ${title}"
       tmux set-option -t "$TMUX_SESSION:overview.${pidx}" -p @panel "$title" 2>/dev/null || true
-      pane_i=$((pane_i+1))
     done
     # Also re-pin the two viz panes by content sniff
     for pidx in $(tmux list-panes -t "$TMUX_SESSION:overview" -F '#{pane_index}'); do
@@ -879,7 +913,6 @@ while true; do
         esac
       fi
     done
-    unset NODE_PANES; declare -a NODE_PANES
   fi
 
   [[ "${FLEET_TICK_ONCE:-0}" == "1" ]] && break
