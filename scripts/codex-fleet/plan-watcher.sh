@@ -174,29 +174,116 @@ within_cooldown() {
   (( now - last_ts < COOLDOWN_SECONDS ))
 }
 
-# ── pick next available sub-task index for a plan ────────────────────────────
-# `colony plan status <slug>` (singular) emits a per-task table; we grep the
-# first row marked `available` and return its index + title.
+# ── plan-aware sub-task resolver ────────────────────────────────────────────
+# `colony plan status <slug>` (singular) does NOT emit per-task rows in the
+# current CLI build — it just gives a rollup. We read the on-disk plan.json
+# directly to find the first available sub-task's index and its full
+# context block (title / description / file_scope) for the rich prompt.
+#
+# Output (one line, tab-separated): index \t title.
+# Empty output means "no available sub-tasks found" — caller handles fallback.
 next_available_subtask() {
   local slug="$1"
-  # `|| true` absorbs the non-zero grep emits when the per-slug status
-  # output doesn't include the per-task rows the older Colony CLI did —
-  # the caller's prompt builder handles the empty-result case.
-  colony plan status "$slug" 2>/dev/null \
-    | grep -E '^[[:space:]]*[0-9]+\.?[[:space:]]+available' \
-    | head -1 || true
+  local plan_json="$REPO_ROOT/openspec/plans/$slug/plan.json"
+  [ -f "$plan_json" ] || return 0
+  PLAN_JSON="$plan_json" python3 - <<'PY' 2>/dev/null || true
+import json, os, sys
+with open(os.environ["PLAN_JSON"]) as f:
+    plan = json.load(f)
+for t in plan.get("tasks", []):
+    if t.get("status") == "available":
+        print(f"{t['subtask_index']}\t{t.get('title', '')}")
+        break
+PY
 }
 
-# ── build OVERRIDE prompt ───────────────────────────────────────────────────
-# Mirrors the manual prompts we'd been hand-typing into the panes. Pinning
-# is explicit — the worker is expected to call task_plan_claim_subtask with
-# (slug, sub_idx) instead of polling task_ready_for_agent against its
-# pre-existing pin.
+# ── build a rich OVERRIDE prompt ────────────────────────────────────────────
+# Reads the plan.json on disk and includes:
+#   - the plan's problem statement (truncated to 600 chars) so the worker
+#     understands the WHY before reading the description
+#   - the specific sub-task's title + description (truncated to 900 chars)
+#   - the file_scope list so the worker knows which files to claim
+#   - explicit numbered action steps (claim → worktree → edit → verify →
+#     PR → task_post → mark completed)
+#   - fallback instruction when the claim races and loses
+#
+# This is the upgrade requested in tonight's GOAL: instead of "claim sub-task
+# N of plan X" boilerplate, the worker gets enough context to start
+# implementing immediately without reading the plan workspace files first.
 build_prompt() {
   local slug="$1" sub_idx="$2" sub_title="$3"
-  cat <<EOF
-OVERRIDE current plan pinning. Claim sub-task ${sub_idx} of plan ${slug} via Colony task_plan_claim_subtask (force the agent slug to your CODEX_FLEET_AGENT_NAME). Title: ${sub_title}. Implement on a fresh agent worktree per AGENTS.md, run the narrowest verification, open + merge a PR via \`gx branch finish --branch <your-branch> --via-pr --wait-for-merge --cleanup\`, post a Colony task_post note on this sub-task with evidence (branch, PR URL, MERGED state), then mark the sub-task completed. If this plan's queue is exhausted, fall back to task_ready_for_agent against any other available plan rather than rescuing stale claims.
+  local plan_json="$REPO_ROOT/openspec/plans/$slug/plan.json"
+
+  if [ -f "$plan_json" ]; then
+    PLAN_JSON="$plan_json" SLUG="$slug" SUB_IDX="$sub_idx" python3 - <<'PY' 2>/dev/null
+import json, os
+with open(os.environ["PLAN_JSON"]) as f:
+    plan = json.load(f)
+slug = os.environ["SLUG"]
+try:
+    sub_idx = int(os.environ["SUB_IDX"])
+except ValueError:
+    sub_idx = 0
+
+# Find the sub-task by index; fall back to the first task if the index
+# doesn't resolve (defensive — plan.json schema occasionally drifts).
+sub = next((t for t in plan.get("tasks", []) if t.get("subtask_index") == sub_idx), None)
+if sub is None and plan.get("tasks"):
+    sub = plan["tasks"][0]
+    sub_idx = sub.get("subtask_index", 0)
+
+def truncate(text, limit):
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+problem = truncate(plan.get("problem", ""), 600)
+sub_title = (sub or {}).get("title", os.environ.get("SUB_TITLE", "")) or "(see plan workspace)"
+sub_desc = truncate((sub or {}).get("description", ""), 900)
+file_scope = (sub or {}).get("file_scope", [])
+
+print(f"OVERRIDE current plan pinning. A new Colony plan has been published and you are being assigned a specific sub-task.\n")
+print(f"PLAN: {plan.get('plan_slug', slug)}")
+print(f"TITLE: {plan.get('title', '(untitled)')}")
+print()
+print(f"WHY THIS PLAN EXISTS:\n{problem}")
+print()
+print(f"YOUR ASSIGNMENT — sub-task {sub_idx}:")
+print(f"TITLE: {sub_title}")
+if sub_desc:
+    print(f"\nDESCRIPTION:\n{sub_desc}")
+if file_scope:
+    print(f"\nFILE SCOPE (claim each via task_claim_file before editing):")
+    for f in file_scope:
+        print(f"  - {f}")
+print()
+print("ACTION STEPS:")
+print(f"  1. Claim the sub-task: task_plan_claim_subtask(plan_slug=\"{slug}\", subtask_index={sub_idx}, session_id=<your-session>, agent=$CODEX_FLEET_AGENT_NAME).")
+print(f"     If the claim is rejected (someone else got it first), do NOT rescue stale claims. Instead call task_ready_for_agent against any plan with available work and take that.")
+print(f"  2. Start a fresh agent worktree per AGENTS.md: gx branch start \"<short-task-slug>\" \"$CODEX_FLEET_AGENT_NAME\" --new")
+print(f"  3. cd into the printed worktree path. Claim each file in FILE SCOPE via task_claim_file.")
+print(f"  4. Implement per the DESCRIPTION above. Keep changes inside FILE SCOPE; don't touch files outside it.")
+print(f"  5. Run the narrowest meaningful verification (e.g. `cargo test -p <crate>` for Rust, `bash -n <script>` for shell). Capture the green output as completion evidence.")
+print(f"  6. Finish via PR: gx branch finish --branch <your-branch> --base main --via-pr --wait-for-merge --cleanup")
+print(f"  7. Post a Colony task_post on this sub-task (task id from the claim response) with: branch, PR URL, MERGED state, files changed, verification command + result.")
+print(f"  8. Mark the sub-task completed via task_plan_complete_subtask.")
+print()
+print("If your worker pane was previously pinned to a different plan that has no claimable work, this OVERRIDE replaces that pin. Do not return to the old plan until task_ready_for_agent suggests it.")
+PY
+  else
+    # Fallback: minimal prompt when plan.json isn't reachable (e.g. plan
+    # registered in Colony but disk workspace deleted). Worker still gets
+    # the claim instructions and the title; they can fetch the rest via
+    # task_plan_list themselves.
+    cat <<EOF
+OVERRIDE current plan pinning. Claim sub-task ${sub_idx} of plan ${slug} via task_plan_claim_subtask(plan_slug="${slug}", subtask_index=${sub_idx}, agent=\$CODEX_FLEET_AGENT_NAME). Title: ${sub_title}.
+
+The plan's on-disk workspace is not reachable from the supervisor — call task_plan_list with detail=full filtered to this plan slug for the description + file scope before starting.
+
+Action: claim → fresh agent worktree → implement → cargo test (or narrowest verification) → gx branch finish --via-pr --wait-for-merge --cleanup → task_post evidence → mark sub-task completed. If claim is rejected, fall back to task_ready_for_agent rather than rescuing stale claims.
 EOF
+  fi
 }
 
 # ── send a prompt to a pane via the canonical fleet pattern ─────────────────
@@ -270,14 +357,17 @@ tick() {
     fi
 
     local slug; slug="${assigned%%	*}"
+    # next_available_subtask reads the on-disk plan.json (the singular
+    # `colony plan status <slug>` CLI doesn't emit per-task rows). Output
+    # is tab-separated: index \t title. Empty means no available sub-task
+    # found — caller defaults to sub-0 + a placeholder title and lets the
+    # rich prompt's plan.json read fill in the rest.
     local sub_row; sub_row="$(next_available_subtask "$slug")"
     local sub_idx sub_title
     if [ -n "$sub_row" ]; then
-      sub_idx="$(printf '%s' "$sub_row" | awk '{print $1}' | tr -d '.')"
-      sub_title="$(printf '%s' "$sub_row" | sed -E 's/^[[:space:]]*[0-9]+\.?[[:space:]]+available[[:space:]]+//')"
+      sub_idx="${sub_row%%	*}"
+      sub_title="${sub_row#*	}"
     else
-      # Older colony versions print sub-tasks differently — fall back to
-      # "sub-task 0 of <slug>" which the worker prompt is permissive about.
       sub_idx="0"
       sub_title="(see plan ${slug})"
     fi
