@@ -171,6 +171,18 @@ fn render_worker_row(frame: &mut ratatui::Frame, area: Rect, row: &WorkerRow) {
     spans.extend(progress_rail(row.five_h_pct, RailAxis::Usage, 8));
     spans.push(Span::raw(" "));
 
+    // QUALITY rail — advisory score for the agent's most recent merged PR
+    // (see fleet-data::scores). Done axis: high score → green, low → red.
+    // For un-scored agents we emit a same-width blank so the STATUS chip
+    // column stays aligned across rows. Quality is *advisory*: the score
+    // is what the LLM judges, not what the test suite proves — treat low
+    // scores as "look at this," not a fail signal.
+    match row.quality {
+        Some(pct) => spans.extend(progress_rail(pct, RailAxis::Done, 8)),
+        None => spans.push(Span::raw(" ".repeat(10))), // 8 cells + 2 caps
+    }
+    spans.push(Span::raw(" "));
+
     // STATUS chip.
     spans.extend(status_chip(chip_kind(row.state)));
     spans.push(Span::raw("  "));
@@ -225,7 +237,10 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
     frame.render_widget(card(Some(&header_text), false), rows[0]);
 
     // ── Worker table ──────────────────────────────────────────────────────
-    let block = card(Some("ACCOUNT · WEEKLY · 5H · STATUS · WORKING ON"), false);
+    let block = card(
+        Some("ACCOUNT · WEEKLY · 5H · QUALITY · STATUS · WORKING ON"),
+        false,
+    );
     let inner = block.inner(rows[1]);
     frame.render_widget(block, rows[1]);
 
