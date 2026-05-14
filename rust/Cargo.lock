@@ -171,6 +171,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-input"
+version = "0.0.1"
+dependencies = [
+ "crossterm",
+]
+
+[[package]]
 name = "fleet-plan-tree"
 version = "0.0.1"
 dependencies = [
@@ -186,6 +193,7 @@ version = "0.0.1"
 dependencies = [
  "crossterm",
  "fleet-data",
+ "fleet-input",
  "fleet-ui",
  "ratatui",
 ]

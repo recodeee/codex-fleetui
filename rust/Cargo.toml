@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 
-# Picks up fleet-tui-poc, fleet-ui, fleet-data, and the future fleet-* bin
-# crates as their directories land, without making missing future crates break
-# `cargo build` for this foundation PR.
+# Picks up fleet-input, fleet-tui-poc, fleet-ui, fleet-data, and future fleet-*
+# bin crates as their directories land, without making missing future crates
+# break `cargo build` for this foundation PR.
 members = ["fleet-*"]

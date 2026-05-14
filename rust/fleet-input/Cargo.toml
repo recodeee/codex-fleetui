@@ -1,0 +1,9 @@
+[package]
+name = "fleet-input"
+version = "0.0.1"
+edition = "2021"
+description = "Shared input routing and action primitives for codex-fleet dashboards."
+publish = false
+
+[dependencies]
+crossterm = "0.28"

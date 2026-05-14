@@ -16,7 +16,7 @@
 use std::{io, time::Duration};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, MouseButton, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -25,6 +25,7 @@ use fleet_data::{
     panes::PaneState,
     tmux,
 };
+use fleet_input::{Action, ContextStack, KeyPattern, Matcher};
 use fleet_ui::{
     card::card,
     chip::{status_chip, ChipKind},
@@ -50,6 +51,19 @@ const TABS: &[(&str, &str)] = &[
 
 const ACTIVE_TAB: usize = 2;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InputContext {
+    Global,
+}
+
+fn input_context() -> ContextStack<InputContext> {
+    let matcher = Matcher::new()
+        .bind(KeyPattern::char('q'), Action::Quit)
+        .bind(KeyPattern::esc(), Action::Quit);
+
+    ContextStack::new(InputContext::Global, matcher)
+}
+
 /// tmux session + window the fleet's worker panes live in. Matches the
 /// `codex-fleet:overview` target every dashboard binary uses; overridable via
 /// env for parallel fleets (`codex-fleet-2`, …).
@@ -62,6 +76,7 @@ fn fleet_target() -> (String, String) {
 }
 
 struct App {
+    input: ContextStack<InputContext>,
     tab_rects: Vec<(Rect, usize)>,
     /// The live join of accounts + panes. `None` until the first successful
     /// load; `Some(vec![])` is a valid "fleet is empty / not running" state.
@@ -74,6 +89,7 @@ struct App {
 impl App {
     fn new() -> Self {
         Self {
+            input: input_context(),
             tab_rects: Vec::new(),
             rows: None,
             load_error: None,
@@ -104,6 +120,26 @@ impl App {
                 col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
             })
             .map(|(_, i)| *i)
+    }
+
+    fn dispatch_key(&mut self, key: KeyEvent) -> Option<Action> {
+        self.input.dispatch(key)
+    }
+
+    fn apply_action(&mut self, action: Action) -> bool {
+        match action {
+            Action::Noop => false,
+            Action::Quit => true,
+            Action::Refresh => {
+                self.refresh();
+                false
+            }
+            Action::SelectTab(idx) => {
+                let (session, _) = fleet_target();
+                tmux::select_window_index(&session, idx);
+                false
+            }
+        }
     }
 }
 
@@ -299,18 +335,19 @@ fn main() -> io::Result<()> {
             if event::poll(Duration::from_millis(250))? {
                 match event::read()? {
                     Event::Key(k) => {
-                        if matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
+                        if app
+                            .dispatch_key(k)
+                            .map(|action| app.apply_action(action))
+                            .unwrap_or(false)
+                        {
                             break;
                         }
                     }
                     Event::Mouse(m) => {
                         if let MouseEventKind::Down(MouseButton::Left) = m.kind {
                             if let Some(idx) = app.handle_click(m.column, m.row) {
-                                // In-binary tab click → select-window via the
-                                // typed tmux wrapper. Best-effort: a failure
-                                // (running outside tmux) is silently fine.
-                                let (session, _) = fleet_target();
-                                tmux::select_window_index(&session, idx);
+                                // Best-effort: a failure (running outside tmux) is silently fine.
+                                app.apply_action(Action::SelectTab(idx));
                             }
                         }
                     }
