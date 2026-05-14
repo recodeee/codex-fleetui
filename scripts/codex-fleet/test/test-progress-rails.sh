@@ -45,13 +45,17 @@ assert_eq "▕████████████▏" "$(plain 100 usage)" "usa
 assert_eq "▕███░░░░░░░░░▏" "$(plain 25 done)" "done quarter rail"
 assert_eq "▕█████████░░░▏" "$(plain 75 available)" "available three-quarter rail"
 
-assert_contains "$(ios_progress_rail 25 usage)" "$IOS_GREEN" "usage low is green"
-assert_contains "$(ios_progress_rail 50 usage)" "$IOS_YELLOW" "usage midpoint is yellow"
+assert_contains "$(ios_progress_rail 0 usage)" "$IOS_GREEN" "usage empty endpoint is green"
+assert_contains "$(ios_progress_rail 50 usage)" "$IOS_ORANGE" "usage midpoint is orange"
 assert_contains "$(ios_progress_rail 100 usage)" "$IOS_RED" "usage high is red"
 assert_contains "$(ios_progress_rail 0 done)" "$IOS_RED" "done low is red"
 assert_contains "$(ios_progress_rail 50 done)" "$IOS_ORANGE" "done midpoint is orange"
 assert_contains "$(ios_progress_rail 100 done)" "$IOS_GREEN" "done high is green"
+assert_contains "$(ios_progress_rail 0 complete)" "$IOS_RED" "complete low is red"
+assert_contains "$(ios_progress_rail 50 completion)" "$IOS_ORANGE" "completion midpoint is orange"
+assert_contains "$(ios_progress_rail 100 cap)" "$IOS_RED" "cap high is red"
 assert_contains "$(ios_progress_rail 100 available)" "$IOS_GREEN" "available high is green"
+assert_contains "$(ios_progress_rail 50 availability)" "$IOS_ORANGE" "availability midpoint is orange"
 
 assert_eq "▕████░░░░▏" "$(plain 50 usage 8)" "custom width rail"
 
