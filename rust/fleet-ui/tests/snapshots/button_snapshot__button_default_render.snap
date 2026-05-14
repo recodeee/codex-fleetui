@@ -1,0 +1,11 @@
+---
+source: fleet-ui/tests/button_snapshot.rs
+expression: "format!(\"{}\", terminal.backend())"
+---
+"                                "
+"                                "
+"      ╭──────────────────╮      "
+"      │ ▶ Launch  Enter  │      "
+"      ╰──────────────────╯      "
+"                                "
+"                                "
