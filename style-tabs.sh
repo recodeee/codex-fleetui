@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# style-tabs — apply browser-like tab styling to a codex-fleet tmux session.
+# style-tabs — apply iOS-style tab chrome to a codex-fleet tmux session.
+#
+# Palette and pill caps mirror scripts/codex-fleet/fleet-tick.sh so the tabs
+# read as one continuous surface with the dashboards: systemBlue active pill,
+# systemOrange session badge, systemGreen live chip, ◖◗ half-circle caps,
+# secondaryLabel grays on a true-black backdrop.
 #
 # Idempotent. Call after spawning panes (up.sh) or against an already-running
 # session.
@@ -11,9 +16,9 @@
 #
 # Visual model (HEIGHT=3, default):
 #   ┌──────────────────────────────────────────────────────────────────────┐
-#   │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │  row 0  (dark padding)
-#   │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │  row 1  (dark padding)
-#   │  ◆ codex-fleet ▌    0  overview    │▎   2  plan  ✖    ▎│ …    ● live │  row 2  (tabs)
+#   │                                                                      │  row 0  (true-black padding)
+#   │                                                                      │  row 1  (true-black padding)
+#   │  ◖ ◆ codex-fleet ◗  ◖ 0  overview ◗  ◖ 2  plan ◗  …  ◖ ● live ◗      │  row 2  (tabs)
 #   └──────────────────────────────────────────────────────────────────────┘
 #
 # How taller-than-default works without blanking the strip:
@@ -61,26 +66,44 @@ tx_set status-position top
 tx_set status-interval 1
 tx_set status-justify left
 
-tx_set status-style "bg=#0a0a0a,fg=#7a7a7a"
+# ── iOS system palette ──────────────────────────────────────────────────────
+# Canonical values match scripts/codex-fleet/fleet-tick.sh so the tab strip
+# reads as one continuous surface with the dashboards. Names mirror Apple's
+# UIKit system colors (UIColor.systemBlue, systemOrange, etc.).
+#   IOS_BG       = systemBackground (dark)         #000000
+#   IOS_BG2      = secondarySystemBackground       #1C1C1E
+#   IOS_BG3      = tertiarySystemBackground        #2C2C2E
+#   IOS_BLUE     = systemBlue                      #007AFF  (active accent)
+#   IOS_ORANGE   = systemOrange                    #FF9500  (session badge)
+#   IOS_GREEN    = systemGreen                     #34C759  (live chip)
+#   IOS_RED      = systemRed                       #FF3B30  (bell)
+#   IOS_YELLOW   = systemYellow                    #FFCC00  (mode/copy)
+#   IOS_LABEL    = label                           #FFFFFF
+#   IOS_LABEL2   = secondaryLabel                  #AEAEB2
+#   IOS_LABEL3   = tertiaryLabel                   #8E8E93
+# Pill caps use ◖ / ◗ — same half-circle glyphs as fleet-tick.sh's
+# IOS_CHIP_LEFT/RIGHT, so caps render identically across surfaces.
+tx_set status-style "bg=#000000,fg=#8E8E93"
 
-# ── status-left: session badge ───────────────────────────────────────────────
+# ── status-left: session badge — iOS-orange pill ─────────────────────────────
 tx_set status-left-length 40
-tx_set status-left "#[fg=#0a0a0a,bg=#e67e22,bold]  ◆ #S  #[fg=#e67e22,bg=#0a0a0a]▌ "
+tx_set status-left "#[fg=#FF9500,bg=#000000]◖#[fg=#000000,bg=#FF9500,bold] ◆ #S #[fg=#FF9500,bg=#000000]◗ "
 
-# ── status-right: live indicator + clock chip ────────────────────────────────
+# ── status-right: live indicator + clock — iOS-green pill ────────────────────
 tx_set status-right-length 64
 tx_set status-right \
-  "#[fg=#1a1a1a,bg=#0a0a0a]▐#[fg=#83c87e,bg=#1a1a1a,bold]  ● live  #[fg=#1a1a1a,bg=#0a0a0a]▌ #[fg=#bbbbbb,bg=#0a0a0a]  #(date +%H:%M:%S)  "
+  "#[fg=#34C759,bg=#000000]◖#[fg=#000000,bg=#34C759,bold] ● live #[fg=#34C759,bg=#000000]◗ #[fg=#AEAEB2,bg=#000000] #(date +%H:%M:%S)  "
 
-# ── tab separator ────────────────────────────────────────────────────────────
-tx_set window-status-separator "#[fg=#2a2a2a,bg=#0a0a0a] "
+# ── tab separator — single space on bg, no harsh divider ─────────────────────
+tx_set window-status-separator "#[fg=#2C2C2E,bg=#000000] "
 
-# ── inactive tab — padded label, recessed BG ─────────────────────────────────
+# ── inactive tab — recessed pill, secondary label ────────────────────────────
+# iOS ghost-pill: faint secondarySystemBackground card, tertiaryLabel text.
 tx_set window-status-format \
-  "#[fg=#1a1a1a,bg=#0a0a0a]#[fg=#7a7a7a,bg=#1a1a1a]   #I  #[fg=#aaaaaa]#W   #[fg=#1a1a1a,bg=#0a0a0a]"
-tx_set window-status-style "fg=#7a7a7a,bg=#1a1a1a"
+  "#[fg=#1C1C1E,bg=#000000]◖#[fg=#8E8E93,bg=#1C1C1E]  #I  #[fg=#AEAEB2]#W  #[fg=#1C1C1E,bg=#000000]◗"
+tx_set window-status-style "fg=#8E8E93,bg=#1C1C1E"
 
-# ── active tab — bright fill, ▎ caps, bold label ─────────────────────────────
+# ── active tab — iOS-blue pill, white label, bold ────────────────────────────
 # Earlier revisions tried to render a heavy ✖ close chip on the active tab
 # for non-core windows only, gated by `#{?#{m/r:^(core|...)$,#W},,#[…] ✖ }`.
 # That format had two failure modes the operator kept seeing:
@@ -94,25 +117,25 @@ tx_set window-status-style "fg=#7a7a7a,bg=#1a1a1a"
 #      emits the rest (e.g. `bold]`) as plain text.
 # tmux doesn't fire click handlers on the ✖ glyph either way (the chip was
 # decorative), so just drop the conditional. Active tab keeps the bright
-# blue fill, bold label, and ▎ caps; no per-tab close affordance.
+# iOS-blue pill, bold label, and ◖◗ half-circle caps; no per-tab close.
 tx_set window-status-current-format \
-  "#[fg=#3a7ebf,bg=#0a0a0a]▎#[fg=#ffffff,bg=#3a7ebf,bold]   #I  #W   #[fg=#3a7ebf,bg=#0a0a0a]▎"
-tx_set window-status-current-style "fg=#ffffff,bg=#3a7ebf,bold"
+  "#[fg=#007AFF,bg=#000000]◖#[fg=#FFFFFF,bg=#007AFF,bold]  #I  #W  #[fg=#007AFF,bg=#000000]◗"
+tx_set window-status-current-style "fg=#FFFFFF,bg=#007AFF,bold"
 
-# ── activity / bell highlights ───────────────────────────────────────────────
-tx_set window-status-activity-style "fg=#ffaa55,bg=#241a10,bold"
-tx_set window-status-bell-style     "fg=#ff5555,bg=#2a0a0a,bold"
+# ── activity / bell highlights — iOS-orange / iOS-red ────────────────────────
+tx_set window-status-activity-style "fg=#FF9500,bg=#1C1C1E,bold"
+tx_set window-status-bell-style     "fg=#FF3B30,bg=#1C1C1E,bold"
 
-# ── pane border styling ──────────────────────────────────────────────────────
+# ── pane border styling — iOS-blue active, secondary gray idle ───────────────
 tx_set pane-border-status top
-tx_set pane-border-format " #[fg=#ffd07a,bold]▭#[default] #[fg=#bbbbbb]#{@panel}#[default] "
-tx_set pane-border-style        "fg=#2a2a2a"
-tx_set pane-active-border-style "fg=#3a7ebf"
+tx_set pane-border-format " #[fg=#FF9500,bold]▭#[default] #[fg=#AEAEB2]#{@panel}#[default] "
+tx_set pane-border-style        "fg=#2C2C2E"
+tx_set pane-active-border-style "fg=#007AFF"
 
-# ── message / mode styling ───────────────────────────────────────────────────
-tx_set message-style         "fg=#ffffff,bg=#3a7ebf,bold"
-tx_set message-command-style "fg=#ffffff,bg=#1a1a1a"
-tx_set mode-style            "fg=#0a0a0a,bg=#ffd07a,bold"
+# ── message / mode styling — iOS-blue alerts, iOS-yellow copy mode ───────────
+tx_set message-style         "fg=#FFFFFF,bg=#007AFF,bold"
+tx_set message-command-style "fg=#FFFFFF,bg=#1C1C1E"
+tx_set mode-style            "fg=#000000,bg=#FFCC00,bold"
 
 # ── multi-row status: dark padding rows + one tabs row ───────────────────────
 # tmux's default template for status-format[0] — replicated verbatim so the
@@ -120,8 +143,9 @@ tx_set mode-style            "fg=#0a0a0a,bg=#ffd07a,bold"
 # Source: `tmux show-options -gv status-format[0]` from a default tmux build.
 DEFAULT_TABS_FORMAT='#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]'
 
-# Uniform dark padding row — 400 spaces is wider than any reasonable terminal.
-PADDING_ROW="#[fg=#0a0a0a,bg=#0a0a0a]$(printf '%*s' 400 '')"
+# Uniform dark padding row — iOS systemBackground (true black) so the chrome
+# reads as one continuous surface with the tabs row below.
+PADDING_ROW="#[fg=#000000,bg=#000000]$(printf '%*s' 400 '')"
 
 # Clear any session-local `status` override first. tmux's new-session default
 # can leave a per-session `status on` (boolean) that shadows the global numeric
@@ -141,10 +165,11 @@ for ((i=0; i<last_idx; i++)); do
 done
 
 # ── iOS-style menu styling ───────────────────────────────────────────────────
-# Card-like background, rounded border, bold accent on the highlighted row.
-tx_set menu-style          "fg=#e6e6e6,bg=#16181d"
-tx_set menu-selected-style "fg=#ffffff,bg=#3a7ebf,bold"
-tx_set menu-border-style   "fg=#2a3038"
+# Sheet-style card on tertiarySystemBackground, rounded border, iOS-blue
+# selection row — mirrors a UIKit context menu on dark mode.
+tx_set menu-style          "fg=#FFFFFF,bg=#1C1C1E"
+tx_set menu-selected-style "fg=#FFFFFF,bg=#007AFF,bold"
+tx_set menu-border-style   "fg=#2C2C2E"
 tx_set menu-border-lines   "rounded"
 
 # ── sticky right-click menu ──────────────────────────────────────────────────
@@ -172,7 +197,7 @@ trap 'rm -f "$sticky_menu_conf"' EXIT
 # by tmux's '' separator. `-O` keeps the menu open until selection/Escape.
 cat >"$sticky_menu_conf" <<'TMUX_CONF'
 unbind-key -T root MouseDown3Pane
-bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { display-menu -O -T "#[align=centre,fg=#ffd07a,bold] ◆  pane #{pane_index} · #{pane_id} " -t = -x M -y M "  📋  Copy whole session" C "run-shell \"tmux capture-pane -t '#{pane_id}' -p -S - -E - | wl-copy && tmux display-message -d 1500 '📋  Pane history copied to clipboard'\"" "  📄  Copy visible" c "run-shell \"tmux capture-pane -t '#{pane_id}' -p | wl-copy && tmux display-message -d 1500 '📄  Visible area copied'\"" "  ✂   Copy this line" l "run-shell \"echo -n '#{q:mouse_line}' | wl-copy && tmux display-message -d 1500 '✂   Line copied'\"" '' "  🔎  Search history…" / { copy-mode -t= ; send-keys -X search-backward "" } "  ⬆   Scroll to top" '<' { copy-mode -t= ; send-keys -X history-top } "  ⬇   Scroll to bottom" '>' { copy-mode -t= ; send-keys -X history-bottom } '' "  ⬓   Horizontal split" h { split-window -h } "  ⬒   Vertical split" v { split-window -v } "#{?#{>:#{window_panes},1},,-}  ⛶   #{?window_zoomed_flag,Unzoom,Zoom}" z { resize-pane -Z } '' "#{?#{>:#{window_panes},1},,-}  ▲   Swap up" u { swap-pane -U } "#{?#{>:#{window_panes},1},,-}  ▼   Swap down" d { swap-pane -D } "#{?pane_marked_set,,-}  ⇄   Swap with marked" s { swap-pane } "  ◈   #{?pane_marked,Unmark,Mark} pane" m { select-pane -m } '' "  ↻   Respawn pane" R { respawn-pane -k } "  ✕   Kill pane" X { kill-pane } }
+bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { display-menu -O -T "#[align=centre,fg=#FF9500,bold] ◆  pane #{pane_index} · #{pane_id} " -t = -x M -y M "  📋  Copy whole session" C "run-shell \"tmux capture-pane -t '#{pane_id}' -p -S - -E - | wl-copy && tmux display-message -d 1500 '📋  Pane history copied to clipboard'\"" "  📄  Copy visible" c "run-shell \"tmux capture-pane -t '#{pane_id}' -p | wl-copy && tmux display-message -d 1500 '📄  Visible area copied'\"" "  ✂   Copy this line" l "run-shell \"echo -n '#{q:mouse_line}' | wl-copy && tmux display-message -d 1500 '✂   Line copied'\"" '' "  🔎  Search history…" / { copy-mode -t= ; send-keys -X search-backward "" } "  ⬆   Scroll to top" '<' { copy-mode -t= ; send-keys -X history-top } "  ⬇   Scroll to bottom" '>' { copy-mode -t= ; send-keys -X history-bottom } '' "  ⬓   Horizontal split" h { split-window -h } "  ⬒   Vertical split" v { split-window -v } "#{?#{>:#{window_panes},1},,-}  ⛶   #{?window_zoomed_flag,Unzoom,Zoom}" z { resize-pane -Z } '' "#{?#{>:#{window_panes},1},,-}  ▲   Swap up" u { swap-pane -U } "#{?#{>:#{window_panes},1},,-}  ▼   Swap down" d { swap-pane -D } "#{?pane_marked_set,,-}  ⇄   Swap with marked" s { swap-pane } "  ◈   #{?pane_marked,Unmark,Mark} pane" m { select-pane -m } '' "  ↻   Respawn pane" R { respawn-pane -k } "  ✕   Kill pane" X { kill-pane } }
 
 # Mouse-wheel scroll into copy-mode even when the pane is in alt-screen
 # (plan-tree-anim / fleet-state-anim use \033[?1049h; the default tmux
@@ -206,4 +231,4 @@ tmux source-file "$sticky_menu_conf" >/dev/null 2>&1 || echo "[style-tabs] WARN:
 # Immediate redraw.
 tmux refresh-client -S >/dev/null 2>&1 || true
 
-echo "[style-tabs] applied browser-style tabs (height=$HEIGHT, tabs on row $last_idx, sticky right-click menu) to session=$SESSION"
+echo "[style-tabs] applied iOS-palette tabs (height=$HEIGHT, tabs on row $last_idx, sticky right-click menu) to session=$SESSION"
