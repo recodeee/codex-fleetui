@@ -33,19 +33,44 @@ Repeat indefinitely:
    to claim the next ready sub-task. The server auto-claims when there
    is exactly one candidate.
 
-3. If you got a task:
-   - Call `mcp__colony__task_claim_file` for each file you will edit.
-   - Do the work. Keep edits scoped to the claimed files; do not
-     widen scope without posting a question to the orchestrator.
+3. If you got a task, the response payload includes plan-structure fields
+   you MUST read before editing:
+
+   - `plan_slug` + `sub_idx` — your position in the plan tree.
+   - `parent` — the wave/parent sub-task (if any). Reference it in your
+     completion note so the orchestrator can render the W{n}·sub-{i}
+     lineage on the plan board.
+   - `depends_on` — sub-tasks that must be `done` before yours. Colony
+     already filters by ready deps, so if you got the task they're
+     satisfied. Re-check only if your evidence step needs an artifact
+     from an upstream sub-task; if a dep is `claimed` but not `done`,
+     treat it as a real blocker.
+   - `touches_files` — the EXACT file scope declared in the plan. Treat
+     this as a hard upper bound for what you edit. Adding a test file
+     next to a claimed source is fine; widening into a sibling module
+     is scope creep — post a question to the orchestrator first.
+
+   Then:
+
+   - Call `mcp__colony__task_claim_file` for each file you will edit
+     (subset of `touches_files`, plus any test file you're adding
+     adjacent to a claimed source).
+   - Do the work. Match `touches_files` exactly.
    - Verify with the narrowest meaningful command (cargo check, pytest -k,
      tsc --noEmit) — see the project's verification gates in AGENTS.md.
-   - On success: `mcp__colony__task_plan_complete_subtask` then
-     `mcp__colony__task_post(kind: 'note', content: 'branch=…; task=…; \
-     blocker=none; next=…; evidence=…')`.
+   - On success: open the PR via the agent-branch-finish flow, then
+     call `mcp__colony__task_plan_complete_subtask` with
+     `completed_summary` containing the PR URL or `PR #<n>` token.
+     The plan visualization scans this string for the PR badge.
+   - Then post the working-state note:
+     `mcp__colony__task_post(kind: 'note', content: 'branch=…; \
+     task=plan=<plan_slug>/sub-<sub_idx>; parent=<parent>; \
+     blocker=none; next=…; evidence=<PR URL>')`.
    - On a real blocker (missing dep, ambiguous spec, broken build):
      `mcp__colony__task_post(kind: 'blocker', content: 'BLOCKED branch=…; \
-     reason=…; need=…')` then `mcp__colony__task_hand_off` back to the
-     orchestrator (`to_agent: 'any'`).
+     plan=<plan_slug>/sub-<sub_idx>; reason=…; need=…')` then
+     `mcp__colony__task_hand_off` back to the orchestrator
+     (`to_agent: 'any'`).
 
 4. If `task_ready_for_agent` returns no work:
    - Sleep ~60 seconds (use the ScheduleWakeup tool when available, or
