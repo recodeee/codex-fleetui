@@ -1,0 +1,9 @@
+---
+source: fleet-ui/tests/chip_snapshot.rs
+expression: "format!(\"{}\", terminal.backend())"
+---
+"                        "
+"                        "
+"      ◖ ● working ◗     "
+"                        "
+"                        "
