@@ -32,8 +32,17 @@ CONFIG="${SCRIPT_DIR}/accounts.yml"
 SESSION="${CODEX_FLEET_SESSION:-codex-fleet}"
 WORK_ROOT="${CODEX_FLEET_WORK_ROOT:-/tmp/codex-fleet}"
 PROMPT_FILE="${SCRIPT_DIR}/worker-prompt.md"
+FLEET_CONFIG_TMPL="${CODEX_FLEET_CONFIG_TMPL:-$SCRIPT_DIR/fleet-config.toml.tmpl}"
 DRY_RUN=0
 ATTACH=1
+
+# Probe Colony / MCP health once, before any pane spawns. Exports
+# FLEET_COLONY_* + FLEET_PATH used by fleet_render_config below. The
+# preflight is non-fatal: when Colony is unhealthy it disables the MCP
+# in the staged config rather than refusing bringup, so the worker
+# prompt's shell-CLI fallback still has a chance to keep things moving.
+# shellcheck source=lib/mcp-preflight.sh
+. "$SCRIPT_DIR/lib/mcp-preflight.sh"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -133,9 +142,22 @@ stage_account() {
   mkdir -p "$dst"
   cp -f "$src" "$dst/auth.json"
   chmod 600 "$dst/auth.json"
-  # config.toml is large and stable — symlink rather than copy.
-  if [[ -f "$HOME/.codex/config.toml" ]]; then
-    ln -sf "$HOME/.codex/config.toml" "$dst/config.toml"
+  # Render a fleet-local config.toml instead of symlinking the operator's
+  # interactive one. The worker prompt only calls `mcp__colony__*`; every
+  # other MCP in `~/.codex/config.toml` (drawio, recodee, Higgsfield, …)
+  # would burn 30-60s of pane startup time blocking on slow / unreachable
+  # backends. fleet_render_config substitutes preflight-derived enable
+  # flags and timeouts into the template.
+  if [[ -f "$FLEET_CONFIG_TMPL" ]]; then
+    if ! fleet_render_config "$FLEET_CONFIG_TMPL" "$dst/config.toml"; then
+      echo "fatal: failed to render fleet config from $FLEET_CONFIG_TMPL" >&2
+      return 1
+    fi
+  else
+    echo "[codex-fleet] WARN fleet template missing ($FLEET_CONFIG_TMPL); falling back to symlinking ~/.codex/config.toml" >&2
+    if [[ -f "$HOME/.codex/config.toml" ]]; then
+      ln -sf "$HOME/.codex/config.toml" "$dst/config.toml"
+    fi
   fi
   echo "[codex-fleet] staged $acct_id ($email) -> $dst"
 }
@@ -189,7 +211,12 @@ for a in json.load(sys.stdin):
   # previous shape) made codex exit on EOF, killing the pane immediately.
   # Use --prompt-file when available (codex >= 0.x), otherwise fall back
   # to passing the file contents as the positional argument.
-  pane_cmd="env ${pane_env[*]} codex \"\$(cat '$PROMPT_FILE')\""
+  #
+  # --add-dir extends the workspace-write sandbox so workers can edit
+  # files in sibling repos that the active plan targets (e.g.
+  # /home/deadpool/Documents/recodee for gx-fleet-* plans). Without
+  # this, workers hit `outside writable roots` and silently spin.
+  pane_cmd="env ${pane_env[*]} codex --add-dir /home/deadpool/Documents/recodee --add-dir /home/deadpool/Documents/codex-fleet \"\$(cat '$PROMPT_FILE')\""
   if [[ $FIRST -eq 1 ]]; then
     tmux new-session -d -s "$SESSION" -n "codex-$acct_id" "$pane_cmd"
     FIRST=0
