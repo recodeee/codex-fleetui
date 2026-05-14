@@ -143,7 +143,7 @@ visible_len() {
 
 pulse_color() {
   local f="$1"
-  if (( (f / 2) % 2 == 0 )); then
+  if (( f % 2 == 0 )); then
     printf '%s' "$IOS_BLUE"
   else
     printf '%s%s' "$D" "$IOS_BLUE"
