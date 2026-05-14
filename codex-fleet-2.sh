@@ -136,12 +136,14 @@ tmux set-option -w -t "$SESSION:plan"  remain-on-exit on
 tmux set-option -w -t "$SESSION:waves" remain-on-exit on
 tmux select-window -t "$SESSION:plan"
 
-# Style the status bar so the second session is visually distinct from
-# `codex-fleet`. Light orange-tinted status bar = "this is the v2 dashboard".
-tmux set-option -t "$SESSION" status-style 'bg=#1f1207,fg=#ffcc00'
-tmux set-option -t "$SESSION" status-left  ' #[bold]CODEX-FLEET-2#[default] '
-tmux set-option -t "$SESSION" status-right '#[fg=#aeaeb2]%H:%M:%S '
-tmux set-option -t "$SESSION" status-interval 1
+# Apply the canonical iOS-palette tab chrome (style-tabs.sh) — the second
+# session no longer ships a custom orange-tinted status. Per-session distinction
+# now comes from the `#S` token rendered inside style-tabs.sh's session badge
+# pill (e.g. `◖ ◆ codex-fleet-2 ◗`), so both sessions read as one fleet visual
+# language and pre-iOS overrides don't shadow the global palette.
+if [[ -x "$REPO/scripts/codex-fleet/style-tabs.sh" ]]; then
+  CODEX_FLEET_SESSION="$SESSION" bash "$REPO/scripts/codex-fleet/style-tabs.sh" >/dev/null 2>&1 || true
+fi
 
 if (( USE_KITTY == 1 )) && command -v kitty >/dev/null 2>&1; then
   # Detached kitty window so this script returns immediately.

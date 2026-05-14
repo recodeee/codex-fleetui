@@ -51,9 +51,34 @@ fi
 # the value as a session index and bail with "unknown value: 1".
 tx_set() { tmux set-option -g "$@" >/dev/null; }
 tx_unset() { tmux set-option -gu "$@" >/dev/null 2>&1 || true; }
+# Session-local unset — clears `set-option -t SESSION` overrides that would
+# otherwise shadow our globals. tmux precedence is session > global, so any
+# leftover per-session value (manual `set-option -t`, an older bringup script,
+# or codex-fleet-2.sh's pre-iOS chrome block) silently wins over `tx_set`.
+ts_unset() { tmux set-option -t "$SESSION" -u "$@" >/dev/null 2>&1 || true; }
 
 # Wipe any stale status-format[N] entries from prior runs before configuring.
 for idx in 0 1 2 3 4; do tx_unset "status-format[$idx]"; done
+
+# Wipe session-local chrome overrides on the target session before applying
+# globals. Without this, a session like `codex-fleet` that was created with
+# `tmux set-option -t codex-fleet status-style ...` (deep-blue colour24 default
+# theme, status-position bottom, plain `#I:#W` formats) ignores every tx_set
+# below — the global iOS palette is set but never visible. Symptom: tabs render
+# as `0:overview` not `◖ 0  overview ◗`, and a solid colour24 bar appears.
+for opt in \
+  status status-position status-style status-interval status-justify \
+  status-left status-left-length status-left-style \
+  status-right status-right-length status-right-style \
+  window-status-format window-status-current-format \
+  window-status-style  window-status-current-style \
+  window-status-separator window-status-activity-style window-status-bell-style \
+  pane-border-status pane-border-format pane-border-style pane-active-border-style \
+  message-style message-command-style mode-style \
+  menu-style menu-selected-style menu-border-style menu-border-lines \
+  monitor-activity monitor-bell visual-activity visual-bell
+do ts_unset "$opt"; done
+for idx in 0 1 2 3 4; do ts_unset "status-format[$idx]"; done
 
 # Activity tracking — drives the orange "hover" highlight on background tabs.
 tx_set monitor-activity on
