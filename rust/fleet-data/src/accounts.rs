@@ -94,6 +94,29 @@ pub fn load_live() -> std::io::Result<Vec<Account>> {
     Ok(parse(&String::from_utf8_lossy(&output.stdout)))
 }
 
+fn cache() -> &'static crate::cache::TtlCache<Vec<Account>> {
+    static CACHE: std::sync::OnceLock<crate::cache::TtlCache<Vec<Account>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| crate::cache::TtlCache::new(std::time::Duration::from_secs(5)))
+}
+
+/// Cached variant of [`load_live`]. Dashboards on a 250 ms tick should call
+/// this instead — the `codex-auth list` subprocess is the most expensive
+/// part of a tick (account list shifts on the order of seconds, not frames),
+/// so a 5 s TTL keeps the UI responsive without burning a fork per frame.
+///
+/// Cache is process-local; the four dashboard binaries each maintain their
+/// own. Call [`invalidate_cache`] after an operation that mutates account
+/// state (login/logout/swap) to force a refetch on the next read.
+pub fn load_live_cached() -> std::io::Result<Vec<Account>> {
+    cache().get_or_refresh(load_live)
+}
+
+/// Drop the cached account list so the next [`load_live_cached`] re-shells.
+pub fn invalidate_cache() {
+    cache().invalidate();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

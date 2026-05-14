@@ -97,6 +97,13 @@ pub fn classify(info: &PaneInfo) -> PaneState {
 
 /// List the panes in `session:window` (or all panes if `window` is None).
 /// Returns `PaneInfo` with scrollback already captured (`-S -200`).
+///
+/// Internally this issues one `tmux list-panes` call, then spawns the
+/// `tmux capture-pane` subprocesses for every pane **concurrently** (each
+/// one is non-blocking via `Command::spawn`) before collecting their
+/// outputs. With ~20 panes this replaces ~21 sequential forks with one
+/// sequential fork plus ~20 parallel forks — the wall-clock cost drops
+/// from sum-of-forks to roughly the slowest single fork.
 pub fn list_panes(session: &str, window: Option<&str>) -> std::io::Result<Vec<PaneInfo>> {
     let target = match window {
         Some(w) => format!("{session}:{w}"),
@@ -115,8 +122,11 @@ pub fn list_panes(session: &str, window: Option<&str>) -> std::io::Result<Vec<Pa
         return Ok(Vec::new());
     }
 
-    let mut out = Vec::new();
-    for line in String::from_utf8_lossy(&list.stdout).lines() {
+    // Parse pane metadata first so we have a stable ordering and don't have
+    // to re-walk the stdout buffer alongside child handles.
+    let stdout = String::from_utf8_lossy(&list.stdout).into_owned();
+    let mut metas: Vec<(String, Option<String>, String)> = Vec::new();
+    for line in stdout.lines() {
         let parts: Vec<&str> = line.splitn(3, '\t').collect();
         if parts.len() != 3 {
             continue;
@@ -125,12 +135,25 @@ pub fn list_panes(session: &str, window: Option<&str>) -> std::io::Result<Vec<Pa
         let panel = parts[1].trim();
         let panel_label = if panel.is_empty() { None } else { Some(panel.to_string()) };
         let current_command = parts[2].to_string();
+        metas.push((pane_id, panel_label, current_command));
+    }
 
-        let cap = Command::new("tmux")
-            .args(["capture-pane", "-p", "-t", &pane_id, "-S", "-200"])
-            .output()?;
-        let scrollback_tail = String::from_utf8_lossy(&cap.stdout).into_owned();
+    // Spawn every capture-pane up front; the OS runs them in parallel.
+    let mut children = Vec::with_capacity(metas.len());
+    for (pane_id, _, _) in &metas {
+        let child = Command::new("tmux")
+            .args(["capture-pane", "-p", "-t", pane_id, "-S", "-200"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        children.push(child);
+    }
 
+    // Drain in submission order so each PaneInfo lines up with its metadata.
+    let mut out = Vec::with_capacity(metas.len());
+    for ((pane_id, panel_label, current_command), child) in metas.into_iter().zip(children) {
+        let captured = child.wait_with_output()?;
+        let scrollback_tail = String::from_utf8_lossy(&captured.stdout).into_owned();
         out.push(PaneInfo { pane_id, panel_label, current_command, scrollback_tail });
     }
     Ok(out)

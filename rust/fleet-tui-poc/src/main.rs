@@ -143,6 +143,11 @@ struct App {
     events: Vec<String>,
     chip_rect: Option<Rect>,
     overlay: Overlay,
+    /// (rect, shortcut_char) for each rendered context-menu item — populated
+    /// each frame in render_context_menu so the mouse handler can look up
+    /// which row was clicked and dispatch the same tmux command as the
+    /// keyboard shortcut.
+    ctx_menu_items: Vec<(Rect, char)>,
     // Spotlight state — query the user is typing + which result row is
     // selected (0 = top hit, 1..N = grouped results).
     spotlight_query: String,
@@ -162,6 +167,7 @@ impl App {
             events: vec!["click the systemBlue chip — coords land here".into()],
             chip_rect: None,
             overlay: Overlay::None,
+            ctx_menu_items: Vec::new(),
             spotlight_query: String::new(),
             spotlight_selected: 0,
             spotlight_tick: 0,
