@@ -8,8 +8,6 @@ use std::io;
 use std::time::Duration;
 
 use fleet_ui::{
-    card::card,
-    chip::{status_chip, ChipKind},
     overlay::{card_shadow, centered_overlay, render_overlay},
     palette::*,
 };
@@ -19,10 +17,10 @@ use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyEvent, NoUserEvent};
 use tuirealm::listener::EventListenerCfg;
 use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
-use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
+use tuirealm::ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Paragraph};
+use tuirealm::ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use tuirealm::ratatui::Frame;
 use tuirealm::state::State;
 use tuirealm::subscription::{EventClause, Sub, SubClause};
@@ -158,6 +156,834 @@ fn spotlight_selected(total: usize, selected: usize) -> usize {
     }
 }
 
+const REVIEW_BG: Color = Color::Rgb(11, 13, 18);
+const REVIEW_PANEL: Color = Color::Rgb(31, 32, 36);
+const REVIEW_PANEL_RAISED: Color = Color::Rgb(39, 40, 44);
+const REVIEW_PANEL_MUTED: Color = Color::Rgb(45, 46, 50);
+const REVIEW_BLUE: Color = Color::Rgb(22, 141, 255);
+const REVIEW_GREEN_BG: Color = Color::Rgb(14, 61, 35);
+const REVIEW_GREEN_FG: Color = Color::Rgb(50, 230, 109);
+const REVIEW_YELLOW_BG: Color = Color::Rgb(84, 61, 18);
+const REVIEW_YELLOW_FG: Color = Color::Rgb(255, 194, 85);
+const REVIEW_RED_BG: Color = Color::Rgb(85, 34, 34);
+const REVIEW_RED_FG: Color = Color::Rgb(255, 138, 130);
+const REVIEW_GRAY_BORDER: Color = Color::Rgb(72, 74, 80);
+const REVIEW_DARK_BORDER: Color = Color::Rgb(42, 44, 49);
+const REVIEW_TEXT: Color = Color::Rgb(248, 248, 252);
+const REVIEW_MUTED: Color = Color::Rgb(165, 166, 176);
+const REVIEW_FAINT: Color = Color::Rgb(118, 119, 130);
+
+fn fill(frame: &mut Frame, area: Rect, color: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(Block::default().style(Style::default().bg(color)), area);
+}
+
+fn rounded_block(border: Color, bg: Color, active: bool) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border).add_modifier(if active {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        }))
+        .style(Style::default().bg(bg))
+}
+
+fn text(frame: &mut Frame, area: Rect, line: Line<'static>) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn fit(input: &str, width: u16) -> String {
+    let w = width as usize;
+    if w == 0 {
+        return String::new();
+    }
+    let mut chars = input.chars();
+    let mut out = String::new();
+    for _ in 0..w {
+        if let Some(c) = chars.next() {
+            out.push(c);
+        } else {
+            return out;
+        }
+    }
+    if chars.next().is_some() && w > 1 {
+        out.pop();
+        out.push('…');
+    }
+    out
+}
+
+fn pill_line(label: &'static str, fg: Color, bg: Color) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {label}  "),
+        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn render_pill(frame: &mut Frame, area: Rect, label: &'static str, fg: Color, bg: Color) {
+    fill(frame, area, bg);
+    text(frame, area, pill_line(label, fg, bg));
+}
+
+fn render_nav_pill(
+    frame: &mut Frame,
+    area: Rect,
+    index: &'static str,
+    icon: &'static str,
+    label: &'static str,
+    count: &'static str,
+    active: bool,
+) {
+    let bg = if active { REVIEW_BLUE } else { REVIEW_PANEL };
+    let border = if active {
+        Color::Rgb(63, 166, 255)
+    } else {
+        REVIEW_DARK_BORDER
+    };
+    let block = rounded_block(border, bg, active);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let count_bg = if active {
+        Color::Rgb(73, 164, 255)
+    } else {
+        IOS_CHIP_BG
+    };
+    text(
+        frame,
+        Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(1),
+            height: 1,
+        },
+        Line::from(vec![
+            Span::styled(
+                format!(" {index} "),
+                Style::default()
+                    .fg(IOS_FG_MUTED)
+                    .bg(IOS_CHIP_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                icon,
+                Style::default()
+                    .fg(REVIEW_TEXT)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {label} "),
+                Style::default()
+                    .fg(REVIEW_TEXT)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {count} "),
+                Style::default()
+                    .fg(REVIEW_TEXT)
+                    .bg(count_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    );
+}
+
+fn render_top_dock(frame: &mut Frame, area: Rect) {
+    if area.width < 80 || area.height < 4 {
+        return;
+    }
+    let dock = Rect {
+        x: area.x + 3,
+        y: area.y + 1,
+        width: area.width.saturating_sub(6),
+        height: 3,
+    };
+    let block = rounded_block(REVIEW_GRAY_BORDER, REVIEW_PANEL, false);
+    let inner = block.inner(dock);
+    frame.render_widget(block, dock);
+
+    text(
+        frame,
+        Rect {
+            x: inner.x + 2,
+            y: inner.y,
+            width: 24,
+            height: 1,
+        },
+        Line::from(vec![
+            Span::styled(
+                " ◆ ",
+                Style::default()
+                    .fg(Color::Rgb(255, 146, 28))
+                    .bg(Color::Rgb(255, 105, 32)),
+            ),
+            Span::styled(
+                " codex-fleet",
+                Style::default()
+                    .fg(REVIEW_TEXT)
+                    .bg(REVIEW_PANEL)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " 18:51:01",
+                Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL),
+            ),
+        ]),
+    );
+    text(
+        frame,
+        Rect {
+            x: inner.x + 28,
+            y: inner.y,
+            width: 1,
+            height: 1,
+        },
+        Line::from(Span::styled(
+            "│",
+            Style::default().fg(REVIEW_DARK_BORDER).bg(REVIEW_PANEL),
+        )),
+    );
+
+    let tabs = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(23),
+            Constraint::Length(19),
+            Constraint::Length(19),
+            Constraint::Length(20),
+            Constraint::Length(23),
+            Constraint::Length(11),
+            Constraint::Min(0),
+        ])
+        .split(Rect {
+            x: inner.x + 31,
+            y: dock.y,
+            width: inner.width.saturating_sub(31),
+            height: dock.height,
+        });
+    render_nav_pill(frame, tabs[0], "0", "⌘", "Overview", "7", false);
+    render_nav_pill(frame, tabs[1], "1", "↬", "Fleet", "7", false);
+    render_nav_pill(frame, tabs[2], "2", "☑", "Plan", "12", false);
+    render_nav_pill(frame, tabs[3], "3", "≋", "Waves", "3", false);
+    render_nav_pill(frame, tabs[4], "4", "♢", "Review", "1", true);
+    render_pill(frame, tabs[5], "● live", REVIEW_GREEN_FG, REVIEW_GREEN_BG);
+}
+
+fn render_subnav(frame: &mut Frame, area: Rect) {
+    if area.width < 40 || area.height == 0 {
+        return;
+    }
+    let nav = Rect {
+        x: area.x + 4,
+        y: area.y,
+        width: area.width.saturating_sub(8),
+        height: 3.min(area.height),
+    };
+    let block = rounded_block(REVIEW_DARK_BORDER, Color::Rgb(18, 20, 25), false);
+    let inner = block.inner(nav);
+    frame.render_widget(block, nav);
+    text(
+        frame,
+        Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        },
+        Line::from(vec![
+            Span::styled(
+                "0 Watcher    ",
+                Style::default().fg(REVIEW_FAINT).bg(Color::Rgb(18, 20, 25)),
+            ),
+            Span::styled(
+                "1 Overview    ",
+                Style::default().fg(REVIEW_FAINT).bg(Color::Rgb(18, 20, 25)),
+            ),
+            Span::styled(
+                "2 Fleet    ",
+                Style::default().fg(REVIEW_FAINT).bg(Color::Rgb(18, 20, 25)),
+            ),
+            Span::styled(
+                "3 Plan    ",
+                Style::default().fg(REVIEW_FAINT).bg(Color::Rgb(18, 20, 25)),
+            ),
+            Span::styled(
+                " 4 Waves ",
+                Style::default().fg(REVIEW_TEXT).bg(REVIEW_BLUE),
+            ),
+            Span::styled(
+                "    REVIEW · 1 pending · auto-reviewer on",
+                Style::default().fg(REVIEW_MUTED).bg(Color::Rgb(18, 20, 25)),
+            ),
+        ]),
+    );
+}
+
+fn render_review_hero(frame: &mut Frame, area: Rect) {
+    let left = Rect {
+        x: area.x + 2,
+        y: area.y,
+        width: area.width.saturating_sub(4),
+        height: area.height,
+    };
+    text(
+        frame,
+        Rect {
+            x: left.x,
+            y: left.y,
+            width: left.width,
+            height: 1,
+        },
+        Line::from(Span::styled(
+            "REVIEW",
+            Style::default()
+                .fg(REVIEW_MUTED)
+                .add_modifier(Modifier::BOLD),
+        )),
+    );
+    if left.height > 2 {
+        text(
+            frame,
+            Rect {
+                x: left.x,
+                y: left.y + 1,
+                width: left.width,
+                height: 1,
+            },
+            Line::from(vec![
+                Span::styled(
+                    "1 awaiting",
+                    Style::default()
+                        .fg(REVIEW_TEXT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" · 124 approved", Style::default().fg(REVIEW_MUTED)),
+            ]),
+        );
+    }
+    if area.width > 110 && area.height > 2 {
+        render_pill(
+            frame,
+            Rect {
+                x: area.x + area.width - 36,
+                y: area.y + 1,
+                width: 23,
+                height: 1,
+            },
+            "✦ Auto-reviewer on",
+            REVIEW_GREEN_FG,
+            REVIEW_GREEN_BG,
+        );
+        render_pill(
+            frame,
+            Rect {
+                x: area.x + area.width - 12,
+                y: area.y + 1,
+                width: 10,
+                height: 1,
+            },
+            "▣ Policy",
+            REVIEW_TEXT,
+            REVIEW_PANEL,
+        );
+    }
+}
+
+fn render_review_action(
+    frame: &mut Frame,
+    area: Rect,
+    label: &'static str,
+    icon: &'static str,
+    fg: Color,
+    bg: Color,
+    border: Color,
+    active: bool,
+) {
+    if area.width < 8 || area.height == 0 {
+        return;
+    }
+    let block = rounded_block(border, bg, active);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{icon} "),
+                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                label,
+                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .alignment(Alignment::Center),
+        inner,
+    );
+}
+
+fn render_review_card(frame: &mut Frame, area: Rect) {
+    if area.width < 36 || area.height < 14 {
+        return;
+    }
+    let block = rounded_block(REVIEW_BLUE, REVIEW_PANEL, true);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    fill(frame, inner, REVIEW_PANEL);
+
+    let icon_rect = Rect {
+        x: inner.x + 2,
+        y: inner.y + 1,
+        width: 7.min(inner.width),
+        height: 3.min(inner.height),
+    };
+    let icon = rounded_block(REVIEW_YELLOW_FG, REVIEW_YELLOW_BG, false);
+    let icon_inner = icon.inner(icon_rect);
+    frame.render_widget(icon, icon_rect);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "⚡",
+            Style::default()
+                .fg(IOS_ORANGE)
+                .bg(REVIEW_YELLOW_BG)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Center),
+        icon_inner,
+    );
+
+    let meta_x = inner.x + 11;
+    text(
+        frame,
+        Rect {
+            x: meta_x,
+            y: inner.y + 1,
+            width: inner.width.saturating_sub(13),
+            height: 1,
+        },
+        Line::from(vec![
+            Span::styled(
+                "REV-014",
+                Style::default()
+                    .fg(REVIEW_MUTED)
+                    .bg(REVIEW_PANEL)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  ●  9m 17s",
+                Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL),
+            ),
+        ]),
+    );
+    text(
+        frame,
+        Rect {
+            x: meta_x,
+            y: inner.y + 2,
+            width: inner.width.saturating_sub(13),
+            height: 1,
+        },
+        Line::from(Span::styled(
+            "apply_patch touching 3 files",
+            Style::default()
+                .fg(REVIEW_TEXT)
+                .bg(REVIEW_PANEL)
+                .add_modifier(Modifier::BOLD),
+        )),
+    );
+    text(
+        frame,
+        Rect {
+            x: meta_x,
+            y: inner.y + 3,
+            width: inner.width.saturating_sub(13),
+            height: 1,
+        },
+        Line::from(Span::styled(
+            "codex-ricsi-zazrifka · pane 4",
+            Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL),
+        )),
+    );
+
+    if inner.width > 44 {
+        let rx = inner.x + inner.width - 18;
+        render_pill(
+            frame,
+            Rect {
+                x: rx,
+                y: inner.y + 1,
+                width: 16,
+                height: 1,
+            },
+            "● risk medium",
+            REVIEW_YELLOW_FG,
+            REVIEW_YELLOW_BG,
+        );
+        render_pill(
+            frame,
+            Rect {
+                x: rx,
+                y: inner.y + 3,
+                width: 16,
+                height: 1,
+            },
+            "● auth high",
+            REVIEW_RED_FG,
+            REVIEW_RED_BG,
+        );
+    }
+
+    let rationale_y = inner.y + 6;
+    let rationale_h = 4.min(inner.height.saturating_sub(10));
+    if rationale_h > 0 {
+        let rationale = Rect {
+            x: inner.x + 2,
+            y: rationale_y,
+            width: inner.width.saturating_sub(4),
+            height: rationale_h,
+        };
+        fill(frame, rationale, REVIEW_PANEL_RAISED);
+        text(
+            frame,
+            Rect {
+                x: rationale.x,
+                y: rationale.y,
+                width: 1,
+                height: rationale.height,
+            },
+            Line::from(Span::styled(
+                "┃",
+                Style::default().fg(IOS_YELLOW).bg(REVIEW_PANEL_RAISED),
+            )),
+        );
+        text(
+            frame,
+            Rect {
+                x: rationale.x + 2,
+                y: rationale.y,
+                width: rationale.width.saturating_sub(4),
+                height: 1,
+            },
+            Line::from(Span::styled(
+                "AUTO-REVIEWER RATIONALE",
+                Style::default()
+                    .fg(REVIEW_MUTED)
+                    .bg(REVIEW_PANEL_RAISED)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        );
+        frame.render_widget(
+            Paragraph::new("Bounded local edits within the claimed task file scope on an isolated agent worktree, a reversible change explicitly authorized by the user's worker and repo workflow.")
+                .style(Style::default().fg(REVIEW_TEXT).bg(REVIEW_PANEL_RAISED))
+                .wrap(Wrap { trim: true }),
+            Rect { x: rationale.x + 2, y: rationale.y + 1, width: rationale.width.saturating_sub(4), height: rationale.height.saturating_sub(1) },
+        );
+    }
+
+    let files_y = rationale_y + rationale_h + 1;
+    if files_y + 4 < inner.y + inner.height {
+        text(
+            frame,
+            Rect {
+                x: inner.x + 2,
+                y: files_y,
+                width: inner.width.saturating_sub(4),
+                height: 1,
+            },
+            Line::from(Span::styled(
+                "3 FILES TOUCHED",
+                Style::default()
+                    .fg(REVIEW_MUTED)
+                    .bg(REVIEW_PANEL)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        );
+        for (i, file) in [
+            "↕ scripts/codex-fleet/lib/_env.sh",
+            "↕ scripts/codex-fleet/down-kitty.sh",
+            "↕ docs/cockpit.md",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = files_y + 1 + i as u16;
+            let row = Rect {
+                x: inner.x + 2,
+                y,
+                width: inner.width.saturating_sub(4),
+                height: 1,
+            };
+            fill(frame, row, REVIEW_PANEL_RAISED);
+            text(
+                frame,
+                Rect {
+                    x: row.x + 1,
+                    y,
+                    width: row.width.saturating_sub(2),
+                    height: 1,
+                },
+                Line::from(vec![
+                    Span::styled(
+                        "↕ ",
+                        Style::default()
+                            .fg(REVIEW_BLUE)
+                            .bg(REVIEW_PANEL_RAISED)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        fit(file.trim_start_matches("↕ "), row.width.saturating_sub(4)),
+                        Style::default().fg(REVIEW_TEXT).bg(REVIEW_PANEL_RAISED),
+                    ),
+                ]),
+            );
+        }
+    }
+
+    if inner.height >= 5 {
+        let button_y = inner.y + inner.height - 3;
+        let buttons = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(34),
+                Constraint::Percentage(38),
+                Constraint::Percentage(28),
+            ])
+            .split(Rect {
+                x: inner.x + 2,
+                y: button_y,
+                width: inner.width.saturating_sub(4),
+                height: 3,
+            });
+        render_review_action(
+            frame,
+            buttons[0],
+            "Approve",
+            "✓",
+            REVIEW_TEXT,
+            REVIEW_BLUE,
+            Color::Rgb(63, 166, 255),
+            true,
+        );
+        render_review_action(
+            frame,
+            buttons[1],
+            "Request changes",
+            "!",
+            REVIEW_RED_FG,
+            REVIEW_RED_BG,
+            Color::Rgb(166, 58, 53),
+            false,
+        );
+        render_review_action(
+            frame,
+            buttons[2],
+            "Skip",
+            "→",
+            REVIEW_TEXT,
+            REVIEW_PANEL_MUTED,
+            REVIEW_GRAY_BORDER,
+            false,
+        );
+    }
+}
+
+fn render_recent_decision_row(
+    frame: &mut Frame,
+    area: Rect,
+    title: &'static str,
+    author: &'static str,
+    age: &'static str,
+    risk: &'static str,
+    state: &'static str,
+    state_fg: Color,
+    state_bg: Color,
+) {
+    if area.width < 20 || area.height < 2 {
+        return;
+    }
+    text(
+        frame,
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width.saturating_sub(15),
+            height: 1,
+        },
+        Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(REVIEW_TEXT)
+                .bg(REVIEW_PANEL)
+                .add_modifier(Modifier::BOLD),
+        )),
+    );
+    text(
+        frame,
+        Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width.saturating_sub(15),
+            height: 1,
+        },
+        Line::from(vec![
+            Span::styled(author, Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL)),
+            Span::styled(
+                format!("  ● {age}  ● risk · {risk}"),
+                Style::default().fg(REVIEW_FAINT).bg(REVIEW_PANEL),
+            ),
+        ]),
+    );
+    render_pill(
+        frame,
+        Rect {
+            x: area.x + area.width.saturating_sub(13),
+            y: area.y,
+            width: 13,
+            height: 1,
+        },
+        state,
+        state_fg,
+        state_bg,
+    );
+    if area.height > 2 {
+        text(
+            frame,
+            Rect {
+                x: area.x,
+                y: area.y + 2,
+                width: area.width,
+                height: 1,
+            },
+            Line::from(Span::styled(
+                "─".repeat(area.width as usize),
+                Style::default().fg(REVIEW_DARK_BORDER).bg(REVIEW_PANEL),
+            )),
+        );
+    }
+}
+
+fn render_recent_decisions(frame: &mut Frame, area: Rect) {
+    if area.width < 28 || area.height < 12 {
+        return;
+    }
+    let block = rounded_block(REVIEW_GRAY_BORDER, REVIEW_PANEL, false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    fill(frame, inner, REVIEW_PANEL);
+    text(
+        frame,
+        Rect {
+            x: inner.x + 2,
+            y: inner.y + 1,
+            width: inner.width.saturating_sub(4),
+            height: 1,
+        },
+        Line::from(vec![
+            Span::styled(
+                "Recent decisions",
+                Style::default()
+                    .fg(REVIEW_TEXT)
+                    .bg(REVIEW_PANEL)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "{:>width$}",
+                    "last 30m",
+                    width = inner.width.saturating_sub(18) as usize
+                ),
+                Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL),
+            ),
+        ]),
+    );
+    let mut y = inner.y + 3;
+    for (title, author, age, risk, state, fg, bg) in [
+        (
+            "sleep 60",
+            "codex-admin-kollarrobert",
+            "3m ago",
+            "low",
+            "● approved",
+            REVIEW_GREEN_FG,
+            REVIEW_GREEN_BG,
+        ),
+        (
+            "openspec validate --spec",
+            "codex-admin-magnolia",
+            "7m ago",
+            "low",
+            "● approved",
+            REVIEW_GREEN_FG,
+            REVIEW_GREEN_BG,
+        ),
+        (
+            "bash -lc 'ls scripts/'",
+            "codex-matt-gg",
+            "12m ago",
+            "low",
+            "● approved",
+            REVIEW_GREEN_FG,
+            REVIEW_GREEN_BG,
+        ),
+        (
+            "git diff --no-index",
+            "codex-fico-magnolia",
+            "18m ago",
+            "low",
+            "● approved",
+            REVIEW_GREEN_FG,
+            REVIEW_GREEN_BG,
+        ),
+        (
+            "rm -rf .cap-probe-cache",
+            "codex-recodee-mite",
+            "24m ago",
+            "medium",
+            "● escalated",
+            IOS_YELLOW,
+            REVIEW_YELLOW_BG,
+        ),
+        (
+            "curl https://api.colony…",
+            "codex-ricsi-zazrifka",
+            "31m ago",
+            "medium",
+            "● denied",
+            REVIEW_RED_FG,
+            REVIEW_RED_BG,
+        ),
+    ] {
+        if y + 2 >= inner.y + inner.height {
+            break;
+        }
+        render_recent_decision_row(
+            frame,
+            Rect {
+                x: inner.x + 2,
+                y,
+                width: inner.width.saturating_sub(4),
+                height: 3,
+            },
+            title,
+            author,
+            age,
+            risk,
+            state,
+            fg,
+            bg,
+        );
+        y += 3;
+    }
+}
+
 #[derive(Default)]
 struct WatcherView {
     props: Props,
@@ -185,83 +1011,102 @@ fn render_dashboard(frame: &mut Frame, area: Rect) {
     if area.width < 30 || area.height < 8 {
         return;
     }
+    fill(frame, area, REVIEW_BG);
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // header banner
-            Constraint::Length(5), // 4 stat cards
-            Constraint::Min(0),    // per-pane table area
+            Constraint::Length(5),
+            Constraint::Length(4),
+            Constraint::Length(5),
+            Constraint::Min(0),
+            Constraint::Length(2),
         ])
         .split(area);
 
-    let header = card(Some("WATCHER · all clear · live"), false);
-    frame.render_widget(header, rows[0]);
+    render_top_dock(frame, rows[0]);
+    render_subnav(frame, rows[1]);
+    render_review_hero(frame, rows[2]);
 
-    let stats = Layout::default()
+    let content = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25); 4])
-        .split(rows[1]);
-    for (i, (label, value, kind)) in [
-        ("PANES", "8", ChipKind::Working),
-        ("CAPPED", "0", ChipKind::Idle),
-        ("SWAPPED", "0", ChipKind::Done),
-        ("RANKED", "20", ChipKind::Working),
-    ]
-    .iter()
-    .enumerate()
-    {
-        let block = card(Some(label), false);
-        let inner = block.inner(stats[i]);
-        frame.render_widget(block, stats[i]);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                format!("  {value}  "),
-                Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
-            )])),
-            Rect {
-                x: inner.x,
-                y: inner.y,
-                width: inner.width,
-                height: 1,
-            },
-        );
-        let chip = status_chip(*kind);
-        if inner.height >= 2 {
-            frame.render_widget(
-                Paragraph::new(Line::from(chip)),
-                Rect {
-                    x: inner.x,
-                    y: inner.y + 1,
-                    width: inner.width,
-                    height: 1,
-                },
-            );
-        }
-    }
-
-    let panes_block = card(
-        Some("FLEET PANES — port of watcher-board.sh deferred to follow-up"),
-        false,
-    );
-    let inner = panes_block.inner(rows[2]);
-    frame.render_widget(panes_block, rows[2]);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                "  fleet-data::panes::list_panes(\"codex-fleet\", Some(\"overview\")) → PaneState classifier",
-                Style::default().fg(IOS_FG_MUTED),
-            )),
-            Line::from(Span::styled(
-                "  use tmux's status-bar tabs (style-tabs.sh) to switch windows.",
-                Style::default().fg(IOS_FG_MUTED),
-            )),
-        ]),
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(Rect {
+            x: area.x + 2,
+            y: rows[3].y,
+            width: area.width.saturating_sub(4),
+            height: rows[3].height,
+        });
+    render_review_card(
+        frame,
         Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: inner.height.min(3),
+            x: content[0].x,
+            y: content[0].y,
+            width: content[0].width.saturating_sub(1),
+            height: content[0].height,
         },
+    );
+    render_recent_decisions(
+        frame,
+        Rect {
+            x: content[1].x + 1,
+            y: content[1].y,
+            width: content[1].width.saturating_sub(1),
+            height: content[1].height,
+        },
+    );
+
+    text(
+        frame,
+        Rect {
+            x: area.x + 3,
+            y: rows[4].y,
+            width: area.width.saturating_sub(6),
+            height: 1,
+        },
+        Line::from(vec![
+            Span::styled(
+                "A",
+                Style::default()
+                    .fg(REVIEW_TEXT)
+                    .bg(IOS_CHIP_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " Approve   ",
+                Style::default().fg(REVIEW_MUTED).bg(REVIEW_BG),
+            ),
+            Span::styled(
+                "R",
+                Style::default()
+                    .fg(REVIEW_TEXT)
+                    .bg(IOS_CHIP_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " Request Changes   ",
+                Style::default().fg(REVIEW_MUTED).bg(REVIEW_BG),
+            ),
+            Span::styled(
+                "S",
+                Style::default()
+                    .fg(REVIEW_TEXT)
+                    .bg(IOS_CHIP_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Skip   ", Style::default().fg(REVIEW_MUTED).bg(REVIEW_BG)),
+            Span::styled(
+                "D",
+                Style::default()
+                    .fg(REVIEW_TEXT)
+                    .bg(IOS_CHIP_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " View diff",
+                Style::default().fg(REVIEW_MUTED).bg(REVIEW_BG),
+            ),
+        ]),
     );
 }
 
@@ -684,6 +1529,7 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tuirealm::ratatui::{backend::TestBackend, Terminal};
 
     #[test]
     fn spotlight_filter_keeps_catalog_order_for_empty_query() {
@@ -728,5 +1574,39 @@ mod tests {
         assert_eq!(view.overlay, Overlay::None);
         assert!(view.spotlight_query.is_empty());
         assert_eq!(view.spotlight_selected, 0);
+    }
+
+    #[test]
+    fn review_queue_render_keeps_design_j_chrome() {
+        let mut terminal = Terminal::new(TestBackend::new(140, 44)).unwrap();
+        terminal
+            .draw(|frame| render_dashboard(frame, frame.area()))
+            .unwrap();
+        let frame = format!("{}", terminal.backend());
+
+        for needle in [
+            "codex-fleet",
+            "Review",
+            "1 awaiting",
+            "124 approved",
+            "Auto-reviewer on",
+            "apply_patch touching 3 files",
+            "risk medium",
+            "auth high",
+            "AUTO-REVIEWER RATIONALE",
+            "3 FILES TOUCHED",
+            "Approve",
+            "Request changes",
+            "Skip",
+            "Recent decisions",
+            "approved",
+            "escalated",
+            "denied",
+        ] {
+            assert!(
+                frame.contains(needle),
+                "rendered review queue should contain {needle:?}\n{frame}"
+            );
+        }
     }
 }
