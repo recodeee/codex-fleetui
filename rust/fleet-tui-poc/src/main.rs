@@ -16,27 +16,22 @@
 //
 // Run: `cargo run -p fleet-tui-poc`. `q` quits.
 
-use std::{
-    io::{self, stdout, Stdout},
-    time::Duration,
-};
+use std::{io, time::Duration};
 
-use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEvent,
-        MouseEventKind,
-    },
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
-    Terminal,
-};
+use tuirealm::application::{Application, PollStrategy};
+use tuirealm::command::{Cmd, CmdResult};
+use tuirealm::component::{AppComponent, Component};
+use tuirealm::event::{Event, Key, KeyEvent, MouseButton, MouseEvent, MouseEventKind, NoUserEvent};
+use tuirealm::listener::EventListenerCfg;
+use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
+use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
+use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use tuirealm::ratatui::Frame;
+use tuirealm::state::State;
+use tuirealm::subscription::{EventClause, Sub, SubClause};
+use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 
 // ─── iOS dark-glass palette (mapped from design GLASS object) ──────────────
 // rgba() values are pre-flattened against the terminal backdrop since cells
@@ -146,27 +141,28 @@ struct App {
     events: Vec<String>,
     chip_rect: Option<Rect>,
     overlay: Overlay,
-    /// (rect, shortcut_char) for each rendered context-menu item — populated
-    /// each frame in render_context_menu so the mouse handler can look up
-    /// which row was clicked and dispatch the same tmux command as the
-    /// keyboard shortcut.
     ctx_menu_items: Vec<(Rect, char)>,
-    // Spotlight state — query the user is typing + which result row is
-    // selected (0 = top hit, 1..N = grouped results).
     spotlight_query: String,
     spotlight_selected: usize,
     spotlight_tick: u64,
-    // Session-switcher hit-testing. render_session_switcher rebuilds this
-    // every frame; the mouse handler consults it on each MouseDown(Left)
-    // and dispatches the matching CardAction into `last_action`, which the
-    // footer flashes as visual feedback on the next frame.
     card_buttons: Vec<(Rect, CardAction)>,
     last_action: Option<String>,
-    /// When the section-jump overlay opens, this is the tmux window the
-    /// invoker says is currently focused — render_section_jump uses it to
-    /// highlight the matching card in iOS-blue. None falls back to "the
-    /// first card", matching the screenshot's default state.
     section_active: Option<String>,
+    // tuirealm Component requirement.
+    props: Props,
+    // CLI / harness config — pushed onto App once at startup so the
+    // `AppComponent::on()` handler can mirror the pre-tuirealm
+    // `run(initial, single_shot, pane_id, session, active_section)`
+    // dispatch logic without juggling extra arguments through Application.
+    single_shot: bool,
+    pane_id: Option<String>,
+    session: String,
+    // Outcome state — both written by `on()`. When `quit=true` the main
+    // loop exits; if `pending_tmux` was set, main() runs that argv after
+    // tearing down raw mode so the spawned tmux process sees a clean
+    // terminal.
+    quit: bool,
+    pending_tmux: Option<Vec<String>>,
 }
 
 impl App {
@@ -182,7 +178,34 @@ impl App {
             card_buttons: Vec::new(),
             last_action: None,
             section_active: None,
+            props: Props::default(),
+            single_shot: false,
+            pane_id: None,
+            session: "codex-fleet".to_string(),
+            quit: false,
+            pending_tmux: None,
         }
+    }
+
+    /// Apply CLI flags onto a fresh `App`. Mirrors the old
+    /// `run(initial, single_shot, pane_id, session, active_section)`
+    /// argument list.
+    fn configured(
+        initial: Overlay,
+        single_shot: bool,
+        pane_id: Option<String>,
+        session: String,
+        active_section: Option<String>,
+    ) -> Self {
+        let mut app = Self::new();
+        if initial != Overlay::None {
+            app.overlay = initial;
+        }
+        app.single_shot = single_shot;
+        app.pane_id = pane_id;
+        app.session = session;
+        app.section_active = active_section;
+        app
     }
 
     fn open_spotlight(&mut self) {
@@ -303,7 +326,7 @@ struct PaneMock {
     footer: Option<(&'static str, &'static str)>,
 }
 
-fn render_term_topbar(frame: &mut ratatui::Frame, area: Rect) {
+fn render_term_topbar(frame: &mut Frame, area: Rect) {
     let bg = Block::default().style(Style::default().bg(TERM_BG2));
     frame.render_widget(bg, area);
 
@@ -353,7 +376,7 @@ fn render_term_topbar(frame: &mut ratatui::Frame, area: Rect) {
     }
 }
 
-fn render_term_pane(frame: &mut ratatui::Frame, area: Rect, pane: &PaneMock) {
+fn render_term_pane(frame: &mut Frame, area: Rect, pane: &PaneMock) {
     if area.width < 6 || area.height < 3 {
         return;
     }
@@ -421,7 +444,7 @@ fn render_term_pane(frame: &mut ratatui::Frame, area: Rect, pane: &PaneMock) {
     }
 }
 
-fn render_terminal_backdrop(frame: &mut ratatui::Frame, area: Rect) {
+fn render_terminal_backdrop(frame: &mut Frame, area: Rect) {
     // Solid wash
     frame.render_widget(
         Block::default().style(Style::default().bg(TERM_BG)),
@@ -606,7 +629,7 @@ static PANE_RECODEE: PaneMock = PaneMock {
 
 // Soft dim overlay to focus the palette — single-pass tint by drawing a
 // translucent-feeling block at low intensity over the backdrop.
-fn dim_backdrop(frame: &mut ratatui::Frame, area: Rect) {
+fn dim_backdrop(frame: &mut Frame, area: Rect) {
     // Approximates rgba(0,0,0,0.55) over TERM_BG by blending toward black.
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(2, 4, 7))),
@@ -619,7 +642,7 @@ fn dim_backdrop(frame: &mut ratatui::Frame, area: Rect) {
 // 3D-ish drop shadow for floating cards: paints a near-black band 1 row below
 // (offset 2 cols right) and a 2-col strip down the right edge. Approximates an
 // iOS card-shadow on top of the dimmed backdrop.
-fn card_shadow(frame: &mut ratatui::Frame, card_rect: Rect, area: Rect) {
+fn card_shadow(frame: &mut Frame, card_rect: Rect, area: Rect) {
     let shadow = Color::Rgb(0, 0, 4);
     let by = card_rect.y + card_rect.height;
     if by < area.y + area.height {
@@ -651,7 +674,7 @@ fn card_shadow(frame: &mut ratatui::Frame, card_rect: Rect, area: Rect) {
 
 // ───────────────────────── 1 · iOS context menu ────────────────────────────
 
-fn render_context_menu(frame: &mut ratatui::Frame, area: Rect) {
+fn render_context_menu(frame: &mut Frame, area: Rect) {
     let sections: &[&[(&str, &str, &str, bool)]] = &[
         &[
             ("⧉", "Copy whole session", "C", false),
@@ -806,7 +829,7 @@ fn render_context_menu(frame: &mut ratatui::Frame, area: Rect) {
 
 // ─────────────────────────── 2 · iOS spotlight ─────────────────────────────
 
-fn render_spotlight(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
     let filtered = spotlight_filter(&app.spotlight_query);
     let total = filtered.len();
     let selected = if total == 0 { 0 } else { app.spotlight_selected.min(total - 1) };
@@ -1092,7 +1115,7 @@ fn render_spotlight(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     render_spotlight_footer(frame, inner);
 }
 
-fn render_spotlight_footer(frame: &mut ratatui::Frame, inner: Rect) {
+fn render_spotlight_footer(frame: &mut Frame, inner: Rect) {
     let fy = inner.y + inner.height - 1;
     let footer = Line::from(vec![
         Span::styled("↵", Style::default().fg(IOS_FG)),
@@ -1112,7 +1135,7 @@ fn render_spotlight_footer(frame: &mut ratatui::Frame, inner: Rect) {
 
 // ────────────────────────── 3 · iOS action sheet ───────────────────────────
 
-fn render_action_sheet(frame: &mut ratatui::Frame, area: Rect) {
+fn render_action_sheet(frame: &mut Frame, area: Rect) {
     struct Item(&'static str, &'static str, &'static str, Option<Color>, bool);
     let groups: &[(&str, Option<&str>, &[Item])] = &[
         (
@@ -1415,7 +1438,7 @@ const SESSIONS: &[SessionCard] = &[
     },
 ];
 
-fn render_session_switcher(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+fn render_session_switcher(frame: &mut Frame, area: Rect, app: &mut App) {
     // Wipe last frame's hit-rects; every button registers fresh below.
     app.card_buttons.clear();
     // Full-area scrim
@@ -1536,7 +1559,7 @@ fn render_session_switcher(frame: &mut ratatui::Frame, area: Rect, app: &mut App
 }
 
 fn render_session_card(
-    frame: &mut ratatui::Frame,
+    frame: &mut Frame,
     rect: Rect,
     s: &SessionCard,
     card_index: usize,
@@ -1802,7 +1825,7 @@ fn section_jump_tmux_args(key: char, session: &str) -> Option<Vec<String>> {
     ])
 }
 
-fn render_section_jump(frame: &mut ratatui::Frame, area: Rect, active_window: Option<&str>) {
+fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str>) {
     // 3 columns × 2 rows grid; the 6th cell sits empty. Card geometry
     // matches the screenshot reference (rounded corners via card_shadow +
     // glass_block, ~22-wide cards, 6-high cards).
@@ -1901,7 +1924,7 @@ fn render_section_jump(frame: &mut ratatui::Frame, area: Rect, active_window: Op
     }
 }
 
-fn render_jump_card(frame: &mut ratatui::Frame, rect: Rect, sec: &Section, active: bool) {
+fn render_jump_card(frame: &mut Frame, rect: Rect, sec: &Section, active: bool) {
     let (bg, fg, sub_fg, badge_bg, badge_fg) = if active {
         (IOS_TINT, IOS_FG, Color::Rgb(220, 232, 255), IOS_TINT_DARK, IOS_FG)
     } else {
@@ -1980,7 +2003,7 @@ fn render_jump_card(frame: &mut ratatui::Frame, rect: Rect, sec: &Section, activ
 // Original Phase-0 POC view — chip on top, hint line, event log. Stays as
 // the default (`0` / Esc) so the three risk checks still drive the binary.
 
-fn render_validation_harness(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+fn render_validation_harness(frame: &mut Frame, area: Rect, app: &mut App) {
     let card = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -2031,7 +2054,7 @@ fn render_validation_harness(frame: &mut ratatui::Frame, area: Rect, app: &mut A
 
 // ─────────────────────────────── routing ───────────────────────────────────
 
-fn render(frame: &mut ratatui::Frame, app: &mut App) {
+fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     if area.width < 4 || area.height < 4 {
         return;
@@ -2066,6 +2089,249 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
+// ───────────────────────── tuirealm Component / AppComponent ────────────────
+//
+// Sixth and final binary in the codex-fleet ratatui → tuirealm migration.
+// The pre-tuirealm `run()` function was a 167-line hand-rolled crossterm
+// loop with per-overlay key/mouse dispatch. That logic now lives inside
+// `AppComponent::on()`; the harness's CLI args feed into `App::configured`
+// once and the rest flows through the M-V-U cycle.
+//
+// Per-overlay component splitting (one tuirealm Component per Overlay
+// variant, with subscription routing) is the cleaner end state — left as
+// follow-up work because the render functions are tightly coupled to a
+// single `&mut App` and breaking that apart needs a design pass that
+// doesn't belong in this PR.
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Msg {
+    Tick,
+    Redraw,
+    Quit,
+    /// Tear down the terminal, then exec this tmux argv. Mirrors the
+    /// `pending_tmux` slot in the pre-tuirealm run() loop.
+    Dispatch(Vec<String>),
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub enum Id {
+    Poc,
+}
+
+impl Component for App {
+    fn view(&mut self, frame: &mut Frame, _area: Rect) {
+        // render() uses frame.area() internally to compute its own layout —
+        // pass-through here keeps the existing function signature unchanged.
+        render(frame, self);
+    }
+
+    fn query(&self, attr: Attribute) -> Option<QueryResult<'_>> {
+        self.props.get(attr).map(|v| QueryResult::from(v.clone()))
+    }
+
+    fn attr(&mut self, attr: Attribute, value: AttrValue) {
+        self.props.set(attr, value);
+    }
+
+    fn state(&self) -> State {
+        State::None
+    }
+
+    fn perform(&mut self, _cmd: Cmd) -> CmdResult {
+        CmdResult::NoChange
+    }
+}
+
+impl AppComponent<Msg, NoUserEvent> for App {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        match ev {
+            Event::Tick => {
+                self.spotlight_tick = self.spotlight_tick.wrapping_add(1);
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent { code, .. }) => {
+                self.handle_key(code);
+                self.drain_outcome().or(Some(Msg::Redraw))
+            }
+            Event::Mouse(m) => {
+                if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+                    match self.overlay {
+                        Overlay::None => self.record_mouse(*m),
+                        Overlay::SessionSwitcher => {
+                            self.dispatch_card_click(m.column, m.row);
+                        }
+                        _ => {}
+                    }
+                }
+                self.drain_outcome().or(Some(Msg::Redraw))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl App {
+    /// Pulls any pending `quit` / `pending_tmux` outcome off self and
+    /// converts to the matching `Msg` for the main loop. Quit + pending
+    /// always pair (every handler that sets `pending_tmux` also sets
+    /// `quit`, mirroring the old `pending_tmux = Some(...); break;` pairs),
+    /// so the dispatch arm wins over plain quit when both are set.
+    fn drain_outcome(&mut self) -> Option<Msg> {
+        if let Some(args) = self.pending_tmux.take() {
+            self.quit = false;
+            return Some(Msg::Dispatch(args));
+        }
+        if self.quit {
+            self.quit = false;
+            return Some(Msg::Quit);
+        }
+        None
+    }
+}
+
+impl App {
+    // Key dispatch mirrors the pre-tuirealm `run()` per-overlay arms.
+    // Sets `self.quit` / `self.pending_tmux` as side effects; main() reads
+    // those after the loop exits.
+    fn handle_key(&mut self, code: &Key) {
+        if self.overlay == Overlay::Spotlight {
+            match code {
+                Key::Esc => {
+                    self.overlay = Overlay::None;
+                    self.spotlight_query.clear();
+                    self.spotlight_selected = 0;
+                }
+                Key::Char(c) => {
+                    self.spotlight_query.push(*c);
+                    self.spotlight_selected = 0;
+                }
+                Key::Backspace => {
+                    self.spotlight_query.pop();
+                    self.spotlight_selected = 0;
+                }
+                Key::Up => {
+                    self.spotlight_selected = self.spotlight_selected.saturating_sub(1);
+                }
+                Key::Down => {
+                    let max = spotlight_filter(&self.spotlight_query).len().saturating_sub(1);
+                    self.spotlight_selected = (self.spotlight_selected + 1).min(max);
+                }
+                Key::Enter => {}
+                _ => {}
+            }
+        } else if self.overlay == Overlay::SectionJump {
+            match code {
+                Key::Esc | Key::Char('q') | Key::Char('0') | Key::Tab => {
+                    if self.single_shot {
+                        self.quit = true;
+                    } else {
+                        self.overlay = Overlay::None;
+                    }
+                }
+                Key::Char(c) if c.is_ascii_digit() => {
+                    if let Some(args) = section_jump_tmux_args(*c, &self.session) {
+                        self.pending_tmux = Some(args);
+                        self.quit = true;
+                    }
+                }
+                Key::Enter => {
+                    let key = self
+                        .section_active
+                        .as_deref()
+                        .and_then(|w| SECTIONS.iter().find(|s| s.window == w).map(|s| s.key))
+                        .unwrap_or('1');
+                    if let Some(args) = section_jump_tmux_args(key, &self.session) {
+                        self.pending_tmux = Some(args);
+                        self.quit = true;
+                    }
+                }
+                _ => {}
+            }
+        } else if self.single_shot && self.overlay == Overlay::ContextMenu {
+            match code {
+                Key::Esc | Key::Char('q') => self.quit = true,
+                Key::Char(c) => {
+                    if let Some(cmd) = context_menu_tmux_args(*c, self.pane_id.as_deref()) {
+                        self.pending_tmux = Some(cmd);
+                        self.quit = true;
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            match code {
+                Key::Char('q') => self.quit = true,
+                Key::Esc | Key::Char('0') => {
+                    if self.overlay == Overlay::None {
+                        self.quit = true;
+                    } else {
+                        self.overlay = Overlay::None;
+                    }
+                }
+                Key::Tab => self.overlay = Overlay::SectionJump,
+                Key::Char('1') => self.overlay = Overlay::ContextMenu,
+                Key::Char('2') => self.open_spotlight(),
+                Key::Char('3') => self.overlay = Overlay::ActionSheet,
+                Key::Char('4') => self.overlay = Overlay::SessionSwitcher,
+                Key::Char('5') => self.overlay = Overlay::SectionJump,
+                _ => {}
+            }
+        }
+    }
+}
+
+// ───────────────────────────── Model (tuirealm M) ───────────────────────────
+
+struct Model<T: TerminalAdapter> {
+    app: Application<Id, Msg, NoUserEvent>,
+    terminal: T,
+    redraw: bool,
+}
+
+impl Model<CrosstermTerminalAdapter> {
+    fn new(initial_app: App) -> io::Result<Self> {
+        let app = Self::init_app(initial_app)
+            .map_err(|e| io::Error::other(format!("init app: {e:?}")))?;
+        let terminal =
+            Self::init_adapter().map_err(|e| io::Error::other(format!("init adapter: {e:?}")))?;
+        Ok(Self { app, terminal, redraw: true })
+    }
+
+    fn init_app(
+        initial_app: App,
+    ) -> Result<Application<Id, Msg, NoUserEvent>, Box<dyn std::error::Error>> {
+        let mut app: Application<Id, Msg, NoUserEvent> = Application::init(
+            EventListenerCfg::default()
+                .crossterm_input_listener(Duration::from_millis(120), 3)
+                .tick_interval(Duration::from_millis(200)),
+        );
+        app.mount(
+            Id::Poc,
+            Box::new(initial_app),
+            vec![Sub::new(EventClause::Tick, SubClause::Always)],
+        )?;
+        app.active(&Id::Poc)?;
+        Ok(app)
+    }
+
+    fn init_adapter() -> Result<CrosstermTerminalAdapter, Box<dyn std::error::Error>> {
+        let mut adapter = CrosstermTerminalAdapter::new()?;
+        adapter.enable_raw_mode()?;
+        adapter.enter_alternate_screen()?;
+        adapter.enable_mouse_capture()?;
+        Ok(adapter)
+    }
+}
+
+impl<T: TerminalAdapter> Model<T> {
+    fn view(&mut self) {
+        let _ = self.terminal.draw(|frame| {
+            let area = frame.area();
+            let _ = self.app.view(&Id::Poc, frame, area);
+        });
+    }
+}
+
 fn run(
     initial: Overlay,
     single_shot: bool,
@@ -2073,163 +2339,33 @@ fn run(
     session: String,
     active_section: Option<String>,
 ) -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut out = stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(out);
-    let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::new(backend)?;
+    let configured = App::configured(initial, single_shot, pane_id, session, active_section);
+    let mut model = Model::<CrosstermTerminalAdapter>::new(configured)?;
 
-    let mut app = App::new();
-    if initial != Overlay::None {
-        app.overlay = initial;
-    }
-    app.section_active = active_section;
-    // Action dispatched on Enter / a shortcut key in single-shot mode. We run
-    // the tmux subprocess *after* tearing down raw mode so the spawned cmd
-    // sees a clean terminal state.
-    let mut pending_tmux: Option<Vec<String>> = None;
-    loop {
-        terminal.draw(|frame| render(frame, &mut app))?;
-        if event::poll(Duration::from_millis(120))? {
-            match event::read()? {
-                Event::Key(k) => {
-                    if app.overlay == Overlay::Spotlight {
-                        // Spotlight captures all printable keys + arrows. Esc
-                        // dismisses; the harness's `q` / `0` / `1-4` switching
-                        // is parked until the palette is closed.
-                        match k.code {
-                            KeyCode::Esc => {
-                                app.overlay = Overlay::None;
-                                app.spotlight_query.clear();
-                                app.spotlight_selected = 0;
-                            }
-                            KeyCode::Char(c) => {
-                                app.spotlight_query.push(c);
-                                app.spotlight_selected = 0;
-                            }
-                            KeyCode::Backspace => {
-                                app.spotlight_query.pop();
-                                app.spotlight_selected = 0;
-                            }
-                            KeyCode::Up => {
-                                app.spotlight_selected =
-                                    app.spotlight_selected.saturating_sub(1);
-                            }
-                            KeyCode::Down => {
-                                let max =
-                                    spotlight_filter(&app.spotlight_query)
-                                        .len()
-                                        .saturating_sub(1);
-                                app.spotlight_selected =
-                                    (app.spotlight_selected + 1).min(max);
-                            }
-                            KeyCode::Enter => {
-                                // Visual feedback only — no command bus in the POC.
-                            }
-                            _ => {}
-                        }
-                    } else if app.overlay == Overlay::SectionJump {
-                        // Tab-triggered window jumper. Number keys 1–5 dispatch
-                        // `tmux select-window` then exit (single-shot) or close
-                        // the overlay (preview mode). Esc / 0 / q / Tab close.
-                        match k.code {
-                            KeyCode::Esc
-                            | KeyCode::Char('q')
-                            | KeyCode::Char('0')
-                            | KeyCode::Tab => {
-                                if single_shot {
-                                    break;
-                                }
-                                app.overlay = Overlay::None;
-                            }
-                            KeyCode::Char(c) if c.is_ascii_digit() => {
-                                if let Some(args) =
-                                    section_jump_tmux_args(c, &session)
-                                {
-                                    pending_tmux = Some(args);
-                                    break;
-                                }
-                            }
-                            KeyCode::Enter => {
-                                // Enter confirms the currently-highlighted card;
-                                // falls back to section #1 when no caller-marked
-                                // active window is known.
-                                let key = app
-                                    .section_active
-                                    .as_deref()
-                                    .and_then(|w| {
-                                        SECTIONS
-                                            .iter()
-                                            .find(|s| s.window == w)
-                                            .map(|s| s.key)
-                                    })
-                                    .unwrap_or('1');
-                                if let Some(args) =
-                                    section_jump_tmux_args(key, &session)
-                                {
-                                    pending_tmux = Some(args);
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else if single_shot && app.overlay == Overlay::ContextMenu {
-                        // Live-fleet mode: render the iOS context menu, dispatch
-                        // a tmux command on the matching shortcut, then exit.
-                        match k.code {
-                            KeyCode::Esc | KeyCode::Char('q') => break,
-                            KeyCode::Char(c) => {
-                                if let Some(cmd) =
-                                    context_menu_tmux_args(c, pane_id.as_deref())
-                                {
-                                    pending_tmux = Some(cmd);
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match k.code {
-                            KeyCode::Char('q') => break,
-                            KeyCode::Esc | KeyCode::Char('0') => {
-                                if app.overlay == Overlay::None {
-                                    break;
-                                }
-                                app.overlay = Overlay::None;
-                            }
-                            KeyCode::Tab => app.overlay = Overlay::SectionJump,
-                            KeyCode::Char('1') => app.overlay = Overlay::ContextMenu,
-                            KeyCode::Char('2') => app.open_spotlight(),
-                            KeyCode::Char('3') => app.overlay = Overlay::ActionSheet,
-                            KeyCode::Char('4') => app.overlay = Overlay::SessionSwitcher,
-                            KeyCode::Char('5') => app.overlay = Overlay::SectionJump,
-                            _ => {}
-                        }
-                    }
+    let pending_tmux: Option<Vec<String>> = 'main_loop: loop {
+        if let Ok(messages) = model
+            .app
+            .tick(PollStrategy::Once(Duration::from_millis(120)))
+        {
+            for msg in messages {
+                match msg {
+                    Msg::Quit => break 'main_loop None,
+                    Msg::Dispatch(args) => break 'main_loop Some(args),
+                    Msg::Redraw | Msg::Tick => model.redraw = true,
                 }
-                Event::Mouse(m) => {
-                    if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-                        match app.overlay {
-                            Overlay::None => app.record_mouse(m),
-                            Overlay::SessionSwitcher => {
-                                app.dispatch_card_click(m.column, m.row);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
             }
         }
-        app.spotlight_tick = app.spotlight_tick.wrapping_add(1);
-    }
+        if model.redraw {
+            model.view();
+            model.redraw = false;
+        }
+    };
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    let _ = model.terminal.disable_mouse_capture();
+    let _ = model.terminal.disable_raw_mode();
+    let _ = model.terminal.leave_alternate_screen();
 
     if let Some(args) = pending_tmux {
-        // Best-effort — if tmux isn't on PATH we silently fall through (the
-        // harness still works for the standalone preview).
         let _ = std::process::Command::new("tmux").args(&args).status();
     }
     Ok(())
