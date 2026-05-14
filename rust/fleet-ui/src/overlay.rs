@@ -136,14 +136,23 @@ impl<'a> ContextMenu<'a> {
     }
 
     fn render_title(&self, frame: &mut Frame, inner: Rect, y: u16) {
-        let title_spans = vec![
-            status_dot(self.status_dot),
-            Span::raw("  "),
-            Span::styled(
+        let mut title_spans = vec![status_dot(self.status_dot), Span::raw("  ")];
+        if let Some((name, pct)) = self.title.rsplit_once("  %") {
+            title_spans.push(Span::styled(
+                name,
+                Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+            ));
+            title_spans.push(Span::raw("  "));
+            title_spans.push(Span::styled(
+                format!("%{pct}"),
+                Style::default().fg(IOS_FG_MUTED),
+            ));
+        } else {
+            title_spans.push(Span::styled(
                 self.title,
                 Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
-            ),
-        ];
+            ));
+        }
         frame.render_widget(
             Paragraph::new(Line::from(title_spans)),
             Rect {
@@ -154,7 +163,7 @@ impl<'a> ContextMenu<'a> {
             },
         );
 
-        let Some((text, fg, bg)) = self.badge else {
+        let Some((text, _fg, bg)) = self.badge else {
             return;
         };
         let badge = format!(" {} ", text.trim());
@@ -163,7 +172,7 @@ impl<'a> ContextMenu<'a> {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     badge,
-                    Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+                    Style::default().fg(bg),
                 ))),
                 Rect {
                     x: inner.x + inner.width - badge_w,
