@@ -321,11 +321,27 @@ bind-key   -T root MouseDown1Status select-window -t=
 TMUX_CONF
 tmux source-file "$sticky_menu_conf" >/dev/null 2>&1 || echo "[style-tabs] WARN: sticky menu rebind failed (see $sticky_menu_conf)"
 
+# Default UX: hide the tmux status bar entirely. The canonical navigation
+# surface is now the in-binary tab strip rendered by `rust/fleet-ui::tab_strip`
+# at the top of every ratatui dashboard (fleet-state / fleet-plan-tree /
+# fleet-waves / fleet-watcher / fleet-tui-poc). The orange tmux pill row was
+# redundant on top of that strip, so we collapse to a single navigation row.
+# All the formatting + mouse bindings above stay in place — they go dormant
+# while status is off and snap back the moment someone re-enables it via
+# `CODEX_FLEET_TMUX_STATUS=on`, with no need to re-run anything.
+if [[ "${CODEX_FLEET_TMUX_STATUS:-off}" != "on" ]]; then
+  tmux set-option -t "$SESSION" status off >/dev/null 2>&1 || true
+fi
+
 # Immediate redraw.
 tmux refresh-client -S >/dev/null 2>&1 || true
 
+status_state="hidden — in-binary tab strip is the navigation surface"
+if [[ "${CODEX_FLEET_TMUX_STATUS:-off}" == "on" ]]; then
+  status_state="visible (CODEX_FLEET_TMUX_STATUS=on)"
+fi
 if (( HEIGHT == 1 )); then
-  echo "[style-tabs] applied iOS-palette tabs (height=1, tmux-default template, mouse clicks WORK) to session=$SESSION"
+  echo "[style-tabs] applied iOS-palette tabs (height=1, mouse clicks WORK) to session=$SESSION  ·  tmux status: $status_state"
 else
-  echo "[style-tabs] applied iOS-palette tabs (height=$HEIGHT, tabs on row $((HEIGHT-1)), mouse clicks BROKEN — tmux 3.6 multi-row quirk) to session=$SESSION"
+  echo "[style-tabs] applied iOS-palette tabs (height=$HEIGHT, mouse clicks BROKEN — tmux 3.6 multi-row quirk) to session=$SESSION  ·  tmux status: $status_state"
 fi
