@@ -601,6 +601,39 @@ fn dim_backdrop(frame: &mut ratatui::Frame, area: Rect) {
     // muted FG style — kept as a wash so the palette stays readable.
 }
 
+// 3D-ish drop shadow for floating cards: paints a near-black band 1 row below
+// (offset 2 cols right) and a 2-col strip down the right edge. Approximates an
+// iOS card-shadow on top of the dimmed backdrop.
+fn card_shadow(frame: &mut ratatui::Frame, card_rect: Rect, area: Rect) {
+    let shadow = Color::Rgb(0, 0, 4);
+    let by = card_rect.y + card_rect.height;
+    if by < area.y + area.height {
+        let bx = card_rect.x + 2;
+        let aw_end = area.x + area.width;
+        if bx < aw_end {
+            let bw = card_rect.width.min(aw_end - bx);
+            frame.render_widget(
+                Block::default().style(Style::default().bg(shadow)),
+                Rect { x: bx, y: by, width: bw, height: 1 },
+            );
+        }
+    }
+    let rx = card_rect.x + card_rect.width;
+    let aw_end = area.x + area.width;
+    if rx < aw_end {
+        let rw = 2u16.min(aw_end - rx);
+        let ah_end = area.y + area.height;
+        let ry = card_rect.y + 1;
+        if ry < ah_end {
+            let rh = card_rect.height.saturating_sub(1).min(ah_end - ry);
+            frame.render_widget(
+                Block::default().style(Style::default().bg(shadow)),
+                Rect { x: rx, y: ry, width: rw, height: rh },
+            );
+        }
+    }
+}
+
 // ───────────────────────── 1 · iOS context menu ────────────────────────────
 
 fn render_context_menu(frame: &mut ratatui::Frame, area: Rect) {
@@ -638,6 +671,7 @@ fn render_context_menu(frame: &mut ratatui::Frame, area: Rect) {
     let menu_h: u16 = 2 + 1 + item_count + (sections.len() as u16 - 1) + 1 + 2;
 
     let rect = center_rect(area, menu_w, menu_h);
+    card_shadow(frame, rect, area);
     frame.render_widget(Clear, rect);
     frame.render_widget(glass_block(None, IOS_TINT, false), rect);
 
@@ -765,6 +799,7 @@ fn render_spotlight(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let w: u16 = 78;
     let h: u16 = 42;
     let rect = center_rect(area, w, h);
+    card_shadow(frame, rect, area);
     frame.render_widget(Clear, rect);
     frame.render_widget(glass_block(None, IOS_TINT, true), rect);
 
@@ -829,6 +864,27 @@ fn render_spotlight(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     );
     y += 2; // blank breathing row
 
+    if total == 0 {
+        let msg = "no matches";
+        let mw = msg.chars().count() as u16;
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                msg,
+                Style::default()
+                    .fg(IOS_FG_MUTED)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            Rect {
+                x: inner.x + (inner.width.saturating_sub(mw)) / 2,
+                y: y + 3,
+                width: mw,
+                height: 1,
+            },
+        );
+        render_spotlight_footer(frame, inner);
+        return;
+    }
+
     // ── TOP HIT label ─────────────────────────────────────────────────────
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -841,39 +897,37 @@ fn render_spotlight(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     );
     y += 1;
 
-    // ── Top-hit pill (3 rows of systemBlue, padded top/bottom) ────────────
+    // ── Top-hit pill (3 rows of systemBlue) — always filtered[0] ──────────
+    let top = filtered[0];
+    let hit_active = selected == 0;
+    let hit_bg = if hit_active { IOS_TINT } else { Color::Rgb(8, 80, 180) };
     let hit_rect = Rect { x: inner.x, y, width: inner.width, height: 3 };
     frame.render_widget(
-        Block::default().style(Style::default().bg(IOS_TINT)),
+        Block::default().style(Style::default().bg(hit_bg)),
         hit_rect,
     );
-    // Row 0: padding (already painted blue)
-    // Row 1: ` [⊟]  Horizontal split                  tmux · h  › `
     let icon_chip = Span::styled(
-        " ⊟ ",
-        Style::default().fg(IOS_FG).bg(IOS_TINT_DARK),
+        format!(" {} ", top.icon),
+        Style::default()
+            .fg(Color::Rgb(255, 255, 255))
+            .bg(IOS_TINT_DARK)
+            .add_modifier(Modifier::BOLD),
     );
-    let title_l = Line::from(vec![
-        Span::styled(" ", Style::default().bg(IOS_TINT)),
-        icon_chip,
-        Span::styled(
-            "  Horizontal split",
-            Style::default()
-                .fg(Color::Rgb(255, 255, 255))
-                .bg(IOS_TINT)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
     frame.render_widget(
-        Paragraph::new(title_l),
-        Rect {
-            x: hit_rect.x,
-            y: hit_rect.y + 1,
-            width: hit_rect.width,
-            height: 1,
-        },
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ", Style::default().bg(hit_bg)),
+            icon_chip,
+            Span::styled(
+                format!("  {}", top.title),
+                Style::default()
+                    .fg(Color::Rgb(255, 255, 255))
+                    .bg(hit_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        Rect { x: hit_rect.x, y: hit_rect.y + 1, width: hit_rect.width, height: 1 },
     );
-    let badge = " tmux · h ";
+    let badge = format!(" tmux · {} ", top.kbd);
     let chev = "  › ";
     let badge_w = badge.chars().count() as u16;
     let chev_w = chev.chars().count() as u16;
@@ -898,7 +952,7 @@ fn render_spotlight(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 chev,
                 Style::default()
                     .fg(IOS_TINT_SUB)
-                    .bg(IOS_TINT)
+                    .bg(hit_bg)
                     .add_modifier(Modifier::BOLD),
             ))),
             Rect {
@@ -909,130 +963,118 @@ fn render_spotlight(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             },
         );
     }
-    // Row 2: subtitle indented to match title
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "      Split active pane top/bottom",
-            Style::default().fg(IOS_TINT_SUB).bg(IOS_TINT),
+            format!("      {}", top.sub),
+            Style::default().fg(IOS_TINT_SUB).bg(hit_bg),
         ))),
-        Rect {
-            x: hit_rect.x,
-            y: hit_rect.y + 2,
-            width: hit_rect.width,
-            height: 1,
-        },
+        Rect { x: hit_rect.x, y: hit_rect.y + 2, width: hit_rect.width, height: 1 },
     );
-    y += 4; // pill + breathing row
+    y += 4;
 
-    // ── Grouped results ───────────────────────────────────────────────────
-    struct R<'a>(&'a str, &'a str, &'a str, &'a str);
-    let groups: &[(&str, &[R])] = &[
-        (
-            "PANE",
-            &[
-                R("⊞", "Vertical split", "Split active pane left/right", "v"),
-                R("⤢", "Zoom pane", "Toggle full-screen for this pane", "z"),
-                R("⇄", "Swap with marked pane", "codex-ricsi-zazrifka ⇄ marked", "s"),
-            ],
-        ),
-        (
-            "SESSION · codex-admin-kollarrobert",
-            &[
-                R("⧉", "Copy whole session", "180 lines · transcript", "⇧C"),
-                R("☰", "Queue message", "Send to agent on next idle", "↹"),
-                R("⌚", "Search history…", "Across all 7 panes", "/"),
-            ],
-        ),
-        (
-            "FLEET",
-            &[
-                R("+", "Spawn new codex worker", "codex-fleet · new agent", "⌘N"),
-                R("⎇", "Switch worktree…", "codex-fleet-extract-p1…", "⌘B"),
-            ],
-        ),
-    ];
+    // ── Remaining items (filtered[1..]), grouped, 2 rows each ────────────
+    let bottom_guard = inner.y + inner.height - 2;
+    let remaining: Vec<(usize, &SpotlightItem)> =
+        filtered.iter().enumerate().skip(1).map(|(i, it)| (i, *it)).collect();
 
-    let bottom_guard = inner.y + inner.height - 2; // reserve footer + pad
-    for (title, items) in groups {
-        // need 1 title + N items + 1 blank
-        if y + items.len() as u16 + 2 > bottom_guard {
+    let mut last_group: Option<&str> = None;
+    for (gi, item) in remaining.iter() {
+        if y + 3 > bottom_guard {
             break;
         }
-        // group label (uppercase, muted, lightly indented)
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!(" {title}"),
-                Style::default()
-                    .fg(IOS_FG_MUTED)
-                    .add_modifier(Modifier::BOLD),
-            ))),
-            Rect { x: inner.x, y, width: inner.width, height: 1 },
-        );
-        y += 1;
-
-        // card bg behind the items — slightly lighter than palette bg
-        let card_rect = Rect {
-            x: inner.x,
-            y,
-            width: inner.width,
-            height: items.len() as u16,
-        };
-        frame.render_widget(
-            Block::default().style(Style::default().bg(IOS_CARD_BG)),
-            card_rect,
-        );
-
-        for (ii, r) in items.iter().enumerate() {
-            let row_y = y + ii as u16;
-            // ` [icon]  Title  subtitle…              [kbd] `
-            let left = Line::from(vec![
-                Span::styled(" ", Style::default().bg(IOS_CARD_BG)),
-                Span::styled(
-                    format!(" {} ", r.0),
-                    Style::default().fg(IOS_FG).bg(IOS_ICON_CHIP),
-                ),
-                Span::styled(
-                    format!("  {}", r.1),
-                    Style::default()
-                        .fg(IOS_FG)
-                        .bg(IOS_CARD_BG)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  {}", r.2),
-                    Style::default().fg(IOS_FG_MUTED).bg(IOS_CARD_BG),
-                ),
-            ]);
-            let kbd = format!(" {} ", r.3);
-            let kw = kbd.chars().count() as u16;
+        if last_group != Some(item.group) {
+            if last_group.is_some() {
+                y += 1;
+                if y + 3 > bottom_guard { break; }
+            }
             frame.render_widget(
-                Paragraph::new(left),
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" {}", item.group),
+                    Style::default()
+                        .fg(IOS_FG_MUTED)
+                        .add_modifier(Modifier::BOLD),
+                ))),
+                Rect { x: inner.x, y, width: inner.width, height: 1 },
+            );
+            y += 1;
+            last_group = Some(item.group);
+        }
+
+        let selected_here = *gi == selected;
+        let row_bg = if selected_here { IOS_TINT_DARK } else { IOS_CARD_BG };
+        let title_fg = if selected_here {
+            Color::Rgb(255, 255, 255)
+        } else {
+            IOS_FG
+        };
+        let sub_fg = if selected_here { IOS_TINT_SUB } else { IOS_FG_MUTED };
+
+        let item_rect = Rect { x: inner.x, y, width: inner.width, height: 2 };
+        frame.render_widget(
+            Block::default().style(Style::default().bg(row_bg)),
+            item_rect,
+        );
+
+        let row1 = Line::from(vec![
+            Span::styled(" ", Style::default().bg(row_bg)),
+            Span::styled(
+                format!(" {} ", item.icon),
+                Style::default()
+                    .fg(title_fg)
+                    .bg(IOS_ICON_CHIP)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", item.title),
+                Style::default()
+                    .fg(title_fg)
+                    .bg(row_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let kbd = format!(" {} ", item.kbd);
+        let kw = kbd.chars().count() as u16;
+        frame.render_widget(
+            Paragraph::new(row1),
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width.saturating_sub(kw + 2),
+                height: 1,
+            },
+        );
+        if inner.width > kw + 1 {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    kbd,
+                    Style::default()
+                        .fg(title_fg)
+                        .bg(IOS_ICON_CHIP)
+                        .add_modifier(Modifier::BOLD),
+                ))),
                 Rect {
-                    x: inner.x,
-                    y: row_y,
-                    width: inner.width.saturating_sub(kw + 2),
+                    x: inner.x + inner.width - kw - 1,
+                    y,
+                    width: kw,
                     height: 1,
                 },
             );
-            if inner.width > kw + 1 {
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        kbd,
-                        Style::default().fg(IOS_FG).bg(IOS_ICON_CHIP),
-                    ))),
-                    Rect {
-                        x: inner.x + inner.width - kw - 1,
-                        y: row_y,
-                        width: kw,
-                        height: 1,
-                    },
-                );
-            }
         }
-        y += items.len() as u16 + 1; // items + breathing row
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("       {}", item.sub),
+                Style::default().fg(sub_fg).bg(row_bg),
+            ))),
+            Rect { x: inner.x, y: y + 1, width: inner.width, height: 1 },
+        );
+
+        y += 2;
     }
 
-    // ── Footer hint ───────────────────────────────────────────────────────
+    render_spotlight_footer(frame, inner);
+}
+
+fn render_spotlight_footer(frame: &mut ratatui::Frame, inner: Rect) {
     let fy = inner.y + inner.height - 1;
     let footer = Line::from(vec![
         Span::styled("↵", Style::default().fg(IOS_FG)),
@@ -1091,7 +1133,8 @@ fn render_action_sheet(frame: &mut ratatui::Frame, area: Rect) {
     let sep_count: u16 = group_count.saturating_sub(1);
     // per group: 1 title + maybe 1 caption + items, separators between groups,
     // plus one pad row top and bottom inside the rounded card.
-    let card_h: u16 = item_count + group_count + captioned + sep_count + 2 /*pad*/ + 2 /*borders*/;
+    // Items render 2 rows tall (icon+title row + breathing row) for an iOS feel.
+    let card_h: u16 = item_count * 2 + group_count + captioned + sep_count + 2 /*pad*/ + 2 /*borders*/;
     let cancel_h: u16 = 3;
 
     // Anchor near bottom: leave 1 row gap, card stacked over cancel button.
@@ -1109,6 +1152,7 @@ fn render_action_sheet(frame: &mut ratatui::Frame, area: Rect) {
         height: card_h.min(area.height.saturating_sub(cancel_h + 1)),
     };
 
+    card_shadow(frame, card_rect, area);
     frame.render_widget(Clear, card_rect);
     frame.render_widget(glass_block(None, IOS_TINT, true), card_rect);
 
@@ -1157,7 +1201,7 @@ fn render_action_sheet(frame: &mut ratatui::Frame, area: Rect) {
         }
 
         for it in *items {
-            if y >= inner.y + inner.height { break; }
+            if y + 1 >= inner.y + inner.height { break; }
             let fg = if it.4 {
                 IOS_DESTRUCTIVE
             } else {
@@ -1168,21 +1212,40 @@ fn render_action_sheet(frame: &mut ratatui::Frame, area: Rect) {
             } else if it.3.is_some() {
                 Color::Rgb(58, 44, 24)
             } else {
-                IOS_CHIP_BG
+                IOS_ICON_CHIP
             };
-            let spans = vec![
-                Span::raw(" "),
-                Span::styled(
-                    format!(" {} ", it.0),
-                    Style::default().fg(fg).bg(icon_bg),
-                ),
-                Span::raw(" "),
-                Span::styled(it.1, Style::default().fg(fg)),
-            ];
+
+            // 2-row icon chip — paint a 3-wide × 2-tall block as the bg, then
+            // render the glyph centered on row 1.
             frame.render_widget(
-                Paragraph::new(Line::from(spans)),
-                Rect { x: inner.x, y, width: inner.width.saturating_sub(6), height: 1 },
+                Block::default().style(Style::default().bg(icon_bg)),
+                Rect { x: inner.x + 1, y, width: 3, height: 2 },
             );
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" {} ", it.0),
+                    Style::default().fg(fg).bg(icon_bg).add_modifier(Modifier::BOLD),
+                )),
+                Rect { x: inner.x + 1, y, width: 3, height: 1 },
+            );
+
+            // Title on row 1, right of icon chip.
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    it.1,
+                    Style::default()
+                        .fg(fg)
+                        .add_modifier(Modifier::BOLD),
+                ))),
+                Rect {
+                    x: inner.x + 6,
+                    y,
+                    width: inner.width.saturating_sub(12),
+                    height: 1,
+                },
+            );
+
+            // Keyboard chip right-aligned on row 1.
             let kbd = format!(" {} ", it.2);
             let kw = kbd.chars().count() as u16;
             if inner.width > kw + 1 {
@@ -1199,7 +1262,9 @@ fn render_action_sheet(frame: &mut ratatui::Frame, area: Rect) {
                     },
                 );
             }
-            y += 1;
+            // Row 2 is the breathing row — left empty; icon chip bg already
+            // painted there.
+            y += 2;
         }
     }
 
@@ -1211,6 +1276,7 @@ fn render_action_sheet(frame: &mut ratatui::Frame, area: Rect) {
         height: cancel_h.min(area.height.saturating_sub(card_rect.y + card_rect.height)),
     };
     if cancel_rect.height > 0 {
+        card_shadow(frame, cancel_rect, area);
         frame.render_widget(Clear, cancel_rect);
         let cancel_block = Block::default()
             .borders(Borders::ALL)
@@ -1489,8 +1555,12 @@ fn render_session_card(
     if let Some(badge) = s.badge {
         let bw = badge.chars().count() as u16 + 2;
         if inner.width > bw {
-            let (fg, bg) = if s.active {
+            // Colour the badge by its content: LIVE = green, ⚠ = orange,
+            // anything else = chip-gray.
+            let (fg, bg) = if badge == "LIVE" {
                 (Color::Rgb(10, 36, 21), IOS_GREEN)
+            } else if badge.starts_with('⚠') {
+                (Color::Rgb(48, 28, 6), IOS_ORANGE)
             } else {
                 (IOS_FG, IOS_CHIP_BG)
             };
@@ -1726,7 +1796,7 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
-fn run() -> io::Result<()> {
+fn run(initial: Overlay, single_shot: bool, pane_id: Option<String>) -> io::Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
@@ -1734,6 +1804,13 @@ fn run() -> io::Result<()> {
     let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::new(backend)?;
 
     let mut app = App::new();
+    if initial != Overlay::None {
+        app.overlay = initial;
+    }
+    // Action dispatched on Enter / a shortcut key in single-shot mode. We run
+    // the tmux subprocess *after* tearing down raw mode so the spawned cmd
+    // sees a clean terminal state.
+    let mut pending_tmux: Option<Vec<String>> = None;
     loop {
         terminal.draw(|frame| render(frame, &mut app))?;
         if event::poll(Duration::from_millis(120))? {
@@ -1774,6 +1851,21 @@ fn run() -> io::Result<()> {
                             }
                             _ => {}
                         }
+                    } else if single_shot && app.overlay == Overlay::ContextMenu {
+                        // Live-fleet mode: render the iOS context menu, dispatch
+                        // a tmux command on the matching shortcut, then exit.
+                        match k.code {
+                            KeyCode::Esc | KeyCode::Char('q') => break,
+                            KeyCode::Char(c) => {
+                                if let Some(cmd) =
+                                    context_menu_tmux_args(c, pane_id.as_deref())
+                                {
+                                    pending_tmux = Some(cmd);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
                     } else {
                         match k.code {
                             KeyCode::Char('q') => break,
@@ -1810,9 +1902,72 @@ fn run() -> io::Result<()> {
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+
+    if let Some(args) = pending_tmux {
+        // Best-effort — if tmux isn't on PATH we silently fall through (the
+        // harness still works for the standalone preview).
+        let _ = std::process::Command::new("tmux").args(&args).status();
+    }
     Ok(())
 }
 
+// Maps a context-menu shortcut letter to its tmux argv. Mirrors the dispatch
+// table in scripts/codex-fleet/bin/pane-context-menu.sh so swapping the
+// binary into the display-popup is behavioural parity, not just visual.
+fn context_menu_tmux_args(c: char, pane: Option<&str>) -> Option<Vec<String>> {
+    let p = pane.unwrap_or("");
+    let push_t = |args: &mut Vec<String>| {
+        if !p.is_empty() {
+            args.push("-t".into());
+            args.push(p.into());
+        }
+    };
+    let mut v: Vec<String> = match c {
+        'h' => vec!["split-window".into(), "-h".into()],
+        'v' => vec!["split-window".into(), "-v".into()],
+        'z' => vec!["resize-pane".into(), "-Z".into()],
+        'u' => vec!["swap-pane".into(), "-U".into()],
+        'd' => vec!["swap-pane".into(), "-D".into()],
+        's' => vec!["swap-pane".into()],
+        'm' => vec!["select-pane".into(), "-m".into()],
+        'R' => vec!["respawn-pane".into(), "-k".into()],
+        'X' => vec!["kill-pane".into()],
+        _ => return None,
+    };
+    push_t(&mut v);
+    Some(v)
+}
+
+fn parse_overlay(name: &str) -> Overlay {
+    match name {
+        "context-menu" | "context_menu" | "ctx" => Overlay::ContextMenu,
+        "spotlight" | "search" => Overlay::Spotlight,
+        "action-sheet" | "action_sheet" | "sheet" => Overlay::ActionSheet,
+        "session-switcher" | "switcher" => Overlay::SessionSwitcher,
+        _ => Overlay::None,
+    }
+}
+
 fn main() -> io::Result<()> {
-    run()
+    // Minimal CLI: --overlay <name>  --pane <id>
+    let mut overlay = Overlay::None;
+    let mut single_shot = false;
+    let mut pane_id: Option<String> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if let Some(v) = a.strip_prefix("--overlay=") {
+            overlay = parse_overlay(v);
+            single_shot = overlay != Overlay::None;
+        } else if a == "--overlay" {
+            if let Some(v) = args.next() {
+                overlay = parse_overlay(&v);
+                single_shot = overlay != Overlay::None;
+            }
+        } else if let Some(v) = a.strip_prefix("--pane=") {
+            pane_id = Some(v.to_string());
+        } else if a == "--pane" {
+            pane_id = args.next();
+        }
+    }
+    run(overlay, single_shot, pane_id)
 }
