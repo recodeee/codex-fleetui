@@ -253,7 +253,11 @@ RESPAWNED_PIDS=""
 spawn_worker() {
   local aid="$1" email="$2"
   local home="$WORK_ROOT/$aid"
-  local pane_cmd="env CODEX_HOME='$home' CODEX_FLEET_AGENT_NAME='codex-$aid' CODEX_FLEET_ACCOUNT_EMAIL='$email' codex \"\$(cat '$PROMPT_FILE')\""
+  # CODEX_GUARD_BYPASS=1 is required when N panes spawn in the same second:
+  # without it, every codex child computes the same `agent/codex/codex-task-<ts>`
+  # branch slug and N-1 die racing for the same git ref. Even single-spawn
+  # call sites benefit, so it's set unconditionally here.
+  local pane_cmd="env CODEX_GUARD_BYPASS=1 CODEX_HOME='$home' CODEX_FLEET_AGENT_NAME='codex-$aid' CODEX_FLEET_ACCOUNT_EMAIL='$email' codex \"\$(cat '$PROMPT_FILE')\""
   if [ "$DRY_RUN" = "1" ]; then
     log "[dry-run] would spawn: aid=$aid email=$email target=$TARGET home=$home"
     return 0

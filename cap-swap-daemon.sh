@@ -111,8 +111,16 @@ swap_pane() {
 }
 
 pane_is_capped() {
+  # Flatten newlines + collapse whitespace so terminal wrapping like
+  #   ■ You've hit your
+  #       usage limit:
+  # still matches the canonical "You've hit your usage limit" phrase.
+  # Without this, codex's cap banner — rendered at a narrow column and
+  # wrapping mid-phrase — silently slips past every sweep and the daemon
+  # never swaps a capped pane.
   tmux capture-pane -p -t "$1" -S -40 2>/dev/null \
-    | grep -qE "You've hit your usage limit|Rate limit reached|Refusing.*usage|ERROR: You've hit"
+    | tr '\n' ' ' | tr -s '[:space:]' ' ' \
+    | grep -qE "You've hit your usage limit|Rate limit reached|Refusing.*usage|ERROR: You've hit|approval review failed: You've hit"
 }
 
 # pane_is_blocked_idle — worker emitted a BLOCKED handoff citing an
