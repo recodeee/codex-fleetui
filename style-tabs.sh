@@ -170,6 +170,17 @@ trap 'rm -f "$sticky_menu_conf"' EXIT
 cat >"$sticky_menu_conf" <<'TMUX_CONF'
 unbind-key -T root MouseDown3Pane
 bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { display-menu -O -T "#[align=centre,fg=#ffd07a,bold] ◆  pane #{pane_index} · #{pane_id} " -t = -x M -y M "  📋  Copy whole session" C "run-shell \"tmux capture-pane -t '#{pane_id}' -p -S - -E - | wl-copy && tmux display-message -d 1500 '📋  Pane history copied to clipboard'\"" "  📄  Copy visible" c "run-shell \"tmux capture-pane -t '#{pane_id}' -p | wl-copy && tmux display-message -d 1500 '📄  Visible area copied'\"" "  ✂   Copy this line" l "run-shell \"echo -n '#{q:mouse_line}' | wl-copy && tmux display-message -d 1500 '✂   Line copied'\"" '' "  🔎  Search history…" / { copy-mode -t= ; send-keys -X search-backward "" } "  ⬆   Scroll to top" '<' { copy-mode -t= ; send-keys -X history-top } "  ⬇   Scroll to bottom" '>' { copy-mode -t= ; send-keys -X history-bottom } '' "  ⬓   Horizontal split" h { split-window -h } "  ⬒   Vertical split" v { split-window -v } "#{?#{>:#{window_panes},1},,-}  ⛶   #{?window_zoomed_flag,Unzoom,Zoom}" z { resize-pane -Z } '' "#{?#{>:#{window_panes},1},,-}  ▲   Swap up" u { swap-pane -U } "#{?#{>:#{window_panes},1},,-}  ▼   Swap down" d { swap-pane -D } "#{?pane_marked_set,,-}  ⇄   Swap with marked" s { swap-pane } "  ◈   #{?pane_marked,Unmark,Mark} pane" m { select-pane -m } '' "  ↻   Respawn pane" R { respawn-pane -k } "  ✕   Kill pane" X { kill-pane } }
+
+# Mouse-wheel scroll into copy-mode even when the pane is in alt-screen
+# (plan-tree-anim / fleet-state-anim use \033[?1049h; the default tmux
+# WheelUpPane binding forwards wheel events to the app whenever
+# #{alternate_on} is set, which makes the viz panes unscrollable).
+# Drop the alternate_on check so the wheel always enters copy-mode unless
+# the app explicitly opts in via mouse_any_flag.
+unbind-key -T root WheelUpPane
+unbind-key -T root WheelDownPane
+bind-key   -T root WheelUpPane   if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" "send-keys -M" "copy-mode -e"
+bind-key   -T root WheelDownPane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" "send-keys -M" "copy-mode -e"
 TMUX_CONF
 tmux source-file "$sticky_menu_conf" >/dev/null 2>&1 || echo "[style-tabs] WARN: sticky menu rebind failed (see $sticky_menu_conf)"
 
