@@ -169,7 +169,7 @@ segment_color() {
   case "$s" in
     completed) printf '%s' "$IOS_GREEN" ;;
     claimed)
-      if (( (f / 2) % 2 == 0 )); then
+      if (( f % 2 == 0 )); then
         printf '%s' "$IOS_BLUE"
       else
         printf '%s%s' "$D" "$IOS_BLUE"
