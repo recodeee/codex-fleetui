@@ -26,6 +26,7 @@ use fleet_ui::{
     card::card,
     chip::{status_chip, ChipKind},
     palette::*,
+    spotlight_overlay::{Spotlight, SpotlightItem, SpotlightState},
 };
 use tuirealm::application::{Application, PollStrategy};
 use tuirealm::command::{Cmd, CmdResult};
@@ -64,6 +65,95 @@ pub enum Id {
     Plan,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Overlay {
+    #[default]
+    None,
+    Spotlight,
+}
+
+const SPOTLIGHT_ITEMS: &[SpotlightItem<'static>] = &[
+    SpotlightItem {
+        group: "PANE",
+        icon: "⊟",
+        title: "Horizontal split",
+        sub: "Split active pane top/bottom",
+        kbd: "h",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⊞",
+        title: "Vertical split",
+        sub: "Split active pane left/right",
+        kbd: "v",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⤢",
+        title: "Zoom pane",
+        sub: "Toggle full-screen for this pane",
+        kbd: "z",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⇄",
+        title: "Swap with marked pane",
+        sub: "Swap active and marked panes",
+        kbd: "s",
+    },
+    SpotlightItem {
+        group: "SESSION",
+        icon: "⧉",
+        title: "Copy whole session",
+        sub: "Copy the current transcript",
+        kbd: "⇧C",
+    },
+    SpotlightItem {
+        group: "SESSION",
+        icon: "☰",
+        title: "Queue message",
+        sub: "Send a message on next idle",
+        kbd: "↹",
+    },
+    SpotlightItem {
+        group: "SESSION",
+        icon: "⌚",
+        title: "Search history…",
+        sub: "Search the current session",
+        kbd: "/",
+    },
+    SpotlightItem {
+        group: "FLEET",
+        icon: "+",
+        title: "Spawn new codex worker",
+        sub: "Open another worker pane",
+        kbd: "Ctrl N",
+    },
+    SpotlightItem {
+        group: "FLEET",
+        icon: "⎇",
+        title: "Switch worktree…",
+        sub: "Choose another branch/worktree",
+        kbd: "Ctrl B",
+    },
+];
+
+fn spotlight_filter(query: &str) -> Vec<&'static SpotlightItem<'static>> {
+    if query.is_empty() {
+        return SPOTLIGHT_ITEMS.iter().collect();
+    }
+
+    let q = query.to_lowercase();
+    SPOTLIGHT_ITEMS
+        .iter()
+        .filter(|it| {
+            it.title.to_lowercase().contains(&q)
+                || it.sub.to_lowercase().contains(&q)
+                || it.group.to_lowercase().contains(&q)
+        })
+        .collect()
+}
+
 // ---------- The PlanView component ----------
 
 struct PlanView {
@@ -75,6 +165,9 @@ struct PlanView {
     /// leaving the dashboard.
     recent_prs: Vec<String>,
     last_git_reload: Instant,
+    overlay: Overlay,
+    spotlight: Spotlight<'static>,
+    spotlight_state: SpotlightState,
     props: Props,
 }
 
@@ -91,6 +184,9 @@ impl Default for PlanView {
             last_git_reload: Instant::now()
                 .checked_sub(RELOAD_GIT_EVERY)
                 .unwrap_or_else(Instant::now),
+            overlay: Overlay::None,
+            spotlight: Spotlight::new(SPOTLIGHT_ITEMS.to_vec()),
+            spotlight_state: SpotlightState::default(),
             props: Props::default(),
         };
         view.refresh_git();
@@ -99,6 +195,18 @@ impl Default for PlanView {
 }
 
 impl PlanView {
+    fn open_spotlight(&mut self) {
+        self.overlay = Overlay::Spotlight;
+        self.spotlight_state.query.clear();
+        self.spotlight_state.selected = 0;
+    }
+
+    fn close_spotlight(&mut self) {
+        self.overlay = Overlay::None;
+        self.spotlight_state.query.clear();
+        self.spotlight_state.selected = 0;
+    }
+
     fn maybe_reload(&mut self) {
         if self.last_reload.elapsed() >= RELOAD_EVERY {
             self.last_reload = Instant::now();
@@ -112,6 +220,7 @@ impl PlanView {
             self.last_git_reload = Instant::now();
             self.refresh_git();
         }
+        self.spotlight_state.tick = self.spotlight_state.tick.wrapping_add(1);
     }
 
     /// Shell `git log --oneline -5 origin/main` against the active repo
@@ -195,7 +304,21 @@ impl Component for PlanView {
         };
         frame.render_widget(card(Some(&title), false), outer[0]);
 
-        let Some(plan) = self.plan.as_ref() else {
+        if let Some(plan) = self.plan.as_ref() {
+            // ── Body: ACTIVE NOW (claimed list) + WAVES (Kahn grid) ────────────
+            let claimed: Vec<&Subtask> =
+                plan.tasks.iter().filter(|t| t.status == "claimed").collect();
+            // 2 rows of chrome (top + bottom of card) + 1 per claimed worker;
+            // collapsed to 3 rows when nothing is claimed (placeholder row).
+            let active_h: u16 = (claimed.len() as u16 + 2).clamp(3, 12);
+            let body = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(active_h), Constraint::Min(0)])
+                .split(outer[1]);
+
+            render_active_now(frame, body[0], &claimed);
+            render_waves(frame, body[1], plan);
+        } else {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     "  no plan available — set CODEX_FLEET_PLAN_REPO_ROOT or pin via plan-tree-pin.sh",
@@ -203,25 +326,14 @@ impl Component for PlanView {
                 ))),
                 Rect { x: outer[1].x, y: outer[1].y, width: outer[1].width, height: 1 },
             );
-            render_recent_merges(frame, outer[2], &self.recent_prs);
-            return;
-        };
-
-        // ── Body: ACTIVE NOW (claimed list) + WAVES (Kahn grid) ────────────
-        let claimed: Vec<&Subtask> = plan.tasks.iter().filter(|t| t.status == "claimed").collect();
-        // 2 rows of chrome (top + bottom of card) + 1 per claimed worker;
-        // collapsed to 3 rows when nothing is claimed (placeholder row).
-        let active_h: u16 = (claimed.len() as u16 + 2).clamp(3, 12);
-        let body = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(active_h), Constraint::Min(0)])
-            .split(outer[1]);
-
-        render_active_now(frame, body[0], &claimed);
-        render_waves(frame, body[1], plan);
+        }
 
         // ── Footer: recent merges (latest 5 PRs on origin/main) ────────────
         render_recent_merges(frame, outer[2], &self.recent_prs);
+
+        if self.overlay == Overlay::Spotlight {
+            self.spotlight.render(frame, area, &self.spotlight_state);
+        }
     }
 
     fn query(&self, attr: Attribute) -> Option<QueryResult<'_>> {
@@ -244,6 +356,54 @@ impl Component for PlanView {
 impl AppComponent<Msg, NoUserEvent> for PlanView {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
+            Event::Keyboard(KeyEvent { code: Key::Char('q'), .. })
+            | Event::Keyboard(KeyEvent { code: Key::Esc, .. })
+                if self.overlay == Overlay::Spotlight =>
+            {
+                self.close_spotlight();
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent { code: Key::Enter, .. })
+                if self.overlay == Overlay::Spotlight =>
+            {
+                self.close_spotlight();
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent { code: Key::Backspace, .. })
+                if self.overlay == Overlay::Spotlight =>
+            {
+                self.spotlight_state.query.pop();
+                self.spotlight_state.selected = 0;
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent { code: Key::Up, .. })
+                if self.overlay == Overlay::Spotlight =>
+            {
+                self.spotlight_state.selected = self.spotlight_state.selected.saturating_sub(1);
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent { code: Key::Down, .. })
+                if self.overlay == Overlay::Spotlight =>
+            {
+                let max = spotlight_filter(&self.spotlight_state.query)
+                    .len()
+                    .saturating_sub(1);
+                self.spotlight_state.selected =
+                    (self.spotlight_state.selected + 1).min(max);
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent { code: Key::Char(c), .. })
+                if self.overlay == Overlay::Spotlight && !c.is_control() =>
+            {
+                self.spotlight_state.query.push(*c);
+                self.spotlight_state.selected = 0;
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent { code: Key::Char('/'), .. })
+            | Event::Keyboard(KeyEvent { code: Key::Char('?'), .. }) => {
+                self.open_spotlight();
+                Some(Msg::Tick)
+            }
             Event::Keyboard(KeyEvent { code: Key::Char('q'), .. })
             | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => Some(Msg::Quit),
             Event::Tick => {
@@ -573,4 +733,36 @@ fn main() -> io::Result<()> {
     let _ = model.terminal.disable_raw_mode();
     let _ = model.terminal.leave_alternate_screen();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spotlight_catalogue_matches_watcher_order() {
+        let hits = spotlight_filter("");
+        assert_eq!(hits.len(), SPOTLIGHT_ITEMS.len());
+        assert_eq!(hits.first().unwrap().title, "Horizontal split");
+        assert_eq!(hits.last().unwrap().title, "Switch worktree…");
+    }
+
+    #[test]
+    fn spotlight_open_and_close_reset_state() {
+        let mut view = PlanView::default();
+
+        view.spotlight_state.query = "zoom".into();
+        view.spotlight_state.selected = 2;
+        view.open_spotlight();
+        assert_eq!(view.overlay, Overlay::Spotlight);
+        assert!(view.spotlight_state.query.is_empty());
+        assert_eq!(view.spotlight_state.selected, 0);
+
+        view.spotlight_state.query = "split".into();
+        view.spotlight_state.selected = 1;
+        view.close_spotlight();
+        assert_eq!(view.overlay, Overlay::None);
+        assert!(view.spotlight_state.query.is_empty());
+        assert_eq!(view.spotlight_state.selected, 0);
+    }
 }
