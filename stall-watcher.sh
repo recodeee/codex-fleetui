@@ -29,8 +29,12 @@ set -eo pipefail
 
 OLDER_THAN="${STALL_WATCHER_OLDER_THAN:-30m}"
 INTERVAL="${STALL_WATCHER_INTERVAL:-60}"
-QUEUE_FILE="${STALL_WATCHER_QUEUE:-/tmp/claude-viz/supervisor-queue.jsonl}"
-LOG_FILE="${STALL_WATCHER_LOG:-/tmp/claude-viz/stall-watcher.log}"
+# Per-fleet state dir — full-bringup.sh exports FLEET_STATE_DIR scoped to
+# /tmp/claude-viz/fleet-<id> when --fleet-id is set; defaults to
+# /tmp/claude-viz for single-fleet back-compat.
+FLEET_STATE_DIR="${FLEET_STATE_DIR:-/tmp/claude-viz}"
+QUEUE_FILE="${STALL_WATCHER_QUEUE:-$FLEET_STATE_DIR/supervisor-queue.jsonl}"
+LOG_FILE="${STALL_WATCHER_LOG:-$FLEET_STATE_DIR/stall-watcher.log}"
 NOTIFY="${STALL_WATCHER_NOTIFY:-1}"
 ONCE=0
 APPLY_FLAG="--apply"

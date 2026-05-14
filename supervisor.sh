@@ -9,9 +9,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 CONFIG="${CODEX_FLEET_SUPERVISOR_CONFIG:-$SCRIPT_DIR/accounts.yml}"
-QUEUE="${CODEX_FLEET_SUPERVISOR_QUEUE:-/tmp/claude-viz/supervisor-queue.jsonl}"
-ACTIVE_FILE="${CODEX_FLEET_ACTIVE_FILE:-/tmp/claude-viz/fleet-active-accounts.txt}"
-STATE_DIR="${CODEX_FLEET_SUPERVISOR_STATE_DIR:-/tmp/claude-viz/supervisor}"
+# Per-fleet state dir lets multiple parallel fleets each run their own
+# supervisor + stall-watcher loop without colliding queues. FLEET_STATE_DIR
+# is exported by full-bringup.sh; defaults to /tmp/claude-viz for back-compat
+# (single-fleet operators see no change).
+FLEET_STATE_DIR="${FLEET_STATE_DIR:-/tmp/claude-viz}"
+QUEUE="${CODEX_FLEET_SUPERVISOR_QUEUE:-$FLEET_STATE_DIR/supervisor-queue.jsonl}"
+ACTIVE_FILE="${CODEX_FLEET_ACTIVE_FILE:-$FLEET_STATE_DIR/fleet-active-accounts.txt}"
+STATE_DIR="${CODEX_FLEET_SUPERVISOR_STATE_DIR:-$FLEET_STATE_DIR/supervisor}"
 WORK_ROOT="${CODEX_FLEET_WORK_ROOT:-/tmp/codex-fleet}"
 PROMPT_TEMPLATE="${CODEX_FLEET_TAKEOVER_PROMPT:-$SCRIPT_DIR/takeover-prompt.md}"
 PLAN_JSON="${CODEX_FLEET_SUPERVISOR_PLAN_JSON:-${FLEET_TICK_PLAN_JSON:-$REPO_ROOT/openspec/plans/rust-ph13-14-15-completion-2026-05-13/plan.json}}"

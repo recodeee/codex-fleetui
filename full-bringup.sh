@@ -17,18 +17,20 @@
 set -eo pipefail
 
 REPO="${REPO:-/home/deadpool/Documents/recodee}"
-SESSION="${SESSION:-codex-fleet}"
-TICKER_SESSION="${TICKER_SESSION:-fleet-ticker}"
 WAKE="${WAKE:-/tmp/codex-fleet-wake-prompt.md}"
 N_PANES=8
 ATTACH=1
 PLAN_SLUG=""
+FLEET_ID="${FLEET_ID:-}"
+AUTO_FLEET_ID=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --plan-slug) PLAN_SLUG="$2"; shift 2 ;;
     --n) N_PANES="$2"; shift 2 ;;
     --no-attach) ATTACH=0; shift ;;
+    --fleet-id) FLEET_ID="$2"; shift 2 ;;
+    --auto-fleet-id) AUTO_FLEET_ID=1; shift ;;
     *) echo "unknown arg: $1"; exit 2 ;;
   esac
 done
@@ -39,9 +41,39 @@ die() { printf '\033[31m[full-bringup] FATAL:\033[0m %s\n' "$*"; exit 1; }
 
 cd "$REPO"
 
+# Fleet ID handling — lets you run multiple parallel fleets on different
+# plans. Default (empty FLEET_ID) keeps the original session names
+# (`codex-fleet`, `fleet-ticker`) and global `/tmp/claude-viz/` state for
+# back-compat. With `--fleet-id N`, sessions become `codex-fleet-N` /
+# `fleet-ticker-N` and state moves under `/tmp/claude-viz/fleet-N/`.
+#
+# `--auto-fleet-id` picks the lowest free integer ≥2 when the default
+# session is already up. Use it to bring up a second/third fleet without
+# having to remember which IDs are taken.
+if [ "$AUTO_FLEET_ID" = "1" ] && [ -z "$FLEET_ID" ]; then
+  if tmux has-session -t "codex-fleet" 2>/dev/null; then
+    n=2
+    while tmux has-session -t "codex-fleet-$n" 2>/dev/null; do n=$((n+1)); done
+    FLEET_ID="$n"
+    log "auto-picked --fleet-id $FLEET_ID (codex-fleet, codex-fleet-2..$((n-1)) already up)"
+  fi
+fi
+
+if [ -n "$FLEET_ID" ]; then
+  SESSION="${SESSION:-codex-fleet-$FLEET_ID}"
+  TICKER_SESSION="${TICKER_SESSION:-fleet-ticker-$FLEET_ID}"
+  FLEET_STATE_DIR="${FLEET_STATE_DIR:-/tmp/claude-viz/fleet-$FLEET_ID}"
+else
+  SESSION="${SESSION:-codex-fleet}"
+  TICKER_SESSION="${TICKER_SESSION:-fleet-ticker}"
+  FLEET_STATE_DIR="${FLEET_STATE_DIR:-/tmp/claude-viz}"
+fi
+export FLEET_ID FLEET_STATE_DIR
+mkdir -p "$FLEET_STATE_DIR"
+
 # 1. Refuse if fleet already up
 if tmux has-session -t "$SESSION" 2>/dev/null; then
-  die "tmux session '$SESSION' already exists. Run scripts/codex-fleet/down.sh first."
+  die "tmux session '$SESSION' already exists. Run scripts/codex-fleet/down.sh first, or pass --fleet-id <N> / --auto-fleet-id to start a parallel fleet."
 fi
 
 # 2. Pick the priority plan slug
