@@ -28,9 +28,14 @@ DIM=$'\033[2m'; R=$'\033[0m'
 render_frame() {
   printf '\033[H'
   if [[ -f "$FILE" ]]; then
-    cat "$FILE"
+    # Wipe trailing chars on every line so a previous wider frame doesn't
+    # leave ghost columns on the right. \033[K clears from the cursor to
+    # the end of the current row.
+    while IFS='' read -r line; do
+      printf '%s\033[K\n' "$line"
+    done <"$FILE"
   else
-    printf '%s[fleet-state-anim] waiting for %s ...%s\n' "$DIM" "$FILE" "$R"
+    printf '%s[fleet-state-anim] waiting for %s ...%s\033[K\n' "$DIM" "$FILE" "$R"
   fi
   printf '\033[J'
 }
