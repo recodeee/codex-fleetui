@@ -157,7 +157,8 @@ pct_color() {
   fi
 }
 
-# Tiny block-spark for a percentage (▁..█)
+# Tiny block-spark for a percentage (▁..█). Kept for older tests; new UI uses
+# ios_progress_rail below.
 pct_spark() {
   local n="$1"
   [[ "$n" =~ ^[0-9]+$ ]] || { printf ' '; return; }
@@ -178,6 +179,48 @@ clamp_pct() {
   (( n < 0 )) && n=0
   (( n > 100 )) && n=100
   printf '%d' "$n"
+}
+
+ios_axis_color() {
+  local n axis
+  n=$(clamp_pct "${1:-0}")
+  axis="${2:-usage}"
+  case "$axis" in
+    usage|cap|used)
+      if   (( n >= 85 )); then printf '%s' "$IOS_RED"
+      elif (( n >= 65 )); then printf '%s' "$IOS_ORANGE"
+      elif (( n >= 40 )); then printf '%s' "$IOS_YELLOW"
+      else                     printf '%s' "$IOS_GREEN"
+      fi
+      ;;
+    done|complete|completion|available|availability)
+      if   (( n >= 75 )); then printf '%s' "$IOS_GREEN"
+      elif (( n >= 45 )); then printf '%s' "$IOS_ORANGE"
+      elif (( n >= 20 )); then printf '%s' "$IOS_YELLOW"
+      else                     printf '%s' "$IOS_RED"
+      fi
+      ;;
+    *)
+      printf '%s' "$IOS_BLUE"
+      ;;
+  esac
+}
+
+ios_progress_rail() {
+  local pct axis width filled empty_len fill empty color
+  pct=$(clamp_pct "${1:-0}")
+  axis="${2:-usage}"
+  width="${3:-12}"
+  [[ "$width" =~ ^[0-9]+$ ]] || width=12
+  (( width < 1 )) && width=1
+  filled=$(( pct * width / 100 ))
+  empty_len=$(( width - filled ))
+  printf -v fill '%*s' "$filled" ''
+  printf -v empty '%*s' "$empty_len" ''
+  fill=${fill// /█}
+  empty=${empty// /░}
+  color=$(ios_axis_color "$pct" "$axis")
+  printf '%b▕%b%s%b%s%b▏%b' "$IOS_GRAY2" "$color" "$fill" "$IOS_GRAY6" "$empty" "$IOS_GRAY2" "$R"
 }
 
 subtask_progress_bar() {
@@ -339,7 +382,7 @@ while true; do
       wk_avail=$(( 100 - wk_num )); (( wk_avail < 0 )) && wk_avail=0
       h5="${h5_avail}%"; wk="${wk_avail}%"
       wkc=$(pct_color "$wk_avail"); h5c=$(pct_color "$h5_avail")
-      wk_bar=$(pct_spark "$wk_avail"); h5_bar=$(pct_spark "$h5_avail")
+      wk_bar=$(ios_progress_rail "$wk_avail" available); h5_bar=$(ios_progress_rail "$h5_avail" available)
       # Worker status
       if [[ -n "${EXHAUSTED[$aid]:-}" ]]; then
         live="${B}${RED}⚠ EXHAUST${R} "
@@ -396,7 +439,7 @@ while true; do
           unset NP; declare -a NP=()
         fi
       fi
-      printf "${B}%-12s${R}  ${h5c}%-4s %s${R}  ${wkc}%-5s %s${R}  %b  %b" \
+      printf "${B}%-12s${R}  ${h5c}%-4s${R} %s  ${wkc}%-5s${R} %s  %b  %b" \
         "${SHORT[$email]:-$email}" "$h5" "$h5_bar" "$wk" "$wk_bar" "$live" "$working"
   }
 
@@ -475,9 +518,8 @@ while true; do
   }
   label() {
     local i="$1"; local s="${SUBST[$i]%%|*}"; local a="${SUBST[$i]##*|}"; local pct="${SUBPCT[$i]:-0}"
-    local pcol mini suffix
-    pcol=$(pct_color "$pct")
-    mini=$(subtask_progress_bar "$pct" 8)
+    local mini suffix
+    mini=$(ios_progress_rail "$pct" done)
     suffix=""
     if (( pct >= 100 )); then
       suffix="${DIM}done${R}"
@@ -488,7 +530,7 @@ while true; do
     elif (( pct > 0 )); then
       suffix="${DIM}evidence${R}"
     fi
-    echo -e "${pcol}${mini}${R} ${B}${pct}%${R} ${DIM}sub-$i${R} ${SUB_TITLES[$i]} ${suffix}"
+    echo -e "${mini} ${B}${pct}%${R} ${DIM}sub-$i${R} ${SUB_TITLES[$i]} ${suffix}"
   }
   done_count=0
   progress_sum=0
@@ -571,11 +613,8 @@ while true; do
     (( bar_len < 12 )) && bar_len=12
     (( bar_len > 60 )) && bar_len=60
     pct=$(( progress_sum / 12 ))
-    filled=$(( pct * bar_len / 100 ))
-    bar=""
-    for ((i=0;i<filled;i++)); do bar+="█"; done
-    for ((i=filled;i<bar_len;i++)); do bar+="░"; done
-    echo -e "  progress  ${G}${bar}${R}  ${B}${done_count}/12${R}  ${DIM}(${pct}%)${R}"
+    bar=$(ios_progress_rail "$pct" done "$bar_len")
+    echo -e "  progress  ${bar}  ${B}${done_count}/12${R}  ${DIM}(${pct}%)${R}"
     echo
     if (( plan_compact == 1 )); then
       echo -e "  ${DIM}LEGEND ${G}●${R}${DIM} done  ${Y}◐${R}${DIM} claim  ${RED}✕${R}${DIM} block  ◇ avail${R}"
