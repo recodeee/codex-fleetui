@@ -570,17 +570,23 @@ fi
 waves_script="$SCRIPT_DIR/waves-anim-generic.sh"
 [ -f "$waves_script" ] || waves_script="$SCRIPT_DIR/waves-anim.sh"
 
+# Prefer the committed review-anim.sh (sibling of plan-anim / waves-anim)
+# when present; fall back to the historical review-board.sh placeholder so
+# user-local installs that ship their own variant still work.
+review_script="$SCRIPT_DIR/review-anim.sh"
+[ -f "$review_script" ] || review_script="$SCRIPT_DIR/review-board.sh"
+
 if [ "$use_rust" = "1" ]; then
   open_window fleet   "$rust_bin_dir/fleet-state"      ""
   open_window plan    "$rust_bin_dir/fleet-plan-tree"  remain
   open_window waves   "$rust_bin_dir/fleet-waves"      remain
-  open_window review  "$SCRIPT_DIR/review-board.sh"    ""
+  open_window review  "$review_script"                 remain
   open_window watcher "$rust_bin_dir/fleet-watcher"    ""
 else
   open_window fleet   "$SCRIPT_DIR/fleet-state-anim.sh" ""
   open_window plan    "$SCRIPT_DIR/plan-tree-anim.sh"   remain
   open_window waves   "$waves_script"                   remain
-  open_window review  "$SCRIPT_DIR/review-board.sh"     ""
+  open_window review  "$review_script"                  remain
   open_window watcher "$SCRIPT_DIR/watcher-board.sh"    ""
 fi
 
@@ -646,6 +652,18 @@ if [ -f "$SCRIPT_DIR/colony-state-pump.sh" ]; then
 fi
 if [ -f "$SCRIPT_DIR/plan-complete-detector.sh" ]; then
   ticker_window review-detector "bash $SCRIPT_DIR/plan-complete-detector.sh"
+fi
+# Review approval queue: producer collapses events → snapshot; scanner walks
+# the worker panes for Codex auto-reviewer output and emits events. Both are
+# guarded so a checkout missing either script doesn't create a dead ticker
+# window. The scanner is pointed at the overview window (where the codex
+# worker panes live) by REVIEW_SCANNER_WINDOW; override at the fleet level if
+# the worker pane layout changes.
+if [ -f "$SCRIPT_DIR/review-queue.sh" ]; then
+  ticker_window review-queue "bash $SCRIPT_DIR/review-queue.sh daemon"
+fi
+if [ -f "$SCRIPT_DIR/review-pane-scanner.sh" ]; then
+  ticker_window review-scanner "REVIEW_SCANNER_SESSION=$SESSION REVIEW_SCANNER_WINDOW=overview bash $SCRIPT_DIR/review-pane-scanner.sh"
 fi
 # force-claim scans ALL openspec plans every 15s, finds deps-satisfied
 # `available` tasks, and dispatches them onto idle codex panes via
