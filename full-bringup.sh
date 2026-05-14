@@ -227,6 +227,21 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n review-detector "bash $REPO/scripts
 # originally-pinned plan completes.
 tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "bash $REPO/scripts/codex-fleet/force-claim.sh --loop --interval=15"
 
+# 12b. Chrome the ticker session too so attaching to it shows the same iOS
+# tab strip / rounded pane borders / sticky menu as the main session.
+CODEX_FLEET_SESSION="$TICKER_SESSION" bash "$REPO/scripts/codex-fleet/style-tabs.sh" >/dev/null 2>&1 \
+  || warn "style-tabs.sh failed for $TICKER_SESSION"
+
+# 12c. Verify chrome actually rendered (catches the session-local `status on`
+# shadow regression where tmux clamps to 1 row and silently hides the tab
+# strip). Expected: status_height=3.
+chrome_h=$(tmux display-message -p -t "$SESSION:overview" '#{?status_height,#{status_height},#{e|-|:#{client_height},#{window_height}}}' 2>/dev/null || echo "?")
+if [ "$chrome_h" = "3" ]; then
+  log "iOS chrome verified: status_height=$chrome_h"
+else
+  warn "iOS chrome looks wrong: status_height=$chrome_h (expected 3)"
+fi
+
 log "DONE."
 log "  main session:    tmux attach -t $SESSION"
 log "  ticker session:  tmux attach -t $TICKER_SESSION"

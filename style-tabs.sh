@@ -82,10 +82,10 @@ tx_set window-status-style "fg=#7a7a7a,bg=#1a1a1a"
 
 # ── active tab — bright fill, ▎ caps, bold label ─────────────────────────────
 # Close chip (heavy ✖ on amber) renders ONLY for non-core tabs. Core tabs
-# (overview / fleet / plan / waves) are permanent UI surfaces — the X
-# shouldn't be there. Suppression is purely visual; tmux doesn't act on
-# clicks on the ✖ either way, so removing it just stops misleading the user
-# into thinking those tabs are closable.
+# (overview / fleet / plan / waves / review / watcher) are permanent UI
+# surfaces — the X shouldn't be there. Suppression is purely visual; tmux
+# doesn't act on clicks on the ✖ either way, so removing it just stops
+# misleading the user into thinking those tabs are closable.
 #
 # IMPORTANT: the close-chip `#[...]` block uses SPACE-separated attrs, not
 # commas. Commas inside `#[fg=,bg=,bold]` collide with the conditional
@@ -93,7 +93,7 @@ tx_set window-status-style "fg=#7a7a7a,bg=#1a1a1a"
 # first inner comma and the tail ("bg=#ffd07a,bold] ✖ }") leaks as literal
 # text on every non-core active tab. Space-separated attrs render identically.
 tx_set window-status-current-format \
-  "#[fg=#3a7ebf,bg=#0a0a0a]▎#[fg=#ffffff,bg=#3a7ebf,bold]   #I  #W   #{?#{m/r:^(overview|fleet|plan|waves)$,#W},,#[fg=#0a0a0a bg=#ffd07a bold] ✖ }#[fg=#3a7ebf,bg=#0a0a0a]▎"
+  "#[fg=#3a7ebf,bg=#0a0a0a]▎#[fg=#ffffff,bg=#3a7ebf,bold]   #I  #W   #{?#{m/r:^(overview|fleet|plan|waves|review|watcher)$,#W},,#[fg=#0a0a0a bg=#ffd07a bold] ✖ }#[fg=#3a7ebf,bg=#0a0a0a]▎"
 tx_set window-status-current-style "fg=#ffffff,bg=#3a7ebf,bold"
 
 # ── activity / bell highlights ───────────────────────────────────────────────
