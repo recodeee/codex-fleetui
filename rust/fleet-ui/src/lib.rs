@@ -10,6 +10,7 @@ pub mod overlay;
 pub mod palette;
 pub mod rail;
 pub mod segmented_control;
+pub mod session_switcher_overlay;
 pub mod spotlight_filter;
 pub mod spotlight_overlay;
 pub mod tab_strip;
