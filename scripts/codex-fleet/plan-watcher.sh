@@ -286,16 +286,47 @@ EOF
   fi
 }
 
+# ── idempotency check: is the OVERRIDE for THIS plan already queued? ─────────
+# Codex CLI's "tab to queue message" buffer stays visible at the bottom of a
+# pane until the agent finishes its current work and pulls the next message.
+# If we paste another OVERRIDE while one is already queued (same plan slug),
+# the pane fills with duplicate prompts and codex churns through redundant
+# resubmissions. This check inspects the pane's tail for an existing
+# `OVERRIDE current plan pinning. Claim sub-task <N> of plan <slug>` line
+# that matches the slug we're about to send — if found, we skip.
+already_queued() {
+  local pane="$1" slug="$2"
+  local tail
+  tail="$(tmux capture-pane -p -t "$pane" -S -40 2>/dev/null || true)"
+  printf '%s\n' "$tail" \
+    | grep -F "OVERRIDE current plan pinning" \
+    | grep -Fq "plan ${slug}"
+}
+
 # ── send a prompt to a pane via the canonical fleet pattern ─────────────────
+# Behaviour:
+#   1. Dedup against the pane's recent tail — if an OVERRIDE for the same
+#      plan slug is already visible (queued in codex's input buffer), skip.
+#      Caller passes the slug as the third arg; legacy callers can omit and
+#      lose dedup.
+#   2. Send Esc once to dismiss any pending input from a prior dispatch
+#      (codex CLI's queue input clears on Esc). Best-effort — Esc in a
+#      working pane is a no-op.
+#   3. load-buffer + paste-buffer for multi-line literal paste; Enter to
+#      submit. Buffer is deleted after.
 send_prompt() {
-  local pane="$1" prompt="$2"
+  local pane="$1" prompt="$2" slug="${3:-}"
+  if [ -n "$slug" ] && already_queued "$pane" "$slug"; then
+    log "skip $pane: OVERRIDE for $slug already queued in pane input"
+    return 0
+  fi
   if (( DRY_RUN == 1 )); then
     dryrun "send-keys → $pane: $(printf '%s' "$prompt" | head -c 120)…"
     return 0
   fi
-  # load-buffer + paste-buffer survives the multi-line OVERRIDE text cleaner
-  # than `send-keys -l` which has historically tripped on tmux's "not in a
-  # mode" handling around embedded newlines.
+  # Clean the codex input buffer first so we don't stack duplicate
+  # OVERRIDE blocks on top of each other.
+  tmux send-keys -t "$pane" Escape 2>/dev/null || true
   local buf="plan-watcher-$(date +%s)-$$"
   printf '%s' "$prompt" | tmux load-buffer -b "$buf" -
   tmux paste-buffer -b "$buf" -t "$pane" -p
@@ -374,7 +405,7 @@ tick() {
     [ -z "$sub_title" ] && sub_title="(see plan ${slug})"
 
     log "→ prompt $panel ($pid) with $slug / sub-${sub_idx}: ${sub_title:0:60}"
-    send_prompt "$pid" "$(build_prompt "$slug" "$sub_idx" "$sub_title")"
+    send_prompt "$pid" "$(build_prompt "$slug" "$sub_idx" "$sub_title")" "$slug"
     record_prompt "$pid" "$slug"
 
     # Move to next plan so back-to-back workers spread across plans.
