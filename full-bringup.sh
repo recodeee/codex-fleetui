@@ -227,6 +227,15 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n review-detector "bash $REPO/scripts
 # originally-pinned plan completes.
 tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "bash $REPO/scripts/codex-fleet/force-claim.sh --loop --interval=15"
 
+# stall-watcher: every 60s, `colony rescue stranded --apply` releases claims
+# held > 30m without progress, then enqueues a takeover_recommended event
+# per rescued agent into /tmp/claude-viz/supervisor-queue.jsonl.
+# supervisor: consumes that queue and spawns fresh kitty + codex workers for
+# the rescued slots with the takeover prompt. Together they unwedge the queue
+# when one agent dies holding sub-task claims that block downstream subs.
+tmux new-window  -d -t "$TICKER_SESSION:" -n stall-watcher "bash $REPO/scripts/codex-fleet/stall-watcher.sh"
+tmux new-window  -d -t "$TICKER_SESSION:" -n supervisor    "bash $REPO/scripts/codex-fleet/supervisor.sh"
+
 # 12b. Chrome the ticker session too so attaching to it shows the same iOS
 # tab strip / rounded pane borders / sticky menu as the main session.
 CODEX_FLEET_SESSION="$TICKER_SESSION" bash "$REPO/scripts/codex-fleet/style-tabs.sh" >/dev/null 2>&1 \
