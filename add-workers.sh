@@ -5,17 +5,19 @@
 # the existing panes are dead, capped, or stuck idle.
 #
 # Picks N healthy accounts (cap-probe if present, else codex-auth list with
-# the canonical 5h<100% / weekly<90% / not-already-active filter), spawns
-# each as a new kitty window running `codex` with the standard worker prompt
-# pre-pinned to the target plan. Records the new accounts in the active
+# the canonical 5h<100% / weekly<90% / not-already-active filter), then
+# defaults to respawning dead/idle panes in the running tmux fleet's
+# `overview` window. Falls back to kitty windows when no fleet session
+# exists or when `--kitty` is passed. Records the new accounts in the active
 # accounts file so cap-swap-daemon and supervisor don't re-spawn them.
 #
 # Usage:
-#   bash scripts/codex-fleet/add-workers.sh 4
-#   bash scripts/codex-fleet/add-workers.sh 4 --plan-slug rust-ph13-14-15-completion-2026-05-13
+#   bash scripts/codex-fleet/add-workers.sh 4                        # respawn into overview
+#   bash scripts/codex-fleet/add-workers.sh 4 --kitty                # old behavior: new kitty windows
+#   bash scripts/codex-fleet/add-workers.sh 4 --plan-slug <slug>
 #   bash scripts/codex-fleet/add-workers.sh 4 --fleet-id 2
-#   bash scripts/codex-fleet/add-workers.sh --auto         # spawn as many as there are ready subs
-#   bash scripts/codex-fleet/add-workers.sh 2 --dry-run    # show plan + picked accounts, don't spawn
+#   bash scripts/codex-fleet/add-workers.sh --auto                   # one worker per ready sub
+#   bash scripts/codex-fleet/add-workers.sh 2 --dry-run               # preview pick + target
 
 set -eo pipefail
 
@@ -27,6 +29,11 @@ PLAN_SLUG=""
 FLEET_ID="${FLEET_ID:-}"
 AUTO=0
 DRY_RUN=0
+# Spawn target: tmux (in-overview, default) or kitty (separate window).
+# `tmux` mode prefers respawning dead/idle panes in the existing overview
+# window over splitting (which would shrink every pane). Falls back to
+# kitty when no tmux session is available.
+TARGET="${ADD_WORKERS_TARGET:-tmux}"
 WORK_ROOT="${CODEX_FLEET_WORK_ROOT:-/tmp/codex-fleet}"
 PROMPT_TEMPLATE="${CODEX_FLEET_WORKER_PROMPT:-$SCRIPT_DIR/worker-prompt.md}"
 
@@ -36,6 +43,8 @@ while [ $# -gt 0 ]; do
     --fleet-id) FLEET_ID="$2"; shift 2 ;;
     --auto) AUTO=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --kitty) TARGET="kitty"; shift ;;
+    --tmux) TARGET="tmux"; shift ;;
     -h|--help) sed -n '1,21p' "$0"; exit 0 ;;
     [0-9]*) N="$1"; shift ;;
     *) echo "fatal: unknown arg: $1" >&2; exit 2 ;;
@@ -207,27 +216,94 @@ PROMPT_FILE="$WAKE_DIR/add-workers-$PLAN_SLUG-$(date -u +%Y%m%dT%H%M%S).md"
 
 log "wrote prompt: $PROMPT_FILE"
 
-# Spawn each worker as a kitty window — same pattern supervisor.sh uses,
-# avoids squeezing the existing tmux panes in the codex-fleet session.
+if [ -n "$FLEET_ID" ]; then
+  TMUX_SESSION="${CODEX_FLEET_SESSION:-codex-fleet-$FLEET_ID}"
+else
+  TMUX_SESSION="${CODEX_FLEET_SESSION:-codex-fleet}"
+fi
+TMUX_WINDOW="${CODEX_FLEET_WINDOW:-overview}"
+
+# In tmux mode, find dead/idle panes we can respawn instead of cluttering
+# the layout. A pane is "dead" if its last 80 lines match one of:
+#   - "hit your usage limit"            (codex CLI billing cap)
+#   - "Please run 'codex login'"        (auth expired)
+#   - "session has ended"               (kitty closed underneath)
+#   - "[exited]" / "[Process completed]"
+#   - "No claimable task" + ≥3 minutes of identical content (idle waiter)
+# Pane scan + respawn happens in spawn_worker() per call.
+find_dead_pane() {
+  [ "$TARGET" = "tmux" ] || return 1
+  tmux has-session -t "$TMUX_SESSION" 2>/dev/null || return 1
+  tmux list-panes -t "$TMUX_SESSION:$TMUX_WINDOW" -F '#{pane_id}' 2>/dev/null \
+    | while IFS= read -r pid; do
+        local tail
+        tail="$(tmux capture-pane -p -t "$pid" -S -80 2>/dev/null || true)"
+        case "$tail" in
+          *"hit your usage limit"*|*"Please run \`codex login\`"*|*"Please run 'codex login'"*|\
+          *"[Process completed]"*|*"[Process exited"*|*"[exited]"*|*"session has ended"*)
+            printf '%s\n' "$pid"; return 0 ;;
+        esac
+      done | head -1
+}
+
+# Mark which pane IDs we've already respawned in this run so a single dead
+# pane doesn't get respawned twice across iterations.
+RESPAWNED_PIDS=""
+
 spawn_worker() {
   local aid="$1" email="$2"
   local home="$WORK_ROOT/$aid"
+  local pane_cmd="env CODEX_HOME='$home' CODEX_FLEET_AGENT_NAME='codex-$aid' CODEX_FLEET_ACCOUNT_EMAIL='$email' codex \"\$(cat '$PROMPT_FILE')\""
   if [ "$DRY_RUN" = "1" ]; then
-    log "[dry-run] would spawn: aid=$aid email=$email home=$home"
+    log "[dry-run] would spawn: aid=$aid email=$email target=$TARGET home=$home"
     return 0
   fi
+
+  if [ "$TARGET" = "tmux" ] && tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    local pid=""
+    # Prefer respawning a dead pane in the overview window.
+    while IFS= read -r candidate; do
+      case " $RESPAWNED_PIDS " in
+        *" $candidate "*) continue ;;
+      esac
+      pid="$candidate"
+      break
+    done < <(find_dead_pane)
+    if [ -n "$pid" ]; then
+      tmux set-option -p -t "$pid" '@panel' "[codex-$aid]" >/dev/null 2>&1 || true
+      tmux respawn-pane -k -t "$pid" "$pane_cmd" >/dev/null
+      RESPAWNED_PIDS="$RESPAWNED_PIDS $pid"
+      printf '%s\n' "$aid" >>"$ACTIVE_FILE"
+      log "respawned dead pane $pid → codex-$aid ($email)"
+      return 0
+    fi
+    # No dead pane — split the smallest pane in the window so the new
+    # pane lands inside overview. Operator can `prefix space` to re-tile.
+    local new_pid
+    new_pid="$(tmux split-window -t "$TMUX_SESSION:$TMUX_WINDOW" -P -F '#{pane_id}' "$pane_cmd" 2>/dev/null || true)"
+    if [ -n "$new_pid" ]; then
+      tmux set-option -p -t "$new_pid" '@panel' "[codex-$aid]" >/dev/null 2>&1 || true
+      tmux select-layout -t "$TMUX_SESSION:$TMUX_WINDOW" tiled >/dev/null 2>&1 || true
+      printf '%s\n' "$aid" >>"$ACTIVE_FILE"
+      log "split-window $new_pid → codex-$aid ($email)"
+      return 0
+    fi
+    warn "tmux split failed for $aid; falling through to kitty"
+  fi
+
+  # Fallback: kitty window.
   if ! command -v kitty >/dev/null 2>&1; then
-    warn "kitty not on PATH — cannot spawn windowed worker for $aid"
+    warn "no tmux session '$TMUX_SESSION' and kitty not on PATH — cannot spawn $aid"
     return 1
   fi
   setsid kitty \
     --title "add-worker $aid" \
     --override window_padding_width=4 \
-    bash -lc "env CODEX_HOME='$home' CODEX_FLEET_AGENT_NAME='codex-$aid' CODEX_FLEET_ACCOUNT_EMAIL='$email' codex \"\$(cat '$PROMPT_FILE')\"" \
+    bash -lc "$pane_cmd" \
     </dev/null >/dev/null 2>&1 &
   disown
   printf '%s\n' "$aid" >>"$ACTIVE_FILE"
-  log "spawned: codex-$aid ($email)"
+  log "spawned kitty window → codex-$aid ($email)"
 }
 
 i=0
