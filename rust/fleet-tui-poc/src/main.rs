@@ -91,8 +91,8 @@ enum Overlay {
     Spotlight,
     ActionSheet,
     SessionSwitcher,
-    /// Tab-triggered ⌘K-style jump grid: pick a tmux window inside the
-    /// active codex-fleet session.
+    /// Tab-triggered command-palette-style jump grid: pick a tmux window
+    /// inside the active codex-fleet session.
     SectionJump,
 }
 
@@ -114,8 +114,8 @@ const SPOTLIGHT_ITEMS: &[SpotlightItem] = &[
     SpotlightItem { group: "SESSION · codex-admin-kollarrobert", icon: "⧉", title: "Copy whole session", sub: "180 lines · transcript",      kbd: "⇧C" },
     SpotlightItem { group: "SESSION · codex-admin-kollarrobert", icon: "☰", title: "Queue message",      sub: "Send to agent on next idle",  kbd: "↹" },
     SpotlightItem { group: "SESSION · codex-admin-kollarrobert", icon: "⌚", title: "Search history…",    sub: "Across all 7 panes",          kbd: "/" },
-    SpotlightItem { group: "FLEET", icon: "+",  title: "Spawn new codex worker", sub: "codex-fleet · new agent",        kbd: "⌘N" },
-    SpotlightItem { group: "FLEET", icon: "⎇", title: "Switch worktree…",       sub: "codex-fleet-extract-p1…",         kbd: "⌘B" },
+    SpotlightItem { group: "FLEET", icon: "+",  title: "Spawn new codex worker", sub: "codex-fleet · new agent",        kbd: "Ctrl N" },
+    SpotlightItem { group: "FLEET", icon: "⎇", title: "Switch worktree…",       sub: "codex-fleet-extract-p1…",         kbd: "Ctrl B" },
 ];
 
 fn spotlight_filter(query: &str) -> Vec<&'static SpotlightItem> {
@@ -848,7 +848,10 @@ fn render_spotlight(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         Span::styled(query_display.to_string(), query_style),
         Span::styled(caret_char, Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD)),
     ];
-    let cmdk = " ⌘ K ";
+    // Linux-friendly key hint. The Spotlight palette is bound to Ctrl+K
+    // (was rendered as ⌘K before this PR). Single ASCII space on each side
+    // keeps the visible width matching the previous glyph block.
+    let cmdk = " Ctrl K ";
     let cmdk_w = cmdk.chars().count() as u16;
     frame.render_widget(
         Paragraph::new(Line::from(q_spans)),
@@ -1495,7 +1498,7 @@ fn render_session_switcher(frame: &mut ratatui::Frame, area: Rect, app: &mut App
         Span::styled(" focus    ", Style::default().fg(IOS_FG_MUTED)),
         Span::styled("↑", Style::default().fg(IOS_FG)),
         Span::styled(" dismiss    ", Style::default().fg(IOS_FG_MUTED)),
-        Span::styled("⌘ N", Style::default().fg(IOS_FG)),
+        Span::styled("Ctrl N", Style::default().fg(IOS_FG)),
         Span::styled(" new worker    ", Style::default().fg(IOS_FG_MUTED)),
         Span::styled("click", Style::default().fg(IOS_FG)),
         Span::styled(" buttons work →", Style::default().fg(IOS_FG_MUTED)),
@@ -1725,7 +1728,7 @@ fn render_session_card(
 }
 
 // ────────────────────────── 5 · section-jump grid ──────────────────────────
-// ⌘K-style window-jump overlay. Tab opens this; number keys 1–5 select a
+// Command-palette-style window-jump overlay. Tab opens this; number keys 1–5 select a
 // card and dispatch `tmux select-window -t <session>:<window>`; Esc / 0 / q
 // dismiss. The card metadata mirrors the live codex-fleet tabs (Overview,
 // Fleet, Plan, Waves, Review). The active section can be marked by the
