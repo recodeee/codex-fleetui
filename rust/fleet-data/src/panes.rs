@@ -1,0 +1,1 @@
+//! Tmux pane data scaffold.

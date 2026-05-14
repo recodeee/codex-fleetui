@@ -1,0 +1,13 @@
+[package]
+name = "fleet-ui"
+version = "0.0.1"
+edition = "2021"
+description = "Shared ratatui widgets and iOS-style chrome for codex-fleet dashboards."
+publish = false
+
+[dependencies]
+crossterm = "0.28"
+ratatui = "0.28"
+
+[dev-dependencies]
+insta = "1"

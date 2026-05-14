@@ -1,0 +1,1 @@
+//! Overlay widget scaffold.
