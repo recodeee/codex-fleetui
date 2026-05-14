@@ -25,7 +25,7 @@
 #   CR_SUP_WINDOW        tmux window with codex panes (default: overview)
 #   CR_SUP_INTERVAL      poll period in seconds (default: 60)
 #   CR_SUP_MIN_IDLE_SEC  minimum claim age before releasing (default: 120)
-#   CR_SUP_REPO_ROOT     repo root (default: /home/deadpool/Documents/recodee)
+#   CR_SUP_REPO_ROOT     repo root (default: autodetect from script location)
 #   CR_SUP_DRY           1 = log only, do not call release (default: 0)
 #
 # Run standalone:
@@ -39,7 +39,7 @@ SESSION="${CR_SUP_SESSION:-codex-fleet}"
 WINDOW="${CR_SUP_WINDOW:-overview}"
 INTERVAL="${CR_SUP_INTERVAL:-60}"
 MIN_IDLE_SEC="${CR_SUP_MIN_IDLE_SEC:-120}"
-REPO_ROOT="${CR_SUP_REPO_ROOT:-/home/deadpool/Documents/recodee}"
+REPO_ROOT="${CR_SUP_REPO_ROOT:-${CODEX_FLEET_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 DRY="${CR_SUP_DRY:-0}"
 MODE="loop"
 

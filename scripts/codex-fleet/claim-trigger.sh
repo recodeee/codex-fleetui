@@ -12,7 +12,7 @@
 #   bash scripts/codex-fleet/claim-trigger.sh --once --dry-run
 #
 # Env:
-#   CLAIM_TRIGGER_REPO=/home/deadpool/Documents/recodee
+#   CLAIM_TRIGGER_REPO=<repo-root>     (default: autodetect from script location)
 #   CLAIM_TRIGGER_SESSION=codex-fleet
 #   CLAIM_TRIGGER_WINDOW=overview
 #   CLAIM_TRIGGER_DEBOUNCE_MS=500
@@ -20,7 +20,7 @@
 #   CLAIM_TRIGGER_PLAN_JSON=/path/to/plan.json   # optional single-plan pin
 set -eo pipefail
 
-REPO="${CLAIM_TRIGGER_REPO:-/home/deadpool/Documents/recodee}"
+REPO="${CLAIM_TRIGGER_REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 SESSION="${CLAIM_TRIGGER_SESSION:-codex-fleet}"
 WINDOW="${CLAIM_TRIGGER_WINDOW:-overview}"
 DEBOUNCE_MS="${CLAIM_TRIGGER_DEBOUNCE_MS:-500}"

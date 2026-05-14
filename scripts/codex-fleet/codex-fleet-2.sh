@@ -93,11 +93,11 @@ echo "[codex-fleet-2] session=$SESSION plan=$PLAN_SLUG"
 # in-worktree edit shows up immediately, then falls back to the primary
 # checkout so dashboards that live only in user-untracked locations
 # (waves-anim-generic.sh, review-board.sh, ...) still work.
-FALLBACK_REPO="${CODEX_FLEET_2_FALLBACK_REPO:-/home/deadpool/Documents/recodee}"
+FALLBACK_REPO="${CODEX_FLEET_2_FALLBACK_REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 resolve_script() {
   local name="$1"
-  if [[ -f "$REPO/scripts/codex-fleet/$name" ]]; then
-    printf '%s\n' "$REPO/scripts/codex-fleet/$name"
+  if [[ -f "$SCRIPT_DIR/$name" ]]; then
+    printf '%s\n' "$SCRIPT_DIR/$name"
   elif [[ -f "$FALLBACK_REPO/scripts/codex-fleet/$name" ]]; then
     printf '%s\n' "$FALLBACK_REPO/scripts/codex-fleet/$name"
   fi
@@ -141,8 +141,8 @@ tmux select-window -t "$SESSION:plan"
 # now comes from the `#S` token rendered inside style-tabs.sh's session badge
 # pill (e.g. `◖ ◆ codex-fleet-2 ◗`), so both sessions read as one fleet visual
 # language and pre-iOS overrides don't shadow the global palette.
-if [[ -x "$REPO/scripts/codex-fleet/style-tabs.sh" ]]; then
-  CODEX_FLEET_SESSION="$SESSION" bash "$REPO/scripts/codex-fleet/style-tabs.sh" >/dev/null 2>&1 || true
+if [[ -x "$SCRIPT_DIR/style-tabs.sh" ]]; then
+  CODEX_FLEET_SESSION="$SESSION" bash "$SCRIPT_DIR/style-tabs.sh" >/dev/null 2>&1 || true
 fi
 
 if (( USE_KITTY == 1 )) && command -v kitty >/dev/null 2>&1; then

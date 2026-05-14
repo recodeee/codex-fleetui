@@ -16,7 +16,7 @@
 #   PLAN_TREE_ANIM_INTERVAL_MS=800 ...                   # tick override
 set -eo pipefail
 
-REPO="${PLAN_TREE_ANIM_REPO:-/home/deadpool/Documents/recodee}"
+REPO="${PLAN_TREE_ANIM_REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 # 500ms keeps the spinner pulse feeling alive without burning CPU — each
 # render is ~60ms (jq + tmux display-message + awk clamp) so duty-cycle ≈ 12%.
 INTERVAL_MS="${PLAN_TREE_ANIM_INTERVAL_MS:-500}"

@@ -13,7 +13,9 @@
 # replacements because cap-probe filters them.
 set -eo pipefail
 
-REPO="${REPO:-/home/deadpool/Documents/recodee}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Autodetect REPO from the clone location; env override wins.
+REPO="${REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 SESSION="${SESSION:-codex-fleet}"
 WAKE="${WAKE:-/tmp/codex-fleet-wake-prompt.md}"
 LOG="${LOG:-/tmp/claude-viz/cap-swap.log}"
@@ -190,7 +192,7 @@ sweep_once() {
     local need; need=$capped
     [ "$need" -gt "$CANDIDATES_PER_SWAP" ] && need=$CANDIDATES_PER_SWAP
     local healthy
-    healthy=$(bash "$REPO/scripts/codex-fleet/cap-probe.sh" "$need" $ranked 2>>"$LOG" || true)
+    healthy=$(bash "$SCRIPT_DIR/cap-probe.sh" "$need" $ranked 2>>"$LOG" || true)
     local healthy_n; healthy_n=$(printf '%s\n' "$healthy" | grep -c '@' || true)
     if [ "$healthy_n" -eq 0 ]; then
       log "cap-probe returned no healthy accounts; will retry next sweep"
