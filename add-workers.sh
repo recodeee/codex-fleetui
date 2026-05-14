@@ -200,7 +200,8 @@ PROMPT_FILE="$WAKE_DIR/add-workers-$PLAN_SLUG-$(date -u +%Y%m%dT%H%M%S).md"
   printf 'Target plan: **%s**\n\n' "$PLAN_SLUG"
   printf 'Pass `plan_slug=%s` on every `task_ready_for_agent` call so you pick\n' "$PLAN_SLUG"
   printf 'up subs from this plan and not a stale one.\n\n'
-  printf '---\n\n'
+  # `--` so bash's printf builtin stops parsing options before the `---` rule.
+  printf -- '---\n\n'
   cat "$PROMPT_TEMPLATE"
 } > "$PROMPT_FILE"
 
