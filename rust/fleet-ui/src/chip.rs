@@ -1,1 +1,150 @@
-//! Status chip widget scaffold.
+//! iOS-style status pill — `◖ ● working ◗`.
+//!
+//! Ported from `scripts/codex-fleet/fleet-tick.sh::ios_worker_chip` plus the
+//! fleet-tui-poc `ios_chip()` helper. Each pill has the same three-Span
+//! shape:
+//!
+//! ```text
+//! ◖ ● working ◗
+//! └─┘ └────────┘ └─┘
+//!  cap   label    cap
+//! ```
+//!
+//! - Caps (`◖` / `◗`) render with `bg = IOS_BG` and `fg = <kind colour>`
+//!   so they punch a coloured half-circle out of the black background.
+//! - Label (` ● <text> `) gets `bg = <kind colour>`, `fg = IOS_FG`, bold.
+//!
+//! The dot glyph and width-padding match the bash regression in
+//! `scripts/codex-fleet/test/test-status-chips.sh`.
+
+use crate::palette::*;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
+
+const CAP_LEFT: &str = "◖";
+const CAP_RIGHT: &str = "◗";
+
+const BG: Color = Color::Rgb(0, 0, 0);
+
+/// The status of a fleet pane (worker), as classified by `fleet-data::panes`.
+/// Each kind gets a fixed colour + glyph so the bash regression suite's
+/// expected strings carry over verbatim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChipKind {
+    Working,
+    Idle,
+    Polling,
+    Done,
+    Blocked,
+    Capped,
+    Approval,
+    Boot,
+    Dead,
+}
+
+impl ChipKind {
+    /// Pill background colour. Matches `IOS_*` consts in `palette`.
+    pub fn bg(self) -> Color {
+        match self {
+            ChipKind::Working => IOS_TINT,
+            ChipKind::Idle => IOS_CHIP_BG,
+            ChipKind::Polling => IOS_ORANGE,
+            ChipKind::Done => IOS_GREEN,
+            ChipKind::Blocked | ChipKind::Capped => IOS_DESTRUCTIVE,
+            ChipKind::Approval => IOS_YELLOW,
+            ChipKind::Boot => IOS_PURPLE,
+            ChipKind::Dead => IOS_HAIRLINE_STRONG,
+        }
+    }
+
+    /// Status glyph inside the pill.
+    pub fn dot(self) -> &'static str {
+        match self {
+            ChipKind::Idle => "◌",
+            ChipKind::Blocked => "■",
+            ChipKind::Capped => "▲",
+            ChipKind::Dead => "✕",
+            _ => "●",
+        }
+    }
+
+    /// Lowercase label, padded to a fixed visible width so adjacent pills
+    /// have aligned right caps. Width = 7 (matches longest variant
+    /// "polling").
+    pub fn label(self) -> &'static str {
+        match self {
+            ChipKind::Working => "working",
+            ChipKind::Idle => "idle   ",
+            ChipKind::Polling => "polling",
+            ChipKind::Done => "done   ",
+            ChipKind::Blocked => "blocked",
+            ChipKind::Capped => "capped ",
+            ChipKind::Approval => "review ",
+            ChipKind::Boot => "boot   ",
+            ChipKind::Dead => "dead   ",
+        }
+    }
+}
+
+/// Render a status chip as a three-Span sequence: `◖`, ` ● label `, `◗`.
+///
+/// Caller is responsible for inserting separators between chips. The label
+/// has built-in horizontal padding (one space on each side of `● text`) so
+/// adjacent caps butt against the label without extra spans.
+pub fn status_chip(kind: ChipKind) -> Vec<Span<'static>> {
+    let bg = kind.bg();
+    vec![
+        Span::styled(CAP_LEFT, Style::default().fg(bg).bg(BG)),
+        Span::styled(
+            format!(" {} {} ", kind.dot(), kind.label()),
+            Style::default()
+                .fg(IOS_FG)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(CAP_RIGHT, Style::default().fg(bg).bg(BG)),
+    ]
+}
+
+/// Width in cells of a rendered chip (cap + ` ● label ` + cap = 1+10+1 = 12).
+pub const CHIP_WIDTH: u16 = 1 + 1 + 1 + 1 + 7 + 1 + 1; // ◖ + space + dot + space + label + space + ◗
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chip_renders_three_spans() {
+        let spans = status_chip(ChipKind::Working);
+        assert_eq!(spans.len(), 3, "chip must be exactly 3 spans (cap, label, cap)");
+        assert_eq!(spans[0].content, "◖");
+        assert_eq!(spans[2].content, "◗");
+    }
+
+    #[test]
+    fn label_visible_width_matches_seven() {
+        for kind in [
+            ChipKind::Working,
+            ChipKind::Idle,
+            ChipKind::Polling,
+            ChipKind::Done,
+            ChipKind::Blocked,
+            ChipKind::Capped,
+            ChipKind::Approval,
+            ChipKind::Boot,
+            ChipKind::Dead,
+        ] {
+            assert_eq!(kind.label().chars().count(), 7, "label({:?}) must be 7 chars wide for alignment", kind);
+        }
+    }
+
+    #[test]
+    fn working_chip_uses_systemblue() {
+        assert_eq!(ChipKind::Working.bg(), IOS_TINT);
+    }
+
+    #[test]
+    fn capped_chip_uses_systemred() {
+        assert_eq!(ChipKind::Capped.bg(), IOS_DESTRUCTIVE);
+    }
+}
