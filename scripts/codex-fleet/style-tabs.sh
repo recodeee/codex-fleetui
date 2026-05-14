@@ -284,16 +284,37 @@ unbind-key -T root MouseDown3Pane
 # layer (tmux eats `$FB`-style shell vars before the popup spawns).
 bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { set-environment -g CODEX_FLEET_MENU_LINE "#{q:mouse_line}" ; display-popup -E -B -w 60 -h 28 -x M -y M -t = "bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-context-menu-chooser.sh '#{pane_id}'" }
 
-# Mouse-wheel scroll into copy-mode even when the pane is in alt-screen
-# (plan-tree-anim / fleet-state-anim use \033[?1049h; the default tmux
-# WheelUpPane binding forwards wheel events to the app whenever
-# #{alternate_on} is set, which makes the viz panes unscrollable).
-# Drop the alternate_on check so the wheel always enters copy-mode unless
-# the app explicitly opts in via mouse_any_flag.
+# Mouse-wheel routing — narrowed gate (alt-screen only).
+#
+# Old behavior: wheel always entered copy-mode unless the pane held
+# mouse_any_flag. That made every plain shell pane (codex-bia-zazrifka
+# etc.) drop into copy-mode on a stray scroll, and one accidental `/`
+# from there parked tmux's "(search down)" prompt across the status bar.
+#
+# New gate (in dispatch order):
+#   1. pane already in copy-mode  → send-keys -M (scrolls inside copy-mode)
+#   2. pane holds mouse_any_flag  → send-keys -M (codex CLI / TUI handles it)
+#   3. pane is in alt-screen      → copy-mode -e (override: anim dashboards
+#                                    set \033[?1049h but don't grab mouse, so
+#                                    tmux's default would silently drop the
+#                                    wheel — entering copy-mode is the only
+#                                    way to scroll their rendered output)
+#   4. otherwise (plain shell)    → send-keys -M (no accidental copy-mode;
+#                                    use prefix+[ for shell backlog instead)
+#
+# Why alternate_on instead of a window-name allowlist: full-bringup.sh has
+# six viz windows (fleet, plan, waves, review, watcher, design) and two
+# dispatch paths (rust binaries OR bash scripts), and the user can spawn
+# more. Gating on the pane's actual alt-screen state covers them all and
+# stays correct when new dashboards are added.
 unbind-key -T root WheelUpPane
 unbind-key -T root WheelDownPane
-bind-key   -T root WheelUpPane   if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" "send-keys -M" "copy-mode -e"
-bind-key   -T root WheelDownPane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" "send-keys -M" "copy-mode -e"
+bind-key   -T root WheelUpPane   if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" \
+  "send-keys -M" \
+  "if-shell -F '#{alternate_on}' 'copy-mode -e' 'send-keys -M'"
+bind-key   -T root WheelDownPane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" \
+  "send-keys -M" \
+  "if-shell -F '#{alternate_on}' 'copy-mode -e' 'send-keys -M'"
 
 # Close ONLY the focused pane on `prefix + w` (operator's habit).
 #
