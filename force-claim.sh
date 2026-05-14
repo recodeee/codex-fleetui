@@ -25,9 +25,16 @@
 #   bash scripts/codex-fleet/force-claim.sh                 # one-shot
 #   bash scripts/codex-fleet/force-claim.sh --dry-run       # show plan, no dispatch
 #   bash scripts/codex-fleet/force-claim.sh --loop          # poll every 10s
+#   bash scripts/codex-fleet/force-claim.sh --loop --quit-when-empty
+#                                                            # exit 0 after 3 consecutive
+#                                                            # passes with no available/claimed
+#                                                            # work across any plan
+#   bash scripts/codex-fleet/force-claim.sh --loop --empty-threshold=5
+#                                                            # require 5 consecutive empties
 #   FORCE_CLAIM_SESSION=codex-fleet ...                      # tmux session override
 #   FORCE_CLAIM_WINDOW=1            ...                      # window with codex panes
 #   FORCE_CLAIM_PLAN_JSON=/path/plan.json                    # pin to single plan
+#   FORCE_CLAIM_EMPTY_THRESHOLD=3                            # env equivalent
 set -eo pipefail
 
 REPO="${FORCE_CLAIM_REPO:-/home/deadpool/Documents/recodee}"
@@ -36,11 +43,19 @@ WINDOW="${FORCE_CLAIM_WINDOW:-1}"
 LOOP=0
 DRY=0
 INTERVAL="${FORCE_CLAIM_INTERVAL:-10}"
+# --quit-when-empty: exit 0 after N consecutive passes where every plan is
+# fully complete (no `available` and no `claimed` tasks anywhere). N comes
+# from --empty-threshold or env FORCE_CLAIM_EMPTY_THRESHOLD (default 3) so
+# a brief race where a new plan is being published doesn't kill the daemon.
+QUIT_EMPTY=0
+EMPTY_THRESHOLD="${FORCE_CLAIM_EMPTY_THRESHOLD:-3}"
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
     --loop)    LOOP=1 ;;
     --interval=*) INTERVAL="${a#--interval=}" ;;
+    --quit-when-empty) QUIT_EMPTY=1 ;;
+    --empty-threshold=*) EMPTY_THRESHOLD="${a#--empty-threshold=}" ;;
   esac
 done
 
@@ -87,6 +102,30 @@ for p in plans:
             continue
         title = (t.get("title") or "").replace("\t", " ")
         print(f"{slug}\t{t.get('subtask_index')}\t{title}")
+PYEOF
+}
+
+# Aggregate (available, claimed, completed, blocked) counts across every plan.
+# Prints one line: "<available>\t<claimed>\t<completed>\t<blocked>". Used by
+# the --quit-when-empty loop to decide when the fleet has truly run dry.
+plans_status_summary() {
+  python3 - "$REPO" "${FORCE_CLAIM_PLAN_JSON:-}" <<'PYEOF'
+import os, sys, glob, json
+repo, pin = sys.argv[1], sys.argv[2]
+plans = [pin] if (pin and os.path.isfile(pin)) else glob.glob(f"{repo}/openspec/plans/*/plan.json")
+avail = claimed = completed = blocked = 0
+for p in plans:
+    try:
+        data = json.load(open(p))
+    except Exception:
+        continue
+    for t in (data.get("tasks") or []):
+        st = (t.get("status") or "available")
+        if   st == "available": avail     += 1
+        elif st == "claimed":   claimed   += 1
+        elif st == "completed": completed += 1
+        elif st == "blocked":   blocked   += 1
+print(f"{avail}\t{claimed}\t{completed}\t{blocked}")
 PYEOF
 }
 
@@ -154,8 +193,26 @@ one_pass() {
 
 if (( LOOP == 1 )); then
   trap 'echo force-claim: stopping >&2; exit 0' INT TERM
+  empty_streak=0
   while true; do
     one_pass
+    if (( QUIT_EMPTY == 1 )); then
+      # Plans-rolled-up status. Quit only when no available AND no claimed
+      # work remains across every plan — completed-only or blocked-only is
+      # a stable end state.
+      IFS=$'\t' read -r avail claimed completed blocked < <(plans_status_summary)
+      if (( avail == 0 && claimed == 0 )); then
+        empty_streak=$(( empty_streak + 1 ))
+        printf '[%s] empty-streak=%d/%d  completed=%d blocked=%d\n' \
+          "$(date +%T)" "$empty_streak" "$EMPTY_THRESHOLD" "$completed" "$blocked"
+        if (( empty_streak >= EMPTY_THRESHOLD )); then
+          printf '[%s] all plans drained — exiting cleanly\n' "$(date +%T)"
+          exit 0
+        fi
+      else
+        empty_streak=0
+      fi
+    fi
     sleep "$INTERVAL"
   done
 else
