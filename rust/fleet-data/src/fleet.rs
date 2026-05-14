@@ -17,6 +17,7 @@
 
 use crate::accounts::Account;
 use crate::panes::{PaneInfo, PaneState};
+use crate::scores::ScoresFile;
 use serde::{Deserialize, Serialize};
 
 /// One row of the Fleet table — an account, the pane it's running in, and
@@ -52,6 +53,13 @@ pub struct WorkerRow {
     /// `true` when this account is the one `codex-auth` marks current (`*`).
     /// The artboard stars it; also useful for sort stability.
     pub is_current: bool,
+    /// Advisory quality score for this agent's most recently merged PR,
+    /// 0–100, where 100 means every plan acceptance criterion is met.
+    /// `None` when the scorer has never run for this agent or the most
+    /// recent PR had no associated plan (the scorer emits `null` in that
+    /// case). Drives the third rail in the Fleet table — see
+    /// [`crate::scores`] for the writer side.
+    pub quality: Option<u8>,
 }
 
 impl WorkerRow {
@@ -219,7 +227,8 @@ fn scrape_activity(tail: &str) -> PaneActivity {
     }
 }
 
-/// Pure join: stitch `accounts` + `panes` into the Fleet table's rows.
+/// Pure join: stitch `accounts` + `panes` + quality `scores` into the
+/// Fleet table's rows.
 ///
 /// `accounts` is the authoritative row set — one [`WorkerRow`] per account,
 /// in the order `codex-auth list` returned them. Each account is matched to a
@@ -228,10 +237,19 @@ fn scrape_activity(tail: &str) -> PaneActivity {
 /// `working_on` stay empty. A pane with no matching account is dropped (it's
 /// not a fleet worker we track).
 ///
+/// `scores` is the per-agent quality file (see [`crate::scores`]). The
+/// matching agent-id's most-recent score is folded into
+/// [`WorkerRow::quality`]; missing or never-scored agents get `None`, and
+/// the renderer hides the rail for them.
+///
 /// `panels` carries each pane's `@panel` value alongside its [`PaneInfo`],
 /// since `PaneInfo::panel_label` is whatever `tmux list-panes -F #{@panel}`
 /// returned — exactly the string [`agent_id_from_panel`] expects.
-pub fn join(accounts: &[Account], panes: &[PaneInfo]) -> Vec<WorkerRow> {
+pub fn join(
+    accounts: &[Account],
+    panes: &[PaneInfo],
+    scores: &ScoresFile,
+) -> Vec<WorkerRow> {
     accounts
         .iter()
         .map(|acct| {
@@ -265,6 +283,8 @@ pub fn join(accounts: &[Account], panes: &[PaneInfo]) -> Vec<WorkerRow> {
                 None => (None, String::new(), String::new(), None, None),
             };
 
+            let quality = scores.for_agent(&agent_id).and_then(|s| s.score);
+
             WorkerRow {
                 email: acct.email.clone(),
                 agent_id,
@@ -276,6 +296,7 @@ pub fn join(accounts: &[Account], panes: &[PaneInfo]) -> Vec<WorkerRow> {
                 pane_subtext,
                 pane_id,
                 is_current: acct.is_current,
+                quality,
             }
         })
         .collect()
@@ -290,7 +311,8 @@ pub fn join(accounts: &[Account], panes: &[PaneInfo]) -> Vec<WorkerRow> {
 pub fn load_live(session: &str, window: Option<&str>) -> std::io::Result<Vec<WorkerRow>> {
     let accounts = crate::accounts::load_live_cached()?;
     let panes = crate::panes::list_panes(session, window)?;
-    Ok(join(&accounts, &panes))
+    let scores = crate::scores::load_live_cached().unwrap_or_default();
+    Ok(join(&accounts, &panes, &scores))
 }
 
 #[cfg(test)]
@@ -353,7 +375,7 @@ mod tests {
             "scaffold rust/fleet-ui\n● Working (10m 28s · esc to interrupt)",
         )];
 
-        let rows = join(&accounts, &panes);
+        let rows = join(&accounts, &panes, &ScoresFile::default());
         assert_eq!(rows.len(), 2, "one row per account, reserve included");
 
         let kollar = &rows[0];
@@ -401,7 +423,7 @@ mod tests {
             ),
             // c@x.com → reserve, no pane.
         ];
-        let rows = join(&accounts, &panes);
+        let rows = join(&accounts, &panes, &ScoresFile::default());
         let s = FleetSummary::of(&rows);
         assert_eq!(s.workers, 3);
         assert_eq!(s.live, 2, "two panes, both non-dead");
@@ -412,8 +434,55 @@ mod tests {
     fn dead_pane_is_not_live() {
         let accounts = vec![acct("a@x.com", 0, 0, false)];
         let panes = vec![pane("[codex-a-x]", "%1", "bash", "$ ls\n")];
-        let rows = join(&accounts, &panes);
+        let rows = join(&accounts, &panes, &ScoresFile::default());
         assert_eq!(rows[0].state, Some(PaneState::Dead));
         assert!(!rows[0].is_live());
+    }
+
+    #[test]
+    fn quality_is_looked_up_by_agent_id() {
+        let accounts = vec![
+            acct("admin@magnoliavilag.hu", 0, 0, false), // → admin-magnolia
+            acct("admin@mite.hu", 0, 0, false),          // → admin-mite (no score)
+        ];
+        let panes: Vec<PaneInfo> = vec![];
+        let scores = crate::scores::parse(
+            r#"{
+              "generated_at": "2026-05-14T22:05:00Z",
+              "scores": {
+                "admin-magnolia": {
+                  "score": 92, "agent_id": "admin-magnolia", "pr_number": 1,
+                  "pr_title": "x", "branch": "y", "plan_slug": null,
+                  "criteria_met": [], "criteria_missed": [], "reasoning": "",
+                  "scored_at": "2026-05-14T22:00:00Z"
+                }
+              }
+            }"#,
+        );
+        let rows = join(&accounts, &panes, &scores);
+        assert_eq!(rows[0].quality, Some(92), "magnolia gets its score");
+        assert_eq!(rows[1].quality, None, "mite has no score yet → None");
+    }
+
+    #[test]
+    fn quality_null_is_none() {
+        // A scored agent with `score: null` (PR had no plan) still maps to None
+        // — the renderer treats no-score and null-score the same: hide the rail.
+        let accounts = vec![acct("admin@mite.hu", 0, 0, false)];
+        let scores = crate::scores::parse(
+            r#"{
+              "scores": {
+                "admin-mite": {
+                  "score": null, "agent_id": "admin-mite", "pr_number": 1,
+                  "pr_title": "x", "branch": "y", "plan_slug": null,
+                  "criteria_met": [], "criteria_missed": [],
+                  "reasoning": "no plan",
+                  "scored_at": "2026-05-14T22:00:00Z"
+                }
+              }
+            }"#,
+        );
+        let rows = join(&accounts, &[], &scores);
+        assert_eq!(rows[0].quality, None);
     }
 }
