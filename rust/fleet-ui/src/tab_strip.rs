@@ -71,11 +71,14 @@ impl Tab {
     /// renders without Nerd Fonts; falls back to ASCII visually if the
     /// terminal lacks the glyph.
     pub fn icon(self) -> &'static str {
+        // Glyphs chosen to read at terminal size and match the iOS design
+        // mockup (image #10): a grid for the worker board, linked nodes for
+        // fleet, a clipboard for plan, a heavier triple-wave, and a check.
         match self {
-            Tab::Overview => "⊙", // overview: ringed dot
-            Tab::Fleet => "◇",    // fleet: diamond
-            Tab::Plan => "≡",     // plan: stacked lines
-            Tab::Waves => "≈",    // waves: wave
+            Tab::Overview => "⊞", // overview: squared plus → worker grid
+            Tab::Fleet => "⌬",    // fleet: linked-nodes / benzene ring
+            Tab::Plan => "▤",     // plan: clipboard / lined sheet
+            Tab::Waves => "≋",    // waves: triple wave (heavier than ≈)
             Tab::Review => "✓",   // review: check
         }
     }
@@ -257,8 +260,10 @@ impl TabStrip {
             })
             .collect();
 
-        // Gap of 1 cell between pills. Total natural width = sum(widths) + (n-1).
+        // Gap of 1 cell between pills, plus 2 cells of caps (◖ + ◗) per
+        // pill. Total natural width = sum(label widths) + 2*n caps + (n-1) gaps.
         let natural_total: u16 = pills.iter().map(|(_, _, w, _)| *w).sum::<u16>()
+            + (pills.len() as u16) * 2
             + (pills.len().saturating_sub(1) as u16);
 
         // Centre the bar within available space; if natural exceeds it, clip
@@ -272,18 +277,43 @@ impl TabStrip {
         let mut hits = Vec::with_capacity(pills.len());
         let mut x = start_x;
         for (tab, label, w, active) in pills {
-            if x + w > tabs_right + 1 {
+            // Each pill now renders as three spans: ◖ <label> ◗. Caps reuse
+            // the iOS-half-circle glyphs already used by the fleet status
+            // chips, so the pill reads as a continuous rounded shape instead
+            // of a hard-edged rectangle. Each cap occupies one cell, so the
+            // total visible width is `w + 2`.
+            const CAP_LEFT: &str = "◖";
+            const CAP_RIGHT: &str = "◗";
+            let pill_w = w + 2;
+            if x + pill_w > tabs_right + 1 {
                 break;
             }
-            let pill_rect = Rect { x, y: row.y, width: w, height: 1 };
-            let style = if active {
-                Style::default().fg(IOS_FG).bg(IOS_TINT).add_modifier(Modifier::BOLD)
+            let pill_rect = Rect { x, y: row.y, width: pill_w, height: 1 };
+            let (fill, fg) = if active {
+                (IOS_TINT, IOS_FG)
             } else {
-                Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS)
+                (IOS_BG_GLASS, IOS_FG_MUTED)
             };
-            frame.render_widget(Paragraph::new(Span::styled(label, style)), pill_rect);
+            // Caps punch the fill colour out of the dock background. Label
+            // span gets the fill as its bg so the inner content lies on a
+            // continuous coloured pill. Active pills are bold; inactive
+            // stay regular weight for hierarchy.
+            let cap_style = Style::default().fg(fill).bg(IOS_BG_SOLID);
+            let mut label_style = Style::default().fg(fg).bg(fill);
+            if active {
+                label_style = label_style.add_modifier(Modifier::BOLD);
+            }
+            let spans = vec![
+                Span::styled(CAP_LEFT, cap_style),
+                Span::styled(label, label_style),
+                Span::styled(CAP_RIGHT, cap_style),
+            ];
+            frame.render_widget(
+                Paragraph::new(ratatui::text::Line::from(spans)),
+                pill_rect,
+            );
             hits.push(TabHit { rect: pill_rect, tab, window_idx: tab.window_idx() });
-            x += w + 1; // 1-cell gap; click in the gap does not match any pill
+            x += pill_w + 1; // 1-cell gap between pills
         }
         hits
     }
