@@ -10,16 +10,20 @@
 # session.
 #
 # Usage:
-#   bash scripts/codex-fleet/style-tabs.sh                     # default height=3
-#   STYLE_TABS_HEIGHT=1 bash scripts/codex-fleet/style-tabs.sh # compact single row
-#   STYLE_TABS_HEIGHT=5 bash scripts/codex-fleet/style-tabs.sh # very tall (5 rows)
+#   bash scripts/codex-fleet/style-tabs.sh                     # default: single-row, clicks WORK
+#   STYLE_TABS_HEIGHT=3 bash scripts/codex-fleet/style-tabs.sh # taller padding, clicks BROKEN
+#   STYLE_TABS_HEIGHT=5 bash scripts/codex-fleet/style-tabs.sh # very tall (5 rows), clicks BROKEN
 #
-# Visual model (HEIGHT=3, default):
+# Visual model (HEIGHT=1, default — tabs on a single row, mouse-clickable):
 #   ┌──────────────────────────────────────────────────────────────────────┐
-#   │                                                                      │  row 0  (true-black padding)
-#   │                                                                      │  row 1  (true-black padding)
-#   │  ◖ ◆ codex-fleet ◗  ◖ 0  overview ◗  ◖ 2  plan ◗  …  ◖ ● live ◗      │  row 2  (tabs)
+#   │  ◖ ◆ codex-fleet ◗  ◖ 0  overview ◗  ◖ 2  plan ◗  …  ◖ ● live ◗      │  row 0  (tabs)
 #   └──────────────────────────────────────────────────────────────────────┘
+#
+# Multi-row was the previous default (PR f92229c81) but tmux 3.6 silently
+# refuses to fire MouseDown1Status on custom status-format[N] rows, so tab
+# clicks never reached `select-window -t =` and the operator had no way to
+# switch tabs by mouse. Single-row uses tmux's built-in template, which is the
+# only code path where the rendered range=window|N markers actually route.
 #
 # How taller-than-default works without blanking the strip:
 #   tmux's `status N` for N>1 makes status-format an array. Each row index
@@ -38,8 +42,14 @@
 set -eo pipefail
 
 SESSION="${CODEX_FLEET_SESSION:-codex-fleet}"
-HEIGHT="${STYLE_TABS_HEIGHT:-3}"
-case "$HEIGHT" in 1|2|3|4|5) ;; *) HEIGHT=3 ;; esac
+# Default to single-row status. tmux 3.6 does NOT fire MouseDown1Status when
+# the click lands on a custom status-format[N] row (verified by binding the
+# event to display-message and seeing zero pop-ups on tab clicks). With
+# HEIGHT=1 we let tmux render the default built-in template, which is the only
+# code path where range=window|N markers actually route clicks to
+# `select-window -t =`. Multi-row stays opt-in for users who don't need clicks.
+HEIGHT="${STYLE_TABS_HEIGHT:-1}"
+case "$HEIGHT" in 1|2|3|4|5) ;; *) HEIGHT=1 ;; esac
 
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "[style-tabs] no tmux session '$SESSION' — run up.sh first" >&2
@@ -177,17 +187,33 @@ PADDING_ROW="#[fg=#000000,bg=#000000]$(printf '%*s' 400 '')"
 # `status N`, clamping back to 1 row and silently hiding the tab strip on
 # row N-1 (the dark padding row then appears as a thin bar with no tabs).
 tmux set-option -t "$SESSION" -u status >/dev/null 2>&1 || true
-# Set status height as a number (NOT via `-t SESSION` — that misparses the int).
-tmux set-option -g status "$HEIGHT" >/dev/null
+# Set status height. tmux 3.6 rejects `set -g status 1` with "unknown value: 1"
+# because the boolean alias `on` already covers the 1-row case — pass `on` for
+# HEIGHT=1 and the numeric only for 2-5. NOT via `-t SESSION` — that misparses
+# the int.
+if [[ "$HEIGHT" == "1" ]]; then
+  tmux set-option -g status on >/dev/null
+else
+  tmux set-option -g status "$HEIGHT" >/dev/null
+fi
 
-# Last row index = HEIGHT - 1. That's where we put the actual tab strip.
-last_idx=$(( HEIGHT - 1 ))
-tx_set "status-format[$last_idx]" "$DEFAULT_TABS_FORMAT"
-
-# Fill rows 0..last_idx-1 with dark padding.
-for ((i=0; i<last_idx; i++)); do
-  tx_set "status-format[$i]" "$PADDING_ROW"
-done
+if (( HEIGHT == 1 )); then
+  # Single-row mode: leave status-format[N] unset so tmux uses its built-in
+  # default template. That template is the only code path where MouseDown1Status
+  # fires for tab clicks in tmux 3.6 — a custom status-format[0] silently breaks
+  # the mouse routing even when the rendered range=window|N markers are present.
+  for idx in 0 1 2 3 4; do tx_unset "status-format[$idx]"; done
+else
+  # Multi-row mode (opt-in via STYLE_TABS_HEIGHT>=2): tabs on the LAST row,
+  # uniform dark padding above. Tab clicks DO NOT WORK in this mode (tmux 3.6
+  # MouseDown1Status quirk on custom multi-row status-format) — keyboard nav
+  # only (prefix+0..5).
+  last_idx=$(( HEIGHT - 1 ))
+  tx_set "status-format[$last_idx]" "$DEFAULT_TABS_FORMAT"
+  for ((i=0; i<last_idx; i++)); do
+    tx_set "status-format[$i]" "$PADDING_ROW"
+  done
+fi
 
 # ── iOS-style menu styling ───────────────────────────────────────────────────
 # Sheet-style card on tertiarySystemBackground, rounded border, iOS-blue
@@ -264,4 +290,8 @@ tmux source-file "$sticky_menu_conf" >/dev/null 2>&1 || echo "[style-tabs] WARN:
 # Immediate redraw.
 tmux refresh-client -S >/dev/null 2>&1 || true
 
-echo "[style-tabs] applied iOS-palette tabs (height=$HEIGHT, tabs on row $last_idx, sticky right-click menu) to session=$SESSION"
+if (( HEIGHT == 1 )); then
+  echo "[style-tabs] applied iOS-palette tabs (height=1, tmux-default template, mouse clicks WORK) to session=$SESSION"
+else
+  echo "[style-tabs] applied iOS-palette tabs (height=$HEIGHT, tabs on row $((HEIGHT-1)), mouse clicks BROKEN — tmux 3.6 multi-row quirk) to session=$SESSION"
+fi
