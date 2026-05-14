@@ -1,0 +1,16 @@
+[package]
+name = "fleet-watcher"
+version = "0.0.1"
+edition = "2021"
+description = "ratatui port of watcher-board.sh — fleet health verdict + per-pane state."
+publish = false
+
+[[bin]]
+name = "fleet-watcher"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+fleet-ui = { path = "../fleet-ui" }
+fleet-data = { path = "../fleet-data" }

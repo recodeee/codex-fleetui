@@ -248,7 +248,17 @@ open_window() {
     warn "dashboard script missing: $script — skipping '$name' window"
     return 0
   fi
-  tmux new-window -d -t "$SESSION:" -n "$name" "bash $script" || {
+  # Auto-detect launch shape: .sh → run via bash; anything executable that
+  # isn't a .sh (the Rust bins from `cargo build --release`) → exec directly.
+  local cmd
+  if [[ "$script" == *.sh ]]; then
+    cmd="bash $script"
+  elif [ -x "$script" ]; then
+    cmd="$script"
+  else
+    cmd="bash $script"
+  fi
+  tmux new-window -d -t "$SESSION:" -n "$name" "$cmd" || {
     warn "tmux new-window failed for '$name'"
     return 0
   }
@@ -258,14 +268,43 @@ open_window() {
   fi
 }
 
+# Renderer selection: prefer the Rust bins under rust/fleet-*/target/release/
+# unless FLEET_DASHBOARD_RENDERER=bash. Each Rust bin is a drop-in replacement
+# for its corresponding *-anim.sh — same window name, same tmux placement,
+# same pane geometry. The bins draw their own in-binary tab strip and shell
+# out `tmux select-window` on click, which is the canonical fix for the
+# kitty+tmux click-routing class of bugs (cf. PR #1927 / #1931 / #6).
+FLEET_DASHBOARD_RENDERER="${FLEET_DASHBOARD_RENDERER:-rust}"
+rust_bin_dir="$REPO/rust/target/release"
+use_rust=0
+if [ "$FLEET_DASHBOARD_RENDERER" = "rust" ] \
+   && [ -x "$rust_bin_dir/fleet-watcher" ] \
+   && [ -x "$rust_bin_dir/fleet-state" ]   \
+   && [ -x "$rust_bin_dir/fleet-plan-tree" ] \
+   && [ -x "$rust_bin_dir/fleet-waves" ]; then
+  use_rust=1
+  log "FLEET_DASHBOARD_RENDERER=rust (bins under $rust_bin_dir)"
+elif [ "$FLEET_DASHBOARD_RENDERER" = "rust" ]; then
+  warn "FLEET_DASHBOARD_RENDERER=rust but bins not built; falling back to bash. Build with:"
+  warn "  (cd $REPO/rust && cargo build --release)"
+fi
+
 waves_script="$SCRIPT_DIR/waves-anim-generic.sh"
 [ -f "$waves_script" ] || waves_script="$SCRIPT_DIR/waves-anim.sh"
 
-open_window fleet   "$SCRIPT_DIR/fleet-state-anim.sh" ""
-open_window plan    "$SCRIPT_DIR/plan-tree-anim.sh"   remain
-open_window waves   "$waves_script"                   remain
-open_window review  "$SCRIPT_DIR/review-board.sh"     ""
-open_window watcher "$SCRIPT_DIR/watcher-board.sh"    ""
+if [ "$use_rust" = "1" ]; then
+  open_window fleet   "$rust_bin_dir/fleet-state"      ""
+  open_window plan    "$rust_bin_dir/fleet-plan-tree"  remain
+  open_window waves   "$rust_bin_dir/fleet-waves"      remain
+  open_window review  "$SCRIPT_DIR/review-board.sh"    ""
+  open_window watcher "$rust_bin_dir/fleet-watcher"    ""
+else
+  open_window fleet   "$SCRIPT_DIR/fleet-state-anim.sh" ""
+  open_window plan    "$SCRIPT_DIR/plan-tree-anim.sh"   remain
+  open_window waves   "$waves_script"                   remain
+  open_window review  "$SCRIPT_DIR/review-board.sh"     ""
+  open_window watcher "$SCRIPT_DIR/watcher-board.sh"    ""
+fi
 
 # 11b. Apply canonical iOS-style chrome (3-row tab strip at top, rounded pane
 # borders with `▭ #{@panel}` headers, sticky right-click menu). Runs after
