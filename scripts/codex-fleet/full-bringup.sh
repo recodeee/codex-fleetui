@@ -632,7 +632,11 @@ review_script="$SCRIPT_DIR/review-anim.sh"
 
 if [ "$use_rust" = "1" ]; then
   open_window fleet   "$rust_bin_dir/fleet-state"      ""
-  open_window plan    "$rust_bin_dir/fleet-plan-tree"  remain
+  # Wrap fleet-plan-tree in env(1) so it resolves the plan from THIS repo
+  # (codex-fleet), not the legacy recodee default it was hardcoded to fall
+  # back to. The binary still honours /tmp/claude-viz/plan-tree-pin.txt if
+  # the operator pins a specific plan via plan-tree-pin.sh.
+  open_window plan    "env CODEX_FLEET_PLAN_REPO_ROOT=$REPO $rust_bin_dir/fleet-plan-tree"  remain
   open_window waves   "$rust_bin_dir/fleet-waves"      remain
   open_window review  "$review_script"                 remain
   open_window watcher "$rust_bin_dir/fleet-watcher"    ""
