@@ -550,8 +550,22 @@ while IFS='|' read -r id email tier specialty; do
   # CODEX_FLEET_TIER + CODEX_FLEET_SPECIALTY are read by worker-prompt.md's
   # "Tier + specialty gate" — pane post-skips tasks beyond its tier or
   # outside its specialty prefixes.
-  tmux respawn-pane -k -t "$pid" \
-    "env CODEX_GUARD_BYPASS=1 CODEX_HOME=/tmp/codex-fleet/$id CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email CODEX_FLEET_TIER=${tier:-high} CODEX_FLEET_SPECIALTY=\"$specialty\" codex --dangerously-bypass-approvals-and-sandbox $ADD_DIR_FLAGS \"\$(cat $WAKE)\""
+  # Runtime selection (CODEX_FLEET_RUNTIME, default codex). spawn-fleet.sh
+  # exposes this via `--runtime claude` for the fallback case where the
+  # codex account pool is exhausted (every account capped). The claude
+  # branch uses claude's --print + --permission-mode bypassPermissions so
+  # it operates non-interactively with the same wake-prompt the codex
+  # workers consume — the worker-prompt template is runtime-agnostic.
+  case "${CODEX_FLEET_RUNTIME:-codex}" in
+    claude)
+      tmux respawn-pane -k -t "$pid" \
+        "env CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email CODEX_FLEET_TIER=${tier:-high} CODEX_FLEET_SPECIALTY=\"$specialty\" claude --print --permission-mode bypassPermissions \"\$(cat $WAKE)\""
+      ;;
+    *)
+      tmux respawn-pane -k -t "$pid" \
+        "env CODEX_GUARD_BYPASS=1 CODEX_HOME=/tmp/codex-fleet/$id CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email CODEX_FLEET_TIER=${tier:-high} CODEX_FLEET_SPECIALTY=\"$specialty\" codex --dangerously-bypass-approvals-and-sandbox $ADD_DIR_FLAGS \"\$(cat $WAKE)\""
+      ;;
+  esac
   i=$((i + 1))
 done <<< "$ACCOUNTS"
 
@@ -748,6 +762,15 @@ ticker_window force-claim "FORCE_CLAIM_WINDOW=overview FORCE_CLAIM_REPO=$REPO CO
 # supervisor.sh (kitty-spawning quota replacement, opt-in via
 # CODEX_FLEET_SUPERVISOR=1) — this watcher only mutates Colony state.
 ticker_window claim-release "CR_SUP_SESSION=$SESSION CR_SUP_WINDOW=overview bash $SCRIPT_DIR/claim-release-supervisor.sh --loop --interval=60"
+
+# plan-watcher: every 30s, scans `colony plan status` for plans with
+# available sub-tasks and tmux-send-keys an OVERRIDE prompt to any idle
+# worker pane (detected by recent "no claimable work" / "polls returned"
+# stdout). Closes the gap between `colony plan publish` and workers
+# actually picking up the new plan — without this, a freshly-published
+# plan would sit untouched until an operator manually triggers each pane.
+# Cooldown prevents re-prompting the same worker on the same plan.
+ticker_window plan-watcher "CODEX_FLEET_SESSION=$SESSION CODEX_FLEET_REPO_ROOT=$REPO bash $SCRIPT_DIR/plan-watcher.sh --loop --interval=30"
 
 # stall-watcher: every 60s, `colony rescue stranded --apply` releases claims
 # held > 30m without progress, then enqueues a takeover_recommended event
