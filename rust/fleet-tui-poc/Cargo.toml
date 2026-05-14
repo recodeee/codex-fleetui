@@ -1,0 +1,10 @@
+[package]
+name = "fleet-tui-poc"
+version = "0.0.1"
+edition = "2021"
+description = "Throwaway POC: validates ratatui + truecolor + tmux mouse pass-through. Delete once the fleet-ui crate exists."
+publish = false
+
+[dependencies]
+ratatui = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
