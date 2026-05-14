@@ -532,15 +532,21 @@ while true; do
         "$label" "$h5" "$h5_bar" "$wk" "$wk_bar" "$live" "$working"
   }
 
+  # Single-line "empty lane" pill — replaces the 4-row empty card stub for
+  # sections (typically ACTIVE between waves) that have zero workers. Keeps
+  # the canonical rounded-card design intact for non-empty sections.
+  ios_lane_empty_pill() {
+    local title="$1"
+    local note="${2:-no workers}"
+    printf '%b%b ◖ %s ◗ %b  %b%s%b\n' "$B" "$IOS_BG_GRAY" "$title" "$R" "$DIM" "$note" "$R"
+  }
+
   render_fleet_section() {
     local title="$1"
     local mode="$2"
     local rendered=0
     local email aid row st pair wk_pct wk_av pidx
     local -a EMAILS_VIEW=()
-    ios_card_top "$title"
-    ios_card_row "${B}${TEAL}ACCOUNT       5h-USED WK-USED   WORKER       WORKING ON${R}"
-    ios_card_row "${IOS_GRAY6}────────────────────────────────────────────────────────────${R}"
 
     # ACTIVE keeps the on-screen order codex panes occupy (left-to-right by
     # pane index). RESERVE sorts by usable weekly DESC so the freshest
@@ -571,15 +577,29 @@ while true; do
       EMAILS_VIEW=("${FLEET_EMAILS[@]}")
     fi
 
+    # Open the card lazily so an empty lane drops to a thin pill instead
+    # of a 4-row empty box. Non-empty lanes still get the full canonical
+    # rounded-card treatment.
+    local card_open=0
+    open_card() {
+      ios_card_top "$title"
+      ios_card_row "${B}${TEAL}ACCOUNT       5h-USED WK-USED   WORKER       WORKING ON${R}"
+      ios_card_row "${IOS_GRAY6}────────────────────────────────────────────────────────────${R}"
+      card_open=1
+    }
+
     for email in "${EMAILS_VIEW[@]}"; do
+      (( card_open == 0 )) && open_card
       row=$(fleet_state_row "$email")
       ios_card_row "$row"
       rendered=$((rendered+1))
     done
+
     if (( rendered == 0 )); then
-      ios_card_row "${DIM}no workers in this lane${R}"
+      ios_lane_empty_pill "$title" "no workers in this lane"
+    else
+      ios_card_bottom
     fi
-    ios_card_bottom
   }
 
   {

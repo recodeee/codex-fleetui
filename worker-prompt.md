@@ -55,6 +55,11 @@ Repeat indefinitely:
    - Call `mcp__colony__task_claim_file` for each file you will edit
      (subset of `touches_files`, plus any test file you're adding
      adjacent to a claimed source).
+   - Call `mcp__colony__task_note_working` with `{ agent: $CODEX_FLEET_AGENT_NAME, plan_slug, sub_idx }`
+     immediately after the claim. This is what flips your row in
+     the cockpit's "WORKING ON" column from `idle` to the live
+     `→ sub-N <title>`; without it the tick daemon falls back to
+     scraping your pane content, which lags and looks dead.
    - Do the work. Match `touches_files` exactly.
    - Verify with the narrowest meaningful command (cargo check, pytest -k,
      tsc --noEmit) — see the project's verification gates in AGENTS.md.
