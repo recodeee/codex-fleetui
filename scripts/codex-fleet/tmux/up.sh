@@ -66,13 +66,28 @@ tmux -L "$SOCKET" set-option -g history-limit 50000
 tmux -L "$SOCKET" set-option -g pane-border-style 'fg=#3c3c41'
 tmux -L "$SOCKET" set-option -g pane-active-border-style 'fg=#0a84ff'
 
+# 4. Inject CODEX_FLEET_REPO_ROOT into the tmux server's global env so
+#    bindings sourced below (the iOS action sheet, section jumper, help
+#    popup) can find their helper scripts. The bindings use single-quoted
+#    display-popup commands that expand `${CODEX_FLEET_REPO_ROOT}` via
+#    the shell at fire time, and the shell inside display-popup reads
+#    from tmux's server env.
+tmux -L "$SOCKET" set-environment -g CODEX_FLEET_REPO_ROOT "$REPO_ROOT"
+
+# 5. Source the iOS-style bindings AFTER the server is up. Done here
+#    (rather than from codex-fleet-overlay.conf) because oh-my-tmux's
+#    `_apply_bindings` runs late and would otherwise re-stamp prefix-m /
+#    prefix-Tab / prefix-C-h back to its defaults. Imperative source-file
+#    after the initial init is unconditional — these bindings win.
+tmux -L "$SOCKET" source-file "$REPO_ROOT/scripts/codex-fleet/tmux-bindings.conf"
+
 log ""
 log "session ready. Useful next commands:"
 log "  ./scripts/codex-fleet/tmux/attach.sh        # attach to the fleet session"
-log "  CODEX_FLEET_TMUX_SOCKET=$SOCKET ./scripts/codex-fleet/full-bringup.sh"
-log "                                              # if/when the migration to the"
-log "                                              # tmux wrapper is wired into the"
-log "                                              # fleet bring-up (follow-up PR)"
+log "  ./scripts/codex-fleet/full-bringup.sh       # default fleet bring-up — now"
+log "                                              # routes through the dedicated"
+log "                                              # socket (set CODEX_FLEET_TMUX_SOCKET=''"
+log "                                              # to opt out)"
 log "  ./scripts/codex-fleet/tmux/down.sh          # kill the fleet tmux server"
 
 if [[ "${1:-}" == "--attach" ]]; then

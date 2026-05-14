@@ -21,6 +21,54 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # same script run from any path (e.g. ~/codex-fleet/) and lets operators
 # point CODEX_FLEET_REPO_ROOT at a separate project root for plan lookup.
 REPO="${REPO:-${CODEX_FLEET_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
+
+# ----------------------------------------------------------------------------
+# Route the fleet onto its dedicated tmux socket.
+# ----------------------------------------------------------------------------
+# Default: fleet runs on socket `codex-fleet` with the vendored oh-my-tmux
+# config from scripts/codex-fleet/tmux/vendor/. Operator's normal tmux server
+# (default socket) is unaffected. Opt out with CODEX_FLEET_TMUX_SOCKET="".
+#
+# The lib/_tmux.sh wrapper defines a `tmux()` bash function that transparently
+# rewrites every `tmux ...` call in this script (and any child bash scripts
+# that source the wrapper too) to `tmux -L "$CODEX_FLEET_TMUX_SOCKET" ...`.
+# When CODEX_FLEET_TMUX_SOCKET is empty/unset, the wrapper is a transparent
+# pass-through — behavior identical to pre-#38 fleet bring-up.
+export CODEX_FLEET_TMUX_SOCKET="${CODEX_FLEET_TMUX_SOCKET-codex-fleet}"
+export CODEX_FLEET_REPO_ROOT="$REPO"  # bindings need this in tmux server env
+source "$SCRIPT_DIR/lib/_tmux.sh"
+
+if [[ -n "$CODEX_FLEET_TMUX_SOCKET" ]]; then
+  # Ensure vendored oh-my-tmux is present; start the dedicated server with
+  # its config so the daemon loads oh-my-tmux's defaults + our overlay.
+  # start-server is a no-op when the server is already running. We use
+  # `command tmux` here to bypass the wrapper because the wrapper would also
+  # append `-L`, which is already present in our invocation — everywhere ELSE
+  # in this script the wrapper does the right thing, but here we need a
+  # deterministic bootstrap.
+  "$SCRIPT_DIR/tmux/setup.sh" > /dev/null
+  command tmux -L "$CODEX_FLEET_TMUX_SOCKET" \
+    -f "$SCRIPT_DIR/tmux/vendor/oh-my-tmux/.tmux.conf" \
+    start-server 2>/dev/null || true
+  # Push the repo root into the tmux server's global env so the
+  # iOS-style bindings (prefix-m action sheet, prefix-Tab jumper,
+  # prefix-C-h help) sourced by codex-fleet-overlay.conf can resolve
+  # `${CODEX_FLEET_REPO_ROOT}` at fire time.
+  command tmux -L "$CODEX_FLEET_TMUX_SOCKET" \
+    set-environment -g CODEX_FLEET_REPO_ROOT "$REPO" 2>/dev/null || true
+  # Apply codex-fleet option overrides (mouse on, history-limit, iOS borders).
+  # See scripts/codex-fleet/tmux/up.sh for why these are imperative
+  # rather than declarative in .tmux.conf.local.
+  command tmux -L "$CODEX_FLEET_TMUX_SOCKET" set-option -g mouse on 2>/dev/null || true
+  command tmux -L "$CODEX_FLEET_TMUX_SOCKET" set-option -g history-limit 50000 2>/dev/null || true
+  command tmux -L "$CODEX_FLEET_TMUX_SOCKET" set-option -g pane-border-style 'fg=#3c3c41' 2>/dev/null || true
+  command tmux -L "$CODEX_FLEET_TMUX_SOCKET" set-option -g pane-active-border-style 'fg=#0a84ff' 2>/dev/null || true
+  # Source the iOS-style bindings AFTER server init. Done imperatively
+  # because oh-my-tmux's `_apply_bindings` runs late and would otherwise
+  # re-stamp prefix-m / prefix-Tab / prefix-C-h back to its defaults.
+  command tmux -L "$CODEX_FLEET_TMUX_SOCKET" \
+    source-file "$SCRIPT_DIR/tmux-bindings.conf" 2>/dev/null || true
+fi
 WAKE="${WAKE:-/tmp/codex-fleet-wake-prompt.md}"
 N_PANES=8
 ATTACH=1

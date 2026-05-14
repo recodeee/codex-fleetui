@@ -3,6 +3,12 @@
 # pane /proc env + codex-auth list + tmux capture-pane → sorted table/JSON.
 
 set -u; LC_ALL=C
+
+# Route every `tmux ...` call through scripts/codex-fleet/lib/_tmux.sh — when
+# CODEX_FLEET_TMUX_SOCKET is set in the env (e.g. by full-bringup.sh), this
+# transparently rewrites the call to `tmux -L $SOCKET ...`. Default behavior
+# (env unset) is identical to the prior `tmux` binary call.
+source "$(dirname "${BASH_SOURCE[0]}")/lib/_tmux.sh"
 SESSION="codex-fleet"; USE_COLOR=1; MODE="table"; WATCH=0
 
 usage() {
