@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "plan_slug": "codex-fleet-tuirealm-followups-2026-05-15",
+  "title": "tuirealm migration follow-ups — adopt fleet-components in remaining binaries, split fleet-tui-poc overlays, extract a generic Model runner",
+  "problem": "PRs #50, #52, #53, #54, #55, #58 ported every codex-fleet ratatui binary (fleet-tab-strip, fleet-state, fleet-plan-tree, fleet-waves, fleet-watcher, fleet-tui-poc) to tuirealm's M-V-U pattern, and PR #63 extracted the duplicated terminal-adapter setup + tmux click-routing into a new rust/fleet-components crate (consumed first by fleet-tab-strip). Four follow-ups were deliberately deferred from those PRs to keep each one minimum-surface; they are independent, no two touch the same primary file, and should run in parallel on the fleet.",
+  "acceptance_criteria": [
+    "Every dashboard binary (fleet-state, fleet-plan-tree, fleet-waves, fleet-watcher, fleet-tui-poc) calls fleet_components::init_crossterm_adapter + shutdown_adapter from its Model::init_adapter / main()-teardown path — no inline CrosstermTerminalAdapter::new()/enable_raw_mode()/enter_alternate_screen() in those binaries.",
+    "fleet-tui-poc's overlay rendering is split into one tuirealm Component per Overlay variant (None / ContextMenu / Spotlight / ActionSheet / SessionSwitcher / SectionJump), with subscription routing so only the active overlay's Component receives events. The single-Component bridge from PR #58 is removed.",
+    "A generic `pub fn run<Id, Msg, C>(component: C, id: Id, ...)` helper lives in fleet-components and wraps the Model<T: TerminalAdapter> setup + tick loop + Msg::Quit/Dispatch shutdown that every binary currently re-implements. At least one binary adopts it as a proof-of-concept.",
+    "cargo test --workspace stays green; each PR is rebased on main + merged via gx branch finish --via-pr."
+  ],
+  "roles": ["planner", "architect", "executor", "verifier"],
+  "tasks": [
+    {
+      "subtask_index": 0,
+      "title": "Adopt fleet-components in fleet-state",
+      "description": "In rust/fleet-state/Cargo.toml add `fleet-components = { path = \"../fleet-components\" }`. In rust/fleet-state/src/main.rs replace the inline CrosstermTerminalAdapter::new()+enable_raw_mode()+enter_alternate_screen() block inside Model::init_adapter() with a single `fleet_components::init_crossterm_adapter(false)` call (read-only dashboard, no mouse capture), and the manual disable_raw_mode + leave_alternate_screen at the end of main() with `fleet_components::shutdown_adapter(&mut model.terminal)`. Build with `cargo build -p fleet-state`. cargo test -p fleet-state. Open PR via gx branch finish --via-pr.",
+      "file_scope": [
+        "rust/fleet-state/Cargo.toml",
+        "rust/fleet-state/src/main.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust-refactor",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 1,
+      "title": "Adopt fleet-components in fleet-plan-tree",
+      "description": "Same pattern as subtask 0, applied to rust/fleet-plan-tree. Read-only dashboard so pass `false` for enable_mouse. Build with cargo build -p fleet-plan-tree, test, PR.",
+      "file_scope": [
+        "rust/fleet-plan-tree/Cargo.toml",
+        "rust/fleet-plan-tree/src/main.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust-refactor",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 2,
+      "title": "Adopt fleet-components in fleet-waves",
+      "description": "Same pattern as subtask 0, applied to rust/fleet-waves. Read-only dashboard, enable_mouse=false. Build + test + PR.",
+      "file_scope": [
+        "rust/fleet-waves/Cargo.toml",
+        "rust/fleet-waves/src/main.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust-refactor",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 3,
+      "title": "Adopt fleet-components in fleet-watcher",
+      "description": "Same pattern as subtask 0, applied to rust/fleet-watcher. Read-only dashboard, enable_mouse=false. Build + test + PR.",
+      "file_scope": [
+        "rust/fleet-watcher/Cargo.toml",
+        "rust/fleet-watcher/src/main.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust-refactor",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 4,
+      "title": "Adopt fleet-components in fleet-tui-poc",
+      "description": "Same pattern as subtask 0 applied to rust/fleet-tui-poc. POC binary has clickable surfaces (session switcher cards, validation harness chip) so pass `true` for enable_mouse. Build + test + PR.",
+      "file_scope": [
+        "rust/fleet-tui-poc/Cargo.toml",
+        "rust/fleet-tui-poc/src/main.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust-refactor",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 5,
+      "title": "Per-overlay component split for fleet-tui-poc",
+      "description": "Currently fleet-tui-poc has a single `App` Component handling every overlay (None/ContextMenu/Spotlight/ActionSheet/SessionSwitcher/SectionJump) with a giant per-overlay match arm in App::handle_key. Refactor: extract one tuirealm Component per Overlay variant. Each owns its slice of App state (e.g. SpotlightView owns spotlight_query/selected/tick + on() handles char-input). Mount all six in Application::init; use Application::active(&Id) to switch focus when the operator opens/dismisses an overlay (Tab opens SectionJump, 1-5 open the others, Esc returns to ValidationHarnessView). The handle_key giant-match disappears. Keep the existing CLI flags (--overlay, --pane, --session, --active, --single-shot) by passing them to App::configured before mount. cargo test -p fleet-tui-poc. PR.",
+      "file_scope": [
+        "rust/fleet-tui-poc/src/main.rs"
+      ],
+      "depends_on": [4],
+      "spec_row_id": null,
+      "capability_hint": "rust-refactor-design",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 6,
+      "title": "Generic Model<T> runner in fleet-components",
+      "description": "Every tuirealm binary defines an identical `Model<T: TerminalAdapter>` shell: an Application<Id, Msg, NoUserEvent>, the terminal adapter, a quit flag, a redraw flag. The body of main() is the same tick→update→view loop. Extract this into fleet-components::run::<Id, Msg, C>() where C: Component + AppComponent<Msg, NoUserEvent>. Signature sketch: `pub fn run<Id, Msg, C>(component: C, id: Id, enable_mouse: bool, tick_interval: Duration, on_msg: impl FnMut(Msg) -> Control) -> io::Result<()>` where Control is `enum { Continue, Quit, Dispatch(Vec<String>) }`. Adopt it in fleet-tab-strip first as a proof-of-concept (drop its Model<T> struct, replace main() body with a single fleet_components::run call). cargo test --workspace. PR.",
+      "file_scope": [
+        "rust/fleet-components/src/lib.rs",
+        "rust/fleet-components/Cargo.toml",
+        "rust/fleet-tab-strip/src/main.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust-generic-design",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    }
+  ],
+  "created_at": "2026-05-15T00:50:00Z"
+}
