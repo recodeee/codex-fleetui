@@ -1,0 +1,2 @@
+# Vendored upstream + plugin checkouts. Re-fetchable via ./setup.sh.
+vendor/
