@@ -190,29 +190,40 @@ clamp_pct() {
   printf '%d' "$n"
 }
 
-ios_axis_color() {
-  local n axis
+ios_axis_gradient_color() {
+  local n axis p r g b
   n=$(clamp_pct "${1:-0}")
   axis="${2:-usage}"
   case "$axis" in
     usage|cap|used)
-      if   (( n >= 85 )); then printf '%s' "$IOS_RED"
-      elif (( n >= 65 )); then printf '%s' "$IOS_ORANGE"
-      elif (( n >= 40 )); then printf '%s' "$IOS_YELLOW"
-      else                     printf '%s' "$IOS_GREEN"
-      fi
+      p="$n"
       ;;
     done|complete|completion|available|availability)
-      if   (( n >= 75 )); then printf '%s' "$IOS_GREEN"
-      elif (( n >= 45 )); then printf '%s' "$IOS_ORANGE"
-      elif (( n >= 20 )); then printf '%s' "$IOS_YELLOW"
-      else                     printf '%s' "$IOS_RED"
-      fi
+      p=$(( 100 - n ))
       ;;
     *)
       printf '%s' "$IOS_BLUE"
+      return
       ;;
   esac
+
+  if (( p <= 50 )); then
+    # 0% systemGreen (#34C759) -> 50% systemOrange (#FF9500).
+    r=$(( 52 + (255 - 52) * p / 50 ))
+    g=$(( 199 + (149 - 199) * p / 50 ))
+    b=$(( 89 + (0 - 89) * p / 50 ))
+  else
+    # 50% systemOrange (#FF9500) -> 100% systemRed (#FF3B30).
+    p=$(( p - 50 ))
+    r=$(( 255 + (255 - 255) * p / 50 ))
+    g=$(( 149 + (59 - 149) * p / 50 ))
+    b=$(( 0 + (48 - 0) * p / 50 ))
+  fi
+  printf '\033[38;2;%d;%d;%dm' "$r" "$g" "$b"
+}
+
+ios_axis_color() {
+  ios_axis_gradient_color "$@"
 }
 
 ios_progress_rail() {
