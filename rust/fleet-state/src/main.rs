@@ -1,71 +1,66 @@
-// fleet-state — drop-in replacement for `fleet-state-anim.sh` + render half
-// of `fleet-tick.sh`. First real consumer of `fleet-data::fleet`: calls
-// `fleet::load_live` and renders the live join of accounts + panes.
+// fleet-state — tuirealm port. Renders the live fleet table (accounts +
+// panes via `fleet_data::fleet::load_live`) inside a tuirealm
+// `AppComponent`. Second binary in the codex-fleet ratatui → tuirealm
+// migration after fleet-tab-strip (PR #50).
 //
-// `cargo build -p fleet-state` exercises the full chain: tmux::list_panes
-// → panes::list_panes → fleet::join.
+// Pattern (mirrors fleet-tab-strip):
+//   - `FleetView` is the Component. It owns `rows: Option<Vec<WorkerRow>>`,
+//     a `load_error: Option<String>`, and refreshes on every Tick.
+//   - `Msg::Tick` drives a `refresh()` call; `Msg::Quit` terminates the
+//     loop. q / Esc → Msg::Quit handled inline (drops fleet-input).
+//   - The existing render functions (`render`, `render_worker_row`,
+//     `chip_kind`) are unchanged — the tuirealm wrapper only owns the
+//     event loop, not the rendering.
 //
-// The pane runs inside the `codex-fleet` tmux session, whose status bar
-// (`style-tabs.sh`) supplies the canonical tab strip; this binary
-// therefore does not draw one of its own. Key input is routed through
-// `fleet_input` (the dashboard-wide action matcher) — currently only the
-// `q` / `Esc` quit bindings are registered, but the plumbing is in place
-// so future bindings (refresh, jump-to-row, …) only need a `bind()` line
-// rather than another inline `matches!` branch.
-//
-// The full "G · Fleet" artboard (per-row avatars, the PANE `#N >` column,
-// Filter / New worker buttons) lands in follow-up PRs — this binary's job
-// is the data path, not pixel parity.
+// `cargo build -p fleet-state` exercises the full chain:
+// tmux::list_panes → panes::list_panes → fleet::join.
 
-use std::{io, time::Duration};
+use std::io;
+use std::time::Duration;
 
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
 use fleet_data::{
     fleet::{self, FleetSummary, WorkerRow},
     panes::PaneState,
 };
-use fleet_input::{Action, ContextStack, Matcher};
 use fleet_ui::{
     card::card,
     chip::{status_chip, ChipKind},
     palette::*,
     rail::{progress_rail, RailAxis},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
-    text::{Line, Span},
-    widgets::Paragraph,
-    Terminal,
-};
+use tuirealm::application::{Application, PollStrategy};
+use tuirealm::command::{Cmd, CmdResult};
+use tuirealm::component::{AppComponent, Component};
+use tuirealm::event::{Event, Key, KeyEvent, NoUserEvent};
+use tuirealm::listener::EventListenerCfg;
+use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
+use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
+use tuirealm::ratatui::style::Style;
+use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::widgets::Paragraph;
+use tuirealm::ratatui::Frame;
+use tuirealm::state::State;
+use tuirealm::subscription::{EventClause, Sub, SubClause};
+use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InputContext {
-    Global,
+// ---------- Messages and component IDs ----------
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Msg {
+    Tick,
+    Quit,
 }
 
-fn input_context() -> ContextStack<InputContext> {
-    ContextStack::from_context(InputContext::Global)
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub enum Id {
+    Fleet,
 }
 
-fn input_matcher() -> Matcher<InputContext, Action> {
-    Matcher::new()
-        .bind(InputContext::Global, key(KeyCode::Char('q')), Action::Quit)
-        .bind(InputContext::Global, key(KeyCode::Esc), Action::Quit)
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
+// ---------- The Fleet component ----------
 
 /// tmux session + window the fleet's worker panes live in. Matches the
-/// `codex-fleet:overview` target every dashboard binary uses; overridable via
-/// env for parallel fleets (`codex-fleet-2`, …).
+/// `codex-fleet:overview` target every dashboard binary uses; overridable
+/// via env for parallel fleets (`codex-fleet-2`, …).
 fn fleet_target() -> (String, String) {
     let session =
         std::env::var("CODEX_FLEET_SESSION").unwrap_or_else(|_| "codex-fleet".to_string());
@@ -73,31 +68,21 @@ fn fleet_target() -> (String, String) {
     (session, window)
 }
 
-struct App {
-    input_stack: ContextStack<InputContext>,
-    input_matcher: Matcher<InputContext, Action>,
-    /// The live join of accounts + panes. `None` until the first successful
-    /// load; `Some(vec![])` is a valid "fleet is empty / not running" state.
+struct FleetView {
     rows: Option<Vec<WorkerRow>>,
-    /// Set when the last `fleet::load_live` returned an `io::Error` (tmux not
-    /// on PATH, etc.) — rendered as a faint status line rather than a crash.
     load_error: Option<String>,
+    props: Props,
 }
 
-impl App {
-    fn new() -> Self {
-        Self {
-            input_stack: input_context(),
-            input_matcher: input_matcher(),
-            rows: None,
-            load_error: None,
-        }
+impl Default for FleetView {
+    fn default() -> Self {
+        let mut view = Self { rows: None, load_error: None, props: Props::default() };
+        view.refresh();
+        view
     }
+}
 
-    /// Refresh the worker rows from the live fleet. Called once per tick.
-    /// An `Err` from `load_live` is recorded, not propagated — a transient
-    /// tmux failure should leave the last good frame on screen, not kill the
-    /// dashboard.
+impl FleetView {
     fn refresh(&mut self) {
         let (session, window) = fleet_target();
         match fleet::load_live(&session, Some(&window)) {
@@ -110,30 +95,120 @@ impl App {
             }
         }
     }
+}
 
-    fn dispatch_key(&mut self, key: KeyEvent) -> Option<Action> {
-        self.input_stack.dispatch(&self.input_matcher, key)
+impl Component for FleetView {
+    fn view(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width < 30 || area.height < 8 {
+            return;
+        }
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .split(area);
+
+        // Header banner: "FLEET · N workers · M live · K in review".
+        let header_text = match &self.rows {
+            Some(worker_rows) => {
+                let s = FleetSummary::of(worker_rows);
+                format!(
+                    "FLEET · {} workers · {} live · {} in review",
+                    s.workers, s.live, s.in_review
+                )
+            }
+            None => "FLEET · loading…".to_string(),
+        };
+        frame.render_widget(card(Some(&header_text), false), rows[0]);
+
+        // Worker table card.
+        let block = card(
+            Some("ACCOUNT · WEEKLY · 5H · QUALITY · STATUS · WORKING ON"),
+            false,
+        );
+        let inner = block.inner(rows[1]);
+        frame.render_widget(block, rows[1]);
+
+        match &self.rows {
+            Some(worker_rows) if !worker_rows.is_empty() => {
+                for (i, row) in worker_rows.iter().enumerate() {
+                    let y = inner.y + i as u16;
+                    if y + 1 > inner.y + inner.height {
+                        break;
+                    }
+                    render_worker_row(
+                        frame,
+                        Rect { x: inner.x, y, width: inner.width, height: 1 },
+                        row,
+                    );
+                }
+            }
+            Some(_) => {
+                let msg = match &self.load_error {
+                    Some(_) => "  fleet unreachable — see status below",
+                    None => "  no workers — is the codex-fleet session up?",
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(msg, Style::default().fg(IOS_FG_MUTED)))),
+                    Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+                );
+            }
+            None => {
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        "  loading fleet state…",
+                        Style::default().fg(IOS_FG_MUTED),
+                    ))),
+                    Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+                );
+            }
+        }
+
+        if let Some(err) = &self.load_error {
+            let y = inner.y + inner.height.saturating_sub(1);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("  load error: {err}"),
+                    Style::default().fg(IOS_FG_FAINT),
+                ))),
+                Rect { x: inner.x, y, width: inner.width, height: 1 },
+            );
+        }
     }
 
-    /// Apply an action dispatched from the input matcher. Returns `true`
-    /// when the action requests the event loop exit. Overlay and tab-focus
-    /// actions are shared contracts for follow-up dashboards; this view has
-    /// no overlay state and leaves tab navigation to tmux's status bar.
-    fn apply_action(&mut self, action: Action) -> bool {
-        match action {
-            Action::Quit => true,
-            Action::CloseOverlay
-            | Action::FocusNextTab
-            | Action::FocusPrevTab
-            | Action::OpenSpotlight => false,
+    fn query(&self, attr: Attribute) -> Option<QueryResult<'_>> {
+        self.props.get(attr).map(|v| QueryResult::from(v.clone()))
+    }
+
+    fn attr(&mut self, attr: Attribute, value: AttrValue) {
+        self.props.set(attr, value);
+    }
+
+    fn state(&self) -> State {
+        State::None
+    }
+
+    fn perform(&mut self, _cmd: Cmd) -> CmdResult {
+        CmdResult::NoChange
+    }
+}
+
+impl AppComponent<Msg, NoUserEvent> for FleetView {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        match ev {
+            Event::Keyboard(KeyEvent { code: Key::Char('q'), .. })
+            | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => Some(Msg::Quit),
+            Event::Tick => {
+                // Refresh under the hood so the next frame sees fresh rows.
+                self.refresh();
+                Some(Msg::Tick)
+            }
+            _ => None,
         }
     }
 }
 
-/// Map the data-layer [`PaneState`] to the UI-layer [`ChipKind`]. Reserve
-/// accounts (no live pane → `state: None`) render as `Idle`. Mirrors the
-/// `classify` converter in `fleet-waves/src/main.rs`, but keyed off the
-/// pane state rather than a plan-status string.
+// ---------- Render helpers (unchanged from pre-tuirealm) ----------
+
 fn chip_kind(state: Option<PaneState>) -> ChipKind {
     match state {
         Some(PaneState::Working) => ChipKind::Working,
@@ -146,40 +221,28 @@ fn chip_kind(state: Option<PaneState>) -> ChipKind {
     }
 }
 
-/// Render one worker row: account + dim model label, the two usage rails,
-/// the status chip, and the scraped "WORKING ON" text. Geometry is computed
-/// inline (same approach as the old mock loop) — the constraint-based column
-/// layout from the artboard lands with the full Fleet render.
-fn render_worker_row(frame: &mut ratatui::Frame, area: Rect, row: &WorkerRow) {
+fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
     let mut spans: Vec<Span> = Vec::new();
 
-    // ACCOUNT — email, starred when it's the codex-auth current account.
+    // ACCOUNT.
     let label = if row.is_current {
         format!("★{}", row.email)
     } else {
         row.email.clone()
     };
-    spans.push(Span::styled(
-        format!("  {:<26}", label),
-        Style::default().fg(IOS_FG),
-    ));
+    spans.push(Span::styled(format!("  {:<26}", label), Style::default().fg(IOS_FG)));
     spans.push(Span::raw(" "));
 
-    // WEEKLY · 5H rails — usage axis (green→orange→red as the number climbs).
+    // WEEKLY · 5H rails.
     spans.extend(progress_rail(row.weekly_pct, RailAxis::Usage, 8));
     spans.push(Span::raw(" "));
     spans.extend(progress_rail(row.five_h_pct, RailAxis::Usage, 8));
     spans.push(Span::raw(" "));
 
-    // QUALITY rail — advisory score for the agent's most recent merged PR
-    // (see fleet-data::scores). Done axis: high score → green, low → red.
-    // For un-scored agents we emit a same-width blank so the STATUS chip
-    // column stays aligned across rows. Quality is *advisory*: the score
-    // is what the LLM judges, not what the test suite proves — treat low
-    // scores as "look at this," not a fail signal.
+    // QUALITY rail (advisory).
     match row.quality {
         Some(pct) => spans.extend(progress_rail(pct, RailAxis::Done, 8)),
-        None => spans.push(Span::raw(" ".repeat(10))), // 8 cells + 2 caps
+        None => spans.push(Span::raw(" ".repeat(10))),
     }
     spans.push(Span::raw(" "));
 
@@ -187,17 +250,11 @@ fn render_worker_row(frame: &mut ratatui::Frame, area: Rect, row: &WorkerRow) {
     spans.extend(status_chip(chip_kind(row.state)));
     spans.push(Span::raw("  "));
 
-    // WORKING ON — headline + dim subtext, or a faint placeholder for reserve.
+    // WORKING ON.
     if row.working_on.is_empty() {
-        spans.push(Span::styled(
-            "—  reserve",
-            Style::default().fg(IOS_FG_FAINT),
-        ));
+        spans.push(Span::styled("—  reserve", Style::default().fg(IOS_FG_FAINT)));
     } else {
-        spans.push(Span::styled(
-            row.working_on.clone(),
-            Style::default().fg(IOS_FG),
-        ));
+        spans.push(Span::styled(row.working_on.clone(), Style::default().fg(IOS_FG)));
         if !row.pane_subtext.is_empty() {
             spans.push(Span::styled(
                 format!("   {}", row.pane_subtext),
@@ -209,146 +266,85 @@ fn render_worker_row(frame: &mut ratatui::Frame, area: Rect, row: &WorkerRow) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render(frame: &mut ratatui::Frame, app: &App) {
-    let area = frame.area();
-    if area.width < 30 || area.height < 8 {
-        return;
+// ---------- Model (tuirealm's M in M-V-U) ----------
+
+struct Model<T: TerminalAdapter> {
+    app: Application<Id, Msg, NoUserEvent>,
+    terminal: T,
+    quit: bool,
+    redraw: bool,
+}
+
+impl Model<CrosstermTerminalAdapter> {
+    fn new() -> io::Result<Self> {
+        let app = Self::init_app().map_err(|e| io::Error::other(format!("init app: {e:?}")))?;
+        let terminal =
+            Self::init_adapter().map_err(|e| io::Error::other(format!("init adapter: {e:?}")))?;
+        Ok(Self { app, terminal, quit: false, redraw: true })
     }
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // header banner
-            Constraint::Min(0),    // worker table
-        ])
-        .split(area);
-
-    // ── Header banner: "FLEET · N workers · M live · K in review" ──────────
-    let header_text = match &app.rows {
-        Some(worker_rows) => {
-            let s = FleetSummary::of(worker_rows);
-            format!(
-                "FLEET · {} workers · {} live · {} in review",
-                s.workers, s.live, s.in_review
-            )
-        }
-        None => "FLEET · loading…".to_string(),
-    };
-    frame.render_widget(card(Some(&header_text), false), rows[0]);
-
-    // ── Worker table ──────────────────────────────────────────────────────
-    let block = card(
-        Some("ACCOUNT · WEEKLY · 5H · QUALITY · STATUS · WORKING ON"),
-        false,
-    );
-    let inner = block.inner(rows[1]);
-    frame.render_widget(block, rows[1]);
-
-    match &app.rows {
-        Some(worker_rows) if !worker_rows.is_empty() => {
-            for (i, row) in worker_rows.iter().enumerate() {
-                let y = inner.y + i as u16;
-                if y + 1 > inner.y + inner.height {
-                    break;
-                }
-                render_worker_row(
-                    frame,
-                    Rect {
-                        x: inner.x,
-                        y,
-                        width: inner.width,
-                        height: 1,
-                    },
-                    row,
-                );
-            }
-        }
-        Some(_) => {
-            // Empty fleet — successful load, just no workers.
-            let msg = match &app.load_error {
-                Some(_) => "  fleet unreachable — see status below",
-                None => "  no workers — is the codex-fleet session up?",
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    msg,
-                    Style::default().fg(IOS_FG_MUTED),
-                ))),
-                Rect {
-                    x: inner.x,
-                    y: inner.y,
-                    width: inner.width,
-                    height: 1,
-                },
-            );
-        }
-        None => {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "  loading fleet state…",
-                    Style::default().fg(IOS_FG_MUTED),
-                ))),
-                Rect {
-                    x: inner.x,
-                    y: inner.y,
-                    width: inner.width,
-                    height: 1,
-                },
-            );
-        }
-    }
-
-    // Faint error line at the bottom of the table when the last load failed.
-    if let Some(err) = &app.load_error {
-        let y = inner.y + inner.height.saturating_sub(1);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("  load error: {err}"),
-                Style::default().fg(IOS_FG_FAINT),
-            ))),
-            Rect {
-                x: inner.x,
-                y,
-                width: inner.width,
-                height: 1,
-            },
+    fn init_app() -> Result<Application<Id, Msg, NoUserEvent>, Box<dyn std::error::Error>> {
+        // 250ms tick interval matches the pre-tuirealm refresh cadence.
+        let mut app: Application<Id, Msg, NoUserEvent> = Application::init(
+            EventListenerCfg::default()
+                .crossterm_input_listener(Duration::from_millis(100), 3)
+                .tick_interval(Duration::from_millis(250)),
         );
+        app.mount(
+            Id::Fleet,
+            Box::new(FleetView::default()),
+            vec![Sub::new(EventClause::Tick, SubClause::Always)],
+        )?;
+        app.active(&Id::Fleet)?;
+        Ok(app)
+    }
+
+    fn init_adapter() -> Result<CrosstermTerminalAdapter, Box<dyn std::error::Error>> {
+        let mut adapter = CrosstermTerminalAdapter::new()?;
+        adapter.enable_raw_mode()?;
+        adapter.enter_alternate_screen()?;
+        Ok(adapter)
     }
 }
 
+impl<T: TerminalAdapter> Model<T> {
+    fn view(&mut self) {
+        let _ = self.terminal.draw(|frame| {
+            let area = frame.area();
+            let _ = self.app.view(&Id::Fleet, frame, area);
+        });
+    }
+
+    fn update(&mut self, msg: Msg) {
+        self.redraw = true;
+        match msg {
+            Msg::Quit => self.quit = true,
+            Msg::Tick => {}
+        }
+    }
+}
+
+// ---------- Entry point ----------
+
 fn main() -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(out);
-    let mut terminal = Terminal::new(backend)?;
+    let mut model = Model::<CrosstermTerminalAdapter>::new()?;
 
-    let mut app = App::new();
-    // Prime the first frame with real data before the event loop so the
-    // dashboard never flashes the "loading…" state for a full tick.
-    app.refresh();
-
-    let result: io::Result<()> = (|| {
-        loop {
-            terminal.draw(|f| render(f, &app))?;
-            if event::poll(Duration::from_millis(250))? {
-                if let Event::Key(k) = event::read()? {
-                    if let Some(action) = app.dispatch_key(k) {
-                        if app.apply_action(action) {
-                            break;
-                        }
-                    }
+    let result = (|| -> io::Result<()> {
+        while !model.quit {
+            if let Ok(messages) = model.app.tick(PollStrategy::Once(Duration::from_millis(100))) {
+                for msg in messages {
+                    model.update(msg);
                 }
-            } else {
-                // No input this tick — refresh the fleet state so the table
-                // stays live. The 250ms poll doubles as the refresh cadence.
-                app.refresh();
+            }
+            if model.redraw {
+                model.view();
+                model.redraw = false;
             }
         }
         Ok(())
     })();
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    let _ = model.terminal.disable_raw_mode();
+    let _ = model.terminal.leave_alternate_screen();
     result
 }
