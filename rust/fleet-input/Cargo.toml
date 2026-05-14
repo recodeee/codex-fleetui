@@ -6,4 +6,4 @@ description = "Shared input routing and action primitives for codex-fleet dashbo
 publish = false
 
 [dependencies]
-crossterm = "0.28"
+crossterm = "0.29"

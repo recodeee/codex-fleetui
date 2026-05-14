@@ -6,8 +6,8 @@ description = "Shared ratatui widgets and iOS-style chrome for codex-fleet dashb
 publish = false
 
 [dependencies]
-crossterm = "0.28"
-ratatui = "0.28"
+crossterm = "0.29"
+ratatui = "0.30"
 # tab_strip reads /tmp/claude-viz/fleet-tab-counters.json for the per-tab badge
 # counters — re-introduced here when the strip module was reopened for the
 # fleet-tab-strip binary that hosts the overview header pane.

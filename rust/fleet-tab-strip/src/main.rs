@@ -1,135 +1,238 @@
-// fleet-tab-strip — minimal ratatui binary that renders only the in-binary
-// tab strip from `fleet_ui::tab_strip`. Designed for windows that aren't
-// themselves a full ratatui dashboard but should still carry the same top
-// navigation row. The overview window (a tmux pane grid of N codex CLI
-// workers) is the first such consumer: a 1-row header pane at the top of
-// the window runs this binary so the strip is consistent with the
-// dashboards in windows 1-5.
+// fleet-tab-strip — tuirealm port. Renders the codex-fleet glass-dock tab
+// strip as an `AppComponent`, routing `MouseEvent::Down(Left)` through
+// tuirealm's M-V-U cycle to dispatch `tmux select-window`.
 //
-// Behaviour:
-// - Renders fleet_ui::tab_strip::TabStrip into the top row of the frame.
-// - Highlights the tab matching the current tmux window (looked up via
-//   `tmux display-message`) — when the operator switches windows, the
-//   active pill follows.
-// - Mouse clicks on a pill exec `tmux select-window -t <session>:<idx>`.
-// - Refreshes every 500ms; the TabStrip widget picks up counter updates
-//   from /tmp/claude-viz/fleet-tab-counters.json on each render.
-// - Never quits on its own; the pane is a chrome surface. Ctrl+C still
-//   exits cleanly for manual restarts.
+// First binary in the codex-fleet ratatui → tuirealm migration. The
+// existing `fleet_ui::tab_strip::TabStrip` widget stays as the rendering
+// backend (now usable directly thanks to the workspace ratatui bump
+// 0.28 → 0.30 in this same PR); the binary wraps it in a `Component` +
+// `AppComponent<Msg, NoUserEvent>` pair so the click handler, tick
+// counter, and active-tab resolution flow through tuirealm's update cycle
+// instead of an ad-hoc crossterm event loop.
+//
+// Why migrate at all: the codex-fleet binaries each grow their own
+// hand-rolled crossterm event loop + state. tuirealm gives us a uniform
+// (state, update, view) shape so future binaries (fleet-state,
+// fleet-plan-tree, fleet-waves, fleet-watcher, fleet-tui-poc) can be
+// re-implemented with the same mental model.
 
 use std::io;
 use std::process::Command;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
-use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
-use ratatui::Terminal;
+use tuirealm::application::{Application, PollStrategy};
+use tuirealm::command::{Cmd, CmdResult};
+use tuirealm::component::{AppComponent, Component};
+use tuirealm::event::{Event, Key, KeyEvent, MouseButton, MouseEvent, MouseEventKind, NoUserEvent};
+use tuirealm::listener::EventListenerCfg;
+use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
+use tuirealm::ratatui::Frame;
+use tuirealm::ratatui::layout::Rect;
+use tuirealm::state::State;
+use tuirealm::subscription::{EventClause, Sub, SubClause};
+use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 
-use fleet_ui::tab_strip::{Tab, TabStrip};
+use fleet_ui::tab_strip::{Tab, TabHit, TabStrip};
 
-/// tmux session this binary belongs to. Overridable so a parallel fleet
-/// (codex-fleet-2, etc.) can spawn its own header pane with the right
-/// click target.
-fn fleet_session() -> String {
-    std::env::var("CODEX_FLEET_SESSION").unwrap_or_else(|_| "codex-fleet".to_string())
+// ---------- Messages and component IDs ----------
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Msg {
+    TabClicked(usize),
+    Tick,
+    Quit,
 }
 
-/// Look up the tmux window the strip is hosted in — used so the binary
-/// can pick the right *active* tab pill. Returns the window index of the
-/// pane this binary runs in, or `0` if tmux isn't reachable (which is the
-/// only sensible default — overview is window 0).
-fn current_window_index() -> usize {
-    Command::new("tmux")
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub enum Id {
+    Strip,
+}
+
+// ---------- The Strip component ----------
+
+/// Wraps `fleet_ui::tab_strip::TabStrip` as a tuirealm `Component` +
+/// `AppComponent<Msg, NoUserEvent>`. Owns:
+///
+///   - the wall-clock tick counter shown in the live chip,
+///   - the most recent hit-test rects so `on(Event::Mouse(..))` can map a
+///     click coordinate to a tmux window index without re-rendering.
+///
+/// Active tab is resolved on each `view()` from `tmux display-message` —
+/// when the operator switches windows, the active pill follows.
+struct StripView {
+    tick: u64,
+    last_hits: Vec<TabHit>,
+    props: Props,
+}
+
+impl Default for StripView {
+    fn default() -> Self {
+        Self { tick: 0, last_hits: Vec::new(), props: Props::default() }
+    }
+}
+
+impl Component for StripView {
+    fn view(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        self.tick = self.tick.wrapping_add(1);
+        let active = current_tab();
+        let strip = TabStrip::new(active, area.width).with_tick(self.tick);
+        self.last_hits = strip.render(frame, area);
+    }
+
+    fn query(&self, attr: Attribute) -> Option<QueryResult<'_>> {
+        self.props.get(attr).map(|v| QueryResult::from(v.clone()))
+    }
+
+    fn attr(&mut self, attr: Attribute, value: AttrValue) {
+        self.props.set(attr, value);
+    }
+
+    fn state(&self) -> State {
+        State::None
+    }
+
+    fn perform(&mut self, _cmd: Cmd) -> CmdResult {
+        CmdResult::NoChange
+    }
+}
+
+impl AppComponent<Msg, NoUserEvent> for StripView {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        match ev {
+            Event::Keyboard(KeyEvent { code: Key::Char('q'), .. })
+            | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => Some(Msg::Quit),
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                ..
+            }) => self
+                .last_hits
+                .iter()
+                .find(|h| {
+                    *column >= h.rect.x
+                        && *column < h.rect.x + h.rect.width
+                        && *row >= h.rect.y
+                        && *row < h.rect.y + h.rect.height
+                })
+                .map(|h| Msg::TabClicked(h.window_idx)),
+            Event::Tick => Some(Msg::Tick),
+            _ => None,
+        }
+    }
+}
+
+// ---------- Model (tuirealm's M in M-V-U) ----------
+
+struct Model<T: TerminalAdapter> {
+    app: Application<Id, Msg, NoUserEvent>,
+    terminal: T,
+    quit: bool,
+    redraw: bool,
+}
+
+impl Model<CrosstermTerminalAdapter> {
+    fn new() -> io::Result<Self> {
+        let app = Self::init_app().map_err(|e| io::Error::other(format!("init app: {e:?}")))?;
+        let terminal =
+            Self::init_adapter().map_err(|e| io::Error::other(format!("init adapter: {e:?}")))?;
+        Ok(Self { app, terminal, quit: false, redraw: true })
+    }
+
+    fn init_app() -> Result<Application<Id, Msg, NoUserEvent>, Box<dyn std::error::Error>> {
+        let mut app: Application<Id, Msg, NoUserEvent> = Application::init(
+            EventListenerCfg::default()
+                .crossterm_input_listener(Duration::from_millis(100), 3)
+                .tick_interval(Duration::from_millis(500)),
+        );
+        app.mount(
+            Id::Strip,
+            Box::new(StripView::default()),
+            vec![Sub::new(EventClause::Tick, SubClause::Always)],
+        )?;
+        app.active(&Id::Strip)?;
+        Ok(app)
+    }
+
+    fn init_adapter() -> Result<CrosstermTerminalAdapter, Box<dyn std::error::Error>> {
+        let mut adapter = CrosstermTerminalAdapter::new()?;
+        adapter.enable_raw_mode()?;
+        adapter.enter_alternate_screen()?;
+        adapter.enable_mouse_capture()?;
+        Ok(adapter)
+    }
+}
+
+impl<T: TerminalAdapter> Model<T> {
+    fn view(&mut self) {
+        let _ = self.terminal.draw(|frame| {
+            let area = frame.area();
+            let _ = self.app.view(&Id::Strip, frame, area);
+        });
+    }
+
+    fn update(&mut self, msg: Msg) {
+        self.redraw = true;
+        match msg {
+            Msg::Quit => self.quit = true,
+            Msg::TabClicked(idx) => select_window(idx),
+            Msg::Tick => {}
+        }
+    }
+}
+
+// ---------- tmux integration helpers ----------
+
+fn current_tab() -> Tab {
+    let idx: usize = Command::new("tmux")
         .args(["display-message", "-p", "-F", "#{window_index}"])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.trim().parse::<usize>().ok())
-        .unwrap_or(0)
-}
-
-/// Best-effort `tmux select-window`. Mirrors the posture of every other
-/// fleet click router: failures are silent because a dashboard outside
-/// tmux should render a frame, not crash.
-fn select_window(session: &str, idx: usize) {
-    let target = format!("{session}:{idx}");
-    let _ = Command::new("tmux")
-        .args(["select-window", "-t", &target])
-        .status();
-}
-
-/// Map a tmux window index to one of the five canonical [`Tab`]s. Returns
-/// `Tab::Overview` for any unknown index — keeps the active highlight on
-/// a sensible default rather than dropping back to "no tab active".
-fn tab_for_index(idx: usize) -> Tab {
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
     match idx {
         0 => Tab::Overview,
         1 => Tab::Fleet,
         2 => Tab::Plan,
         3 => Tab::Waves,
-        4 => Tab::Review,
-        _ => Tab::Overview,
+        _ => Tab::Review,
     }
 }
 
+fn select_window(idx: usize) {
+    let session =
+        std::env::var("CODEX_FLEET_SESSION").unwrap_or_else(|_| "codex-fleet".to_string());
+    let _ = Command::new("tmux")
+        .args(["select-window", "-t", &format!("{}:{}", session, idx)])
+        .status();
+}
+
+// ---------- Entry point ----------
+
 fn main() -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(out);
-    let mut terminal = Terminal::new(backend)?;
+    let mut model = Model::<CrosstermTerminalAdapter>::new()?;
 
-    let session = fleet_session();
-    let mut tick: u64 = 0;
-    let mut last_hits: Vec<fleet_ui::tab_strip::TabHit> = Vec::new();
-
-    let result: io::Result<()> = (|| {
-        loop {
-            // Re-resolve active window each render so the highlighted pill
-            // tracks `prefix N` window switches without extra signaling.
-            let active = tab_for_index(current_window_index());
-            terminal.draw(|f| {
-                let area = f.area();
-                let row = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
-                let strip = TabStrip::new(active, row.width).with_tick(tick);
-                last_hits = strip.render(f, row);
-            })?;
-
-            tick = tick.wrapping_add(1);
-
-            // 500ms tick: cheap enough for live counters, slow enough that
-            // the binary stays well under 1% CPU.
-            if event::poll(Duration::from_millis(500))? {
-                match event::read()? {
-                    Event::Mouse(MouseEvent { kind: MouseEventKind::Down(_), column, row, .. }) => {
-                        if let Some(hit) = last_hits.iter().find(|h| {
-                            column >= h.rect.x
-                                && column < h.rect.x + h.rect.width
-                                && row >= h.rect.y
-                                && row < h.rect.y + h.rect.height
-                        }) {
-                            select_window(&session, hit.window_idx);
-                        }
-                    }
-                    Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) => {
-                        // Ctrl+C is the only explicit exit — operators may
-                        // need to relaunch the binary after upgrades.
-                        if matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL) {
-                            break;
-                        }
-                    }
-                    _ => {}
+    let result = (|| -> io::Result<()> {
+        while !model.quit {
+            if let Ok(messages) = model.app.tick(PollStrategy::Once(Duration::from_millis(100))) {
+                for msg in messages {
+                    model.update(msg);
                 }
+            }
+            if model.redraw {
+                model.view();
+                model.redraw = false;
             }
         }
         Ok(())
     })();
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+    let _ = model.terminal.disable_mouse_capture();
+    let _ = model.terminal.disable_raw_mode();
+    let _ = model.terminal.leave_alternate_screen();
     result
 }
