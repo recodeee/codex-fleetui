@@ -18,6 +18,7 @@
 
 use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
 // std::process::Command moved into fleet_components::select_tmux_window.
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -36,6 +37,10 @@ use tuirealm::state::State;
 use tuirealm::subscription::{EventClause, Sub, SubClause};
 use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 
+use fleet_ui::palette::{
+    IOS_BG_GLASS as PALETTE_IOS_BG_GLASS, IOS_FG as PALETTE_IOS_FG,
+    IOS_FG_MUTED as PALETTE_IOS_FG_MUTED, IOS_TINT as PALETTE_IOS_TINT,
+};
 use fleet_ui::tab_strip::{Tab, TabHit};
 
 // ---------- Messages and component IDs ----------
@@ -204,13 +209,13 @@ impl<T: TerminalAdapter> Model<T> {
 // Kept in this binary because this lane is scoped to fleet-tab-strip only.
 const BG: Color = Color::Rgb(0, 0, 0);
 const BG_DIM: Color = Color::Rgb(13, 17, 23);
-const GLASS: Color = Color::Rgb(44, 44, 46);
+const GLASS: Color = PALETTE_IOS_BG_GLASS;
 const GLASS_EDGE: Color = Color::Rgb(72, 72, 74);
 const GLASS_SHADOW: Color = Color::Rgb(8, 20, 34);
-const FG: Color = Color::Rgb(242, 242, 247);
-const FG_MUTED: Color = Color::Rgb(174, 174, 184);
+const FG: Color = PALETTE_IOS_FG;
+const FG_MUTED: Color = PALETTE_IOS_FG_MUTED;
 const FG_DIM: Color = Color::Rgb(99, 99, 108);
-const BLUE: Color = Color::Rgb(10, 132, 255);
+const BLUE: Color = PALETTE_IOS_TINT;
 const BLUE_EDGE: Color = Color::Rgb(64, 156, 255);
 const BLUE_CHIP: Color = Color::Rgb(93, 173, 255);
 const GREEN: Color = Color::Rgb(48, 209, 88);
@@ -346,6 +351,27 @@ fn render_design_e_dock(frame: &mut Frame, area: Rect, active: Tab, tick: u64) -
         );
     }
 
+    let focus_y = dock_y.saturating_add(dock_height);
+    let focus_h = area
+        .y
+        .saturating_add(area.height)
+        .saturating_sub(focus_y)
+        .min(3);
+    if focus_h > 0 && dock_width >= 72 {
+        let focus_w = dock_width.saturating_sub(52).min(168);
+        let focus_x = dock_x + (dock_width.saturating_sub(focus_w)) / 2;
+        render_current_focus_card(
+            frame,
+            Rect {
+                x: focus_x,
+                y: focus_y,
+                width: focus_w,
+                height: focus_h,
+            },
+            tick,
+        );
+    }
+
     hits
 }
 
@@ -456,6 +482,105 @@ fn render_live_pill(frame: &mut Frame, rect: Rect, tick: u64) {
         ),
     ];
     render_glass_pill(frame, rect, GREEN_GLASS, edge, content);
+}
+
+fn render_current_focus_card(frame: &mut Frame, rect: Rect, tick: u64) {
+    if rect.width < 24 || rect.height == 0 {
+        return;
+    }
+
+    let focus = discover_current_focus().unwrap_or_else(|| FocusItem {
+        title: "no OpenSpec task file visible yet".to_string(),
+        source: "openspec".to_string(),
+        status: "idle".to_string(),
+        weight: 0,
+        modified_secs: 0,
+    });
+    let label = format!("{} · {} · {}", focus.status, focus.source, focus.title);
+    let text_width = rect.width.saturating_sub(20) as usize;
+    let marquee = marquee(&label, text_width, (tick / 2) as usize);
+
+    if rect.height >= 3 {
+        let horizontal = "─".repeat(rect.width.saturating_sub(2) as usize);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("╭", Style::default().fg(PALETTE_IOS_TINT).bg(BG)),
+                Span::styled(
+                    horizontal.clone(),
+                    Style::default()
+                        .fg(GLASS_EDGE)
+                        .bg(BG)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled("╮", Style::default().fg(PALETTE_IOS_TINT).bg(BG)),
+            ])),
+            Rect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: 1,
+            },
+        );
+        let prefix = "CURRENT FOCUS";
+        let sep = " · ";
+        let inner_w = rect.width.saturating_sub(2) as usize;
+        let prefix_w = prefix.chars().count() + sep.chars().count() + 2;
+        let body_w = inner_w.saturating_sub(prefix_w);
+        let body = clip_to_width(&marquee, body_w as u16);
+        let body_pad = body_w.saturating_sub(body.chars().count());
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("│", Style::default().fg(PALETTE_IOS_TINT).bg(BG)),
+                Span::styled(" ", Style::default().bg(BG)),
+                Span::styled(
+                    prefix,
+                    Style::default()
+                        .fg(PALETTE_IOS_TINT)
+                        .bg(BG)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" · ", Style::default().fg(PALETTE_IOS_FG_MUTED).bg(BG)),
+                Span::styled(body, Style::default().fg(PALETTE_IOS_FG).bg(BG)),
+                Span::styled(" ".repeat(body_pad), Style::default().bg(BG)),
+                Span::styled(" ", Style::default().bg(BG)),
+                Span::styled("│", Style::default().fg(PALETTE_IOS_TINT).bg(BG)),
+            ])),
+            Rect {
+                x: rect.x,
+                y: rect.y + 1,
+                width: rect.width,
+                height: 1,
+            },
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("╰", Style::default().fg(PALETTE_IOS_TINT).bg(BG)),
+                Span::styled(
+                    horizontal,
+                    Style::default()
+                        .fg(GLASS_EDGE)
+                        .bg(BG)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled("╯", Style::default().fg(PALETTE_IOS_TINT).bg(BG)),
+            ])),
+            Rect {
+                x: rect.x,
+                y: rect.y + 2,
+                width: rect.width,
+                height: 1,
+            },
+        );
+    } else {
+        let compact = format!("╭─ CURRENT FOCUS · {} ─╮", marquee);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                clip_to_width(&compact, rect.width),
+                Style::default().fg(PALETTE_IOS_FG).bg(BG),
+            ))),
+            rect,
+        );
+    }
 }
 
 fn render_separator(frame: &mut Frame, x: u16, y: u16, height: u16) {
@@ -638,6 +763,216 @@ fn tab_counter(tab: Tab) -> String {
     })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FocusItem {
+    title: String,
+    source: String,
+    status: String,
+    weight: u8,
+    modified_secs: u64,
+}
+
+fn discover_current_focus() -> Option<FocusItem> {
+    discover_current_focus_in(&repo_root())
+}
+
+fn discover_current_focus_in(root: &Path) -> Option<FocusItem> {
+    let mut best: Option<FocusItem> = None;
+    let search_roots = [root.join("openspec/plans"), root.join("openspec/plan")];
+    for search_root in search_roots {
+        for path in collect_focus_files(&search_root, 5) {
+            let raw = match fs::read_to_string(&path) {
+                Ok(raw) => raw,
+                Err(_) => continue,
+            };
+            let modified_secs = fs::metadata(&path)
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|mtime| mtime.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            for mut candidate in parse_focus_items(&raw) {
+                candidate.modified_secs = modified_secs;
+                candidate.source = focus_source(root, &path);
+                if best
+                    .as_ref()
+                    .is_none_or(|old| focus_rank(&candidate) > focus_rank(old))
+                {
+                    best = Some(candidate);
+                }
+            }
+        }
+    }
+    best
+}
+
+fn collect_focus_files(root: &Path, max_depth: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_focus_files_inner(root, max_depth, &mut out);
+    out
+}
+
+fn collect_focus_files_inner(path: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        if child.is_dir() {
+            collect_focus_files_inner(&child, depth - 1, out);
+        } else if matches!(
+            child.file_name().and_then(|name| name.to_str()),
+            Some("tasks.md" | "plan.md" | "CHANGE.md" | "plan.json")
+        ) {
+            out.push(child);
+        }
+    }
+}
+
+fn parse_focus_items(raw: &str) -> Vec<FocusItem> {
+    let mut items = Vec::new();
+    for line in raw.lines() {
+        if let Some((status, title)) = parse_tasks_table_line(line) {
+            items.push(FocusItem {
+                title,
+                source: String::new(),
+                status: status.clone(),
+                weight: status_weight(&status),
+                modified_secs: 0,
+            });
+        } else if let Some(title) = parse_markdown_title(line) {
+            items.push(FocusItem {
+                title,
+                source: String::new(),
+                status: "plan".to_string(),
+                weight: 1,
+                modified_secs: 0,
+            });
+        } else if let Some(title) = parse_json_title(line) {
+            items.push(FocusItem {
+                title,
+                source: String::new(),
+                status: "plan".to_string(),
+                weight: 1,
+                modified_secs: 0,
+            });
+        }
+    }
+    items
+}
+
+fn parse_tasks_table_line(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+    if trimmed.starts_with('|') && (trimmed.contains("Status") || trimmed.contains("---")) {
+        return None;
+    }
+    if !trimmed.contains('|') {
+        return None;
+    }
+    let cols: Vec<String> = trimmed
+        .trim_matches('|')
+        .split('|')
+        .map(clean_cell)
+        .collect();
+    if cols.len() < 3 || !cols[0].chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let status = cols[1].to_ascii_lowercase();
+    let title = cols[2].clone();
+    if title.is_empty() {
+        None
+    } else {
+        Some((status, title))
+    }
+}
+
+fn parse_markdown_title(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let title = trimmed.strip_prefix("# ")?;
+    let clean = clean_cell(title);
+    (!clean.is_empty()).then_some(clean)
+}
+
+fn parse_json_title(line: &str) -> Option<String> {
+    let (_, rest) = line.split_once("\"title\"")?;
+    let (_, after_colon) = rest.split_once(':')?;
+    let after_quote = after_colon.trim_start().strip_prefix('"')?;
+    let end = after_quote.find('"')?;
+    let title = clean_cell(&after_quote[..end]);
+    (!title.is_empty()).then_some(title)
+}
+
+fn clean_cell(cell: &str) -> String {
+    cell.replace('`', "")
+        .replace("<br>", " ")
+        .replace("\\n", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn status_weight(status: &str) -> u8 {
+    match status {
+        "working" | "claimed" | "open" | "in_progress" | "in-progress" => 4,
+        "available" | "ready" => 3,
+        "blocked" => 2,
+        "completed" | "done" => 1,
+        _ => 1,
+    }
+}
+
+fn focus_rank(item: &FocusItem) -> (u8, u64) {
+    (item.weight, item.modified_secs)
+}
+
+fn focus_source(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .ok()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("openspec")
+        .to_string()
+}
+
+fn repo_root() -> PathBuf {
+    if let Ok(root) = std::env::var("CODEX_FLEET_REPO_ROOT") {
+        return PathBuf::from(root);
+    }
+    if let Ok(mut cwd) = std::env::current_dir() {
+        loop {
+            if cwd.join("openspec").is_dir() && cwd.join("rust").is_dir() {
+                return cwd;
+            }
+            if !cwd.pop() {
+                break;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn marquee(input: &str, width: usize, offset: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = input.chars().collect();
+    if chars.len() <= width {
+        return format!("{input:width$}");
+    }
+    let mut looped = chars;
+    looped.extend("   ·   ".chars());
+    let len = looped.len();
+    (0..width).map(|idx| looped[(offset + idx) % len]).collect()
+}
+
 fn read_fresh_counter(key: &str) -> Option<String> {
     let raw = fs::read_to_string(COUNTERS_PATH).ok()?;
     if let Some(updated_at) = json_number(&raw, "updated_at") {
@@ -764,6 +1099,7 @@ mod tests {
         assert!(rendered.contains("Waves"));
         assert!(rendered.contains("Review"));
         assert!(rendered.contains("live"));
+        assert!(rendered.contains("CURRENT FOCUS"));
         assert_eq!(hits.len(), 5);
         assert_eq!(hits[0].window_idx, 0);
         assert_eq!(hits[4].window_idx, 4);
@@ -804,5 +1140,32 @@ mod tests {
         assert_eq!(json_number(raw, "overview"), Some(7));
         assert_eq!(json_number(raw, "fleet"), Some(2));
         assert_eq!(json_number(raw, "review"), None);
+    }
+
+    #[test]
+    fn current_focus_prefers_claimed_task_rows() {
+        let root =
+            std::env::temp_dir().join(format!("fleet-tab-strip-focus-test-{}", std::process::id()));
+        let plan_dir = root.join("openspec/plans/sample-plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(
+            plan_dir.join("tasks.md"),
+            "# Tasks\n\n| # | Status | Title | Files |\n| - | - | - | - |\n0|available|Later available work|`a`|\n1|claimed|Most active task title|`b`|\n",
+        )
+        .unwrap();
+
+        let focus = discover_current_focus_in(&root).expect("focus");
+        assert_eq!(focus.title, "Most active task title");
+        assert_eq!(focus.status, "claimed");
+        assert_eq!(focus.source, "sample-plan");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn marquee_scrolls_long_focus_text() {
+        assert_eq!(marquee("abcdef", 3, 0), "abc");
+        assert_eq!(marquee("abcdef", 3, 2), "cde");
+        assert_eq!(marquee("abc", 5, 9), "abc  ");
     }
 }
