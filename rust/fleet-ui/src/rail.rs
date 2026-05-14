@@ -1,0 +1,1 @@
+//! Progress rail widget scaffold.

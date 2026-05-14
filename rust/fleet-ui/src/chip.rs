@@ -1,0 +1,1 @@
+//! Status chip widget scaffold.
