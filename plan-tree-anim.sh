@@ -52,7 +52,17 @@ print(plans[0] if plans else "")
 PYEOF
 }
 
-PLAN_JSON="${PLAN_TREE_ANIM_PLAN_JSON:-$(_latest_plan)}"
+# Plan selection order:
+#   1) PLAN_TREE_ANIM_PLAN_JSON env var (one-shot pin)
+#   2) Pin file at PLAN_TREE_ANIM_PIN_FILE (sticky across respawns)
+#   3) Newest non-empty plan from openspec/plans/
+PIN_FILE="${PLAN_TREE_ANIM_PIN_FILE:-/tmp/claude-viz/plan-tree-pin.txt}"
+PLAN_JSON="${PLAN_TREE_ANIM_PLAN_JSON:-}"
+if [[ -z "$PLAN_JSON" && -f "$PIN_FILE" ]]; then
+  pin_path="$(head -1 "$PIN_FILE" 2>/dev/null)"
+  [[ -f "$pin_path" ]] && PLAN_JSON="$pin_path"
+fi
+[[ -z "$PLAN_JSON" ]] && PLAN_JSON="$(_latest_plan)"
 if [[ ! -f "$PLAN_JSON" ]]; then
   printf 'plan-tree-anim: no plan.json found under %s/openspec/plans/*/plan.json\n' "$REPO"
   sleep 5
@@ -384,106 +394,134 @@ render() {
     printf '%s\n' "${E}[K"
   done
 
-  # ── Proposal cards (one per sub-task) ────────────────────────────────
+  # ── Proposal cards — compact strip per sub-task ──────────────────────
+  # Two inner rows per card:
+  #   row 1: 📂 files-csv (truncated)        deps chips           progress rail
+  #   row 2: 👤 worker chip                  ✓ PR#N if done       —
   printf '%s\n' "${E}[K"
-  printf '%s%sPROPOSALS%s  %sfile · why · deps · worker · evidence%s%s\n' \
+  printf '%s%sPROPOSALS%s  %sfile · deps · worker · pr%s%s\n' \
     "$B" "$TEAL" "$R" "$DIM" "$R" "${E}[K"
   local card_w=$(( PANE_W - 4 ))
-  (( card_w < 60 )) && card_w=60
+  (( card_w < 70 )) && card_w=70
   (( card_w > 200 )) && card_w=200
+
+  # Helper: extract PR number from completed_summary text.
+  pr_from_summary() {
+    local s="$1"
+    # Try `PR 1839`, `PR #1839`, `pull/1839`, `pull-1839`, `#1839`
+    local n
+    n=$(printf '%s' "$s" | grep -oE 'pull/[0-9]+|PR #?[0-9]+|#[0-9]+' | head -1 | grep -oE '[0-9]+' | head -1)
+    printf '%s' "$n"
+  }
+
+  # Helper: a 12-cell horizontal rail colored by status.
+  task_rail() {
+    local status="$1" w=12 col fill
+    case "$status" in
+      completed) col="$G";   fill="$w" ;;
+      claimed)   col="$YELLOW"; fill=$(( w / 2 )) ;;
+      blocked)   col="$RED"; fill=2 ;;
+      *)         col="$DIM"; fill=0 ;;
+    esac
+    local out="${GREY}▕${R}${col}"
+    local k
+    for ((k=0;k<fill;k++)); do out+="█"; done
+    out+="${DIM}"
+    for ((k=fill;k<w;k++)); do out+="░"; done
+    out+="${GREY}▏${R}"
+    printf '%s' "$out"
+  }
 
   local IFS_OLD="$IFS"
   while IFS=$'\x1f' read -r idx status title agent description files deps summary; do
     [[ -z "$idx" ]] && continue
     local wave="${LVL[$idx]:-?}"
-    local chip; chip=$(status_chip "$status")
-    local hdr="W$((wave+1)) · sub-${idx} · ${title}"
-    # Title line + status chip
+
+    # ── Card header: W{n} · sub-{i} · title  + status pill, no chip-strip clutter
+    local status_word col
+    case "$status" in
+      completed) status_word="● done";     col="$G" ;;
+      claimed)   status_word="◐ claimed";  col="$YELLOW" ;;
+      blocked)   status_word="✕ blocked";  col="$RED" ;;
+      *)         status_word="◇ ready";    col="$DIM" ;;
+    esac
+    local title_trim
+    title_trim=$(trunc "$title" $(( card_w - 30 )))
+    local hdr_inner="${col}${status_word}${R}  ${B}W$((wave+1))·sub-${idx}${R}  ${WHITE}${title_trim}${R}"
+    local hdr_vis=$(( ${#status_word} + 2 + 9 + ${#idx} + 2 + ${#title_trim} ))
     printf '%s' "${E}[K"
-    card_top "$hdr   $(printf '%s' "$chip" | sed -E 's/\x1B\[[0-9;]*m//g')" "$card_w"
+    # Top border
+    local fill_w=$(( card_w - 2 ))
+    local top
+    printf -v top '%*s' "$fill_w" ''; top="${top// /─}"
+    printf '%s┌%s┐%s\n' "$GREY" "$top" "$R"
+    # Header row (overlaid into card body)
+    local pad=$(( card_w - 4 - hdr_vis ))
+    (( pad < 0 )) && pad=0
+    printf '%s│%s  %b%*s%s│%s\n' "$GREY" "$R" "$hdr_inner" "$pad" "" "$GREY" "$R"
 
-    # file: rows (one per file_scope entry).
-    # Use _fp here — the outer render() loop binds `f` to the frame counter
-    # and arithmetic `(( (f / 2) % 4 ))` later would divide a file path by 2.
-    if [[ -n "$files" ]]; then
-      local first=1 _fp
-      IFS=',' read -ra FILE_ARR <<<"$files"
-      for _fp in "${FILE_ARR[@]}"; do
-        if (( first )); then
-          card_row "$card_w" $(( 6 + ${#_fp} )) "${B}file:${R}   ${ICE}${_fp}${R}"
-          first=0
-        else
-          card_row "$card_w" $(( 9 + ${#_fp} )) "         ${ICE}${_fp}${R}"
-        fi
-      done
+    # ── Row A: files (compact, comma-separated, truncated)
+    local files_disp="${files//,/${DIM}·${R} ${ICE}}"
+    # Strip leading separators if any
+    files_disp="${ICE}${files_disp}${R}"
+    local files_plain="${files//,/ · }"
+    local files_max=$(( card_w - 30 ))
+    if (( ${#files_plain} > files_max )); then
+      files_plain=$(trunc "$files_plain" "$files_max")
+      files_disp="${ICE}${files_plain}${R}"
     fi
+    local row_a="${DIM}📂${R} ${files_disp}"
+    local row_a_vis=$(( 3 + ${#files_plain} ))
+    local pad_a=$(( card_w - 4 - row_a_vis ))
+    (( pad_a < 0 )) && pad_a=0
+    printf '%s│%s  %b%*s%s│%s\n' "$GREY" "$R" "$row_a" "$pad_a" "" "$GREY" "$R"
 
-    # why: wrapped description
-    if [[ -n "$description" ]]; then
-      local inner_w=$(( card_w - 13 ))
-      (( inner_w < 30 )) && inner_w=30
-      local first=1 line
-      while IFS= read -r line; do
-        if (( first )); then
-          card_row "$card_w" $(( 6 + ${#line} )) "${B}why:${R}    ${WHITE}${line}${R}"
-          first=0
-        else
-          card_row "$card_w" $(( 9 + ${#line} )) "         ${WHITE}${line}${R}"
-        fi
-      done < <(wrap_text "$description" "$inner_w")
-    fi
-
-    # deps: resolve to "sub-N (status)" tuples
+    # ── Row B: deps · worker · PR · rail   (graphical row)
+    local row_b="" row_b_vis=0
     if [[ -n "$deps" ]]; then
-      local dep_list=""
       IFS=',' read -ra DEP_ARR <<<"$deps"
       local d_idx d_stat
       for d_idx in "${DEP_ARR[@]}"; do
         d_stat="${T_STATUS[$d_idx]:-?}"
-        local d_col="$DIM"
+        local d_dot
         case "$d_stat" in
-          completed) d_col="$G" ;;
-          claimed) d_col="$YELLOW" ;;
-          blocked) d_col="$RED" ;;
+          completed) d_dot="${G}●${R}" ;;
+          claimed)   d_dot="${YELLOW}◐${R}" ;;
+          blocked)   d_dot="${RED}✕${R}" ;;
+          *)         d_dot="${DIM}◇${R}" ;;
         esac
-        [[ -n "$dep_list" ]] && dep_list+="${DIM}, ${R}"
-        dep_list+="${d_col}sub-${d_idx}${R}${DIM}(${d_stat})${R}"
+        row_b+="${d_dot}${DIM}sub-${d_idx}${R} "
+        row_b_vis=$(( row_b_vis + 1 + 5 + ${#d_idx} ))
       done
-      # Visible len (rough): "sub-N(status)" per dep, comma-separated
-      local dep_vis=0 d
-      for d in "${DEP_ARR[@]}"; do
-        d_stat="${T_STATUS[$d]:-?}"
-        dep_vis=$(( dep_vis + 5 + ${#d} + 2 + ${#d_stat} + 1 + 2 ))
-      done
-      (( dep_vis -= 2 ))  # last comma not present
-      card_row "$card_w" $(( 6 + dep_vis )) "${B}deps:${R}   ${dep_list}"
+      row_b+="${DIM}·${R} "
+      row_b_vis=$(( row_b_vis + 2 ))
     fi
-
-    # worker: claimed agent (or em-dash for unclaimed)
-    local worker_text
+    # Worker chip
     if [[ -n "$agent" && "$agent" != "null" ]]; then
-      worker_text="${ICE}${agent}${R}"
-      card_row "$card_w" $(( 8 + ${#agent} )) "${B}worker:${R} ${worker_text}"
+      row_b+="${DIM}👤${R} ${ICE}${agent}${R} "
+      row_b_vis=$(( row_b_vis + 3 + ${#agent} + 1 ))
     else
-      card_row "$card_w" 9 "${B}worker:${R} ${DIM}—${R}"
+      row_b+="${DIM}👤 —${R} "
+      row_b_vis=$(( row_b_vis + 5 ))
     fi
-
-    # evidence (only when completed and we have a summary)
-    if [[ "$status" == "completed" && -n "$summary" ]]; then
-      local inner_w=$(( card_w - 14 ))
-      (( inner_w < 30 )) && inner_w=30
-      local first=1 line
-      while IFS= read -r line; do
-        if (( first )); then
-          card_row "$card_w" $(( 10 + ${#line} )) "${B}evidence:${R} ${G}${line}${R}"
-          first=0
-        else
-          card_row "$card_w" $(( 11 + ${#line} )) "          ${G}${line}${R}"
-        fi
-      done < <(wrap_text "$summary" "$inner_w")
+    # PR chip (only if completed and we extracted a number)
+    if [[ "$status" == "completed" ]]; then
+      local pr_num
+      pr_num=$(pr_from_summary "$summary")
+      if [[ -n "$pr_num" ]]; then
+        row_b+="${DIM}·${R} ${G}✓${R} ${ICE}PR#${pr_num}${R} "
+        row_b_vis=$(( row_b_vis + 4 + 4 + ${#pr_num} + 1 ))
+      fi
     fi
+    # Rail pinned to right side — compute pad so rail lands flush right
+    local rail; rail=$(task_rail "$status")
+    local rail_vis=14
+    local pad_b=$(( card_w - 4 - row_b_vis - rail_vis ))
+    (( pad_b < 1 )) && pad_b=1
+    printf '%s│%s  %b%*s%b%s│%s\n' "$GREY" "$R" "$row_b" "$pad_b" "" "$rail" "$GREY" "$R"
 
-    card_bottom "$card_w"
+    # Bottom border
+    printf '%s└%s┘%s\n' "$GREY" "$top" "$R"
     printf '%s\n' "${E}[K"
   done < <(pull_tasks_full)
   IFS="$IFS_OLD"
