@@ -1,0 +1,20 @@
+# Live operator config — copied from accounts.example.yml by install.sh.
+scripts/codex-fleet/accounts.yml
+
+# Runtime artifacts (should never live in-tree but guard anyway).
+*.log
+.dev-ports.json
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+
+# Per-machine claude / OMX state if someone clones into a colocated dir
+.claude/settings.local.json
+.omc/state/
+.omx/state/
