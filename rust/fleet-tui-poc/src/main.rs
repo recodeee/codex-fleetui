@@ -93,10 +93,67 @@ enum Overlay {
     SessionSwitcher,
 }
 
+// Spotlight catalogue — all commands the palette filters over. Each row is
+// matched against the user's query (case-insensitive substring on title + sub).
+struct SpotlightItem {
+    group: &'static str,
+    icon: &'static str,
+    title: &'static str,
+    sub: &'static str,
+    kbd: &'static str,
+}
+
+const SPOTLIGHT_ITEMS: &[SpotlightItem] = &[
+    SpotlightItem { group: "PANE", icon: "⊟", title: "Horizontal split",   sub: "Split active pane top/bottom",       kbd: "h" },
+    SpotlightItem { group: "PANE", icon: "⊞", title: "Vertical split",     sub: "Split active pane left/right",       kbd: "v" },
+    SpotlightItem { group: "PANE", icon: "⤢", title: "Zoom pane",          sub: "Toggle full-screen for this pane",   kbd: "z" },
+    SpotlightItem { group: "PANE", icon: "⇄", title: "Swap with marked pane", sub: "codex-ricsi-zazrifka ⇄ marked",   kbd: "s" },
+    SpotlightItem { group: "SESSION · codex-admin-kollarrobert", icon: "⧉", title: "Copy whole session", sub: "180 lines · transcript",      kbd: "⇧C" },
+    SpotlightItem { group: "SESSION · codex-admin-kollarrobert", icon: "☰", title: "Queue message",      sub: "Send to agent on next idle",  kbd: "↹" },
+    SpotlightItem { group: "SESSION · codex-admin-kollarrobert", icon: "⌚", title: "Search history…",    sub: "Across all 7 panes",          kbd: "/" },
+    SpotlightItem { group: "FLEET", icon: "+",  title: "Spawn new codex worker", sub: "codex-fleet · new agent",        kbd: "⌘N" },
+    SpotlightItem { group: "FLEET", icon: "⎇", title: "Switch worktree…",       sub: "codex-fleet-extract-p1…",         kbd: "⌘B" },
+];
+
+fn spotlight_filter(query: &str) -> Vec<&'static SpotlightItem> {
+    if query.is_empty() {
+        return SPOTLIGHT_ITEMS.iter().collect();
+    }
+    let q = query.to_lowercase();
+    SPOTLIGHT_ITEMS
+        .iter()
+        .filter(|it| {
+            it.title.to_lowercase().contains(&q)
+                || it.sub.to_lowercase().contains(&q)
+                || it.group.to_lowercase().contains(&q)
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CardAction {
+    Focus(usize),
+    Queue(usize),
+    Pause(usize),
+    Kill(usize),
+    NewWorker,
+}
+
 struct App {
     events: Vec<String>,
     chip_rect: Option<Rect>,
     overlay: Overlay,
+    // Spotlight state — query the user is typing + which result row is
+    // selected (0 = top hit, 1..N = grouped results).
+    spotlight_query: String,
+    spotlight_selected: usize,
+    spotlight_tick: u64,
+    // Session-switcher hit-testing. render_session_switcher rebuilds this
+    // every frame; the mouse handler consults it on each MouseDown(Left)
+    // and dispatches the matching CardAction into `last_action`, which the
+    // footer flashes as visual feedback on the next frame.
+    card_buttons: Vec<(Rect, CardAction)>,
+    last_action: Option<String>,
 }
 
 impl App {
@@ -105,7 +162,37 @@ impl App {
             events: vec!["click the systemBlue chip — coords land here".into()],
             chip_rect: None,
             overlay: Overlay::None,
+            spotlight_query: String::new(),
+            spotlight_selected: 0,
+            spotlight_tick: 0,
+            card_buttons: Vec::new(),
+            last_action: None,
         }
+    }
+
+    fn open_spotlight(&mut self) {
+        self.overlay = Overlay::Spotlight;
+        self.spotlight_query.clear();
+        self.spotlight_selected = 0;
+    }
+
+    fn dispatch_card_click(&mut self, col: u16, row: u16) -> bool {
+        // Walk in reverse so a button rendered on top wins ties (e.g. Kill
+        // button overlapping a card edge).
+        for (r, action) in self.card_buttons.iter().rev() {
+            if col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height {
+                let line = match action {
+                    CardAction::Focus(i) => format!("✓ Focus → pane {} (would: tmux select-pane -t codex-fleet:overview.{})", i, i),
+                    CardAction::Queue(i) => format!("✓ Queue → pane {} (would: tmux send-keys after next idle)", i),
+                    CardAction::Pause(i) => format!("✓ Pause → pane {} (would: SIGSTOP codex; SIGCONT on next click)", i),
+                    CardAction::Kill(i)  => format!("✕ Kill  → pane {} (would: tmux kill-pane -t codex-fleet:overview.{})", i, i),
+                    CardAction::NewWorker => "+ New worker (would: spawn a new pane via full-bringup --n+1)".to_string(),
+                };
+                self.last_action = Some(line);
+                return true;
+            }
+        }
+        false
     }
 
     fn record_mouse(&mut self, ev: MouseEvent) {
@@ -670,9 +757,13 @@ fn render_context_menu(frame: &mut ratatui::Frame, area: Rect) {
 
 // ─────────────────────────── 2 · iOS spotlight ─────────────────────────────
 
-fn render_spotlight(frame: &mut ratatui::Frame, area: Rect) {
-    let w: u16 = 72;
-    let h: u16 = 34;
+fn render_spotlight(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let filtered = spotlight_filter(&app.spotlight_query);
+    let total = filtered.len();
+    let selected = if total == 0 { 0 } else { app.spotlight_selected.min(total - 1) };
+
+    let w: u16 = 78;
+    let h: u16 = 42;
     let rect = center_rect(area, w, h);
     frame.render_widget(Clear, rect);
     frame.render_widget(glass_block(None, IOS_TINT, true), rect);
@@ -689,13 +780,23 @@ fn render_spotlight(frame: &mut ratatui::Frame, area: Rect) {
     let mut y = inner.y + 1; // top padding row
 
     // ── Search bar ────────────────────────────────────────────────────────
+    // The caret blinks at ~2 Hz off the tick counter (120ms poll × 4 ≈ 500ms).
+    let caret_on = (app.spotlight_tick / 4) % 2 == 0;
+    let caret_char = if caret_on { "▏" } else { " " };
+    let query_display = if app.spotlight_query.is_empty() {
+        "type to filter…"
+    } else {
+        app.spotlight_query.as_str()
+    };
+    let query_style = if app.spotlight_query.is_empty() {
+        Style::default().fg(IOS_FG_FAINT)
+    } else {
+        Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD)
+    };
     let q_spans: Vec<Span> = vec![
         Span::styled("⌕  ", Style::default().fg(IOS_FG_MUTED)),
-        Span::styled(
-            "split",
-            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("▏", Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD)),
+        Span::styled(query_display.to_string(), query_style),
+        Span::styled(caret_char, Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD)),
     ];
     let cmdk = " ⌘ K ";
     let cmdk_w = cmdk.chars().count() as u16;
@@ -1230,7 +1331,9 @@ const SESSIONS: &[SessionCard] = &[
     },
 ];
 
-fn render_session_switcher(frame: &mut ratatui::Frame, area: Rect) {
+fn render_session_switcher(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    // Wipe last frame's hit-rects; every button registers fresh below.
+    app.card_buttons.clear();
     // Full-area scrim
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(2, 4, 7))),
@@ -1264,10 +1367,16 @@ fn render_session_switcher(frame: &mut ratatui::Frame, area: Rect) {
         header_rect,
     );
 
-    // "New worker" pill — top-right
+    // "New worker" pill — top-right, clickable.
     let pill = " + New worker ";
     let pill_w = pill.chars().count() as u16;
     if area.width > pill_w + 2 {
+        let pill_rect = Rect {
+            x: area.x + area.width - pill_w - 1,
+            y: area.y + 1,
+            width: pill_w,
+            height: 1,
+        };
         frame.render_widget(
             Paragraph::new(Span::styled(
                 pill,
@@ -1276,18 +1385,27 @@ fn render_session_switcher(frame: &mut ratatui::Frame, area: Rect) {
                     .bg(IOS_BG_GLASS)
                     .add_modifier(Modifier::BOLD),
             )),
-            Rect {
-                x: area.x + area.width - pill_w - 1,
-                y: area.y + 1,
-                width: pill_w,
-                height: 1,
-            },
+            pill_rect,
         );
+        app.card_buttons.push((pill_rect, CardAction::NewWorker));
     }
 
-    // Footer hints
+    // Footer hints + last-action flash (single row, then nav line).
     let footer_h: u16 = 2;
     let footer_y = area.y + area.height - footer_h;
+    if let Some(msg) = &app.last_action {
+        let truncated: String = msg.chars().take(area.width.saturating_sub(4) as usize).collect();
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(
+                    truncated,
+                    Style::default().fg(IOS_GREEN).add_modifier(Modifier::BOLD),
+                ),
+            ])),
+            Rect { x: area.x, y: footer_y, width: area.width, height: 1 },
+        );
+    }
     let footer = Line::from(vec![
         Span::raw("  "),
         Span::styled("← →", Style::default().fg(IOS_FG)),
@@ -1297,21 +1415,28 @@ fn render_session_switcher(frame: &mut ratatui::Frame, area: Rect) {
         Span::styled("↑", Style::default().fg(IOS_FG)),
         Span::styled(" dismiss    ", Style::default().fg(IOS_FG_MUTED)),
         Span::styled("⌘ N", Style::default().fg(IOS_FG)),
-        Span::styled(" new worker", Style::default().fg(IOS_FG_MUTED)),
+        Span::styled(" new worker    ", Style::default().fg(IOS_FG_MUTED)),
+        Span::styled("click", Style::default().fg(IOS_FG)),
+        Span::styled(" buttons work →", Style::default().fg(IOS_FG_MUTED)),
     ]);
     frame.render_widget(
         Paragraph::new(footer),
-        Rect { x: area.x, y: footer_y, width: area.width, height: 1 },
+        Rect { x: area.x, y: footer_y + 1, width: area.width, height: 1 },
     );
 
-    // Card strip
-    let strip_y = area.y + header_h;
-    let strip_h = area.height.saturating_sub(header_h + footer_h);
-    if strip_h < 8 || area.width < 14 {
+    // Card strip — cap height at ~70% of available vertical so cards read
+    // as cards (artboard D shows ~78%; 70% leaves room for the action-feedback
+    // flash row that sits between the strip and the nav footer). Center the
+    // strip vertically inside the remaining gap.
+    let strip_area_h = area.height.saturating_sub(header_h + footer_h);
+    let strip_y_origin = area.y + header_h;
+    if strip_area_h < 8 || area.width < 14 {
         return;
     }
-    let card_w: u16 = 30;
-    let gap: u16 = 2;
+    let strip_h = ((strip_area_h as u32 * 70 / 100) as u16).max(8);
+    let strip_y = strip_y_origin + (strip_area_h.saturating_sub(strip_h) / 2);
+    let card_w: u16 = 28;
+    let gap: u16 = 1;
     let pad: u16 = 2;
     let max_cards = ((area.width.saturating_sub(pad * 2) + gap) / (card_w + gap)).max(1);
     let visible = (SESSIONS.len() as u16).min(max_cards) as usize;
@@ -1322,11 +1447,17 @@ fn render_session_switcher(frame: &mut ratatui::Frame, area: Rect) {
             break;
         }
         let rect = Rect { x, y: strip_y, width: card_w, height: strip_h };
-        render_session_card(frame, rect, s);
+        render_session_card(frame, rect, s, i, app);
     }
 }
 
-fn render_session_card(frame: &mut ratatui::Frame, rect: Rect, s: &SessionCard) {
+fn render_session_card(
+    frame: &mut ratatui::Frame,
+    rect: Rect,
+    s: &SessionCard,
+    card_index: usize,
+    app: &mut App,
+) {
     let border = if s.active { IOS_TINT } else { IOS_HAIRLINE_STRONG };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1453,37 +1584,58 @@ fn render_session_card(frame: &mut ratatui::Frame, rect: Rect, s: &SessionCard) 
         }
     }
 
-    // Actions row at bottom
+    // Actions row at bottom. Each button gets a Rect that registers in
+    // app.card_buttons so the mouse handler can resolve clicks to
+    // CardAction::Focus / Queue / Pause / Kill (card_index = pane index in
+    // the fleet). Geometry: Focus button takes the leftmost 9 cells (
+    // " ❯ Focus "), then 3-cell Queue (" ☰ "), 3-cell Pause (" ‖ "),
+    // remaining space, then 3-cell Kill (" ✕ ") right-aligned.
     let action_y = inner.y + inner.height - 1;
-    if action_y > inner.y {
-        let actions = Line::from(vec![
-            Span::styled(
+    if action_y > inner.y && inner.width > 14 {
+        let focus_w: u16 = 9;
+        let icon_w: u16 = 3;
+
+        let focus_rect = Rect { x: inner.x, y: action_y, width: focus_w, height: 1 };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
                 " ❯ Focus ",
                 Style::default()
                     .fg(if s.active { Color::Rgb(255, 255, 255) } else { IOS_FG })
                     .bg(if s.active { IOS_TINT } else { IOS_CHIP_BG })
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(" ☰ ", Style::default().fg(IOS_FG).bg(IOS_CHIP_BG)),
-            Span::raw(" "),
-            Span::styled(" ‖ ", Style::default().fg(IOS_FG).bg(IOS_CHIP_BG)),
-        ]);
-        frame.render_widget(
-            Paragraph::new(actions),
-            Rect { x: inner.x, y: action_y, width: inner.width.saturating_sub(4), height: 1 },
+            )),
+            focus_rect,
         );
-        let kill = " ✕ ";
-        let kw = kill.chars().count() as u16;
-        if inner.width > kw + 1 {
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    kill,
-                    Style::default().fg(IOS_DESTRUCTIVE).bg(Color::Rgb(58, 24, 24)),
-                )),
-                Rect { x: inner.x + inner.width - kw, y: action_y, width: kw, height: 1 },
-            );
-        }
+        app.card_buttons.push((focus_rect, CardAction::Focus(card_index)));
+
+        let queue_rect = Rect { x: inner.x + focus_w + 1, y: action_y, width: icon_w, height: 1 };
+        frame.render_widget(
+            Paragraph::new(Span::styled(" ☰ ", Style::default().fg(IOS_FG).bg(IOS_CHIP_BG))),
+            queue_rect,
+        );
+        app.card_buttons.push((queue_rect, CardAction::Queue(card_index)));
+
+        let pause_rect = Rect { x: inner.x + focus_w + 1 + icon_w + 1, y: action_y, width: icon_w, height: 1 };
+        frame.render_widget(
+            Paragraph::new(Span::styled(" ‖ ", Style::default().fg(IOS_FG).bg(IOS_CHIP_BG))),
+            pause_rect,
+        );
+        app.card_buttons.push((pause_rect, CardAction::Pause(card_index)));
+
+        let kill_rect = Rect {
+            x: inner.x + inner.width.saturating_sub(icon_w),
+            y: action_y,
+            width: icon_w,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " ✕ ",
+                Style::default().fg(IOS_DESTRUCTIVE).bg(Color::Rgb(58, 24, 24)),
+            )),
+            kill_rect,
+        );
+        app.card_buttons.push((kill_rect, CardAction::Kill(card_index)));
     }
 }
 
@@ -1557,7 +1709,7 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
         Overlay::SessionSwitcher => {
             // Full-screen iOS surface; no dim of terminal backdrop because
             // the switcher *is* the surface (matches the JSX artboard D).
-            render_session_switcher(frame, area);
+            render_session_switcher(frame, area, app);
             app.chip_rect = None;
         }
         Overlay::ContextMenu | Overlay::Spotlight | Overlay::ActionSheet => {
@@ -1565,7 +1717,7 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
             dim_backdrop(frame, area);
             match app.overlay {
                 Overlay::ContextMenu => render_context_menu(frame, area),
-                Overlay::Spotlight => render_spotlight(frame, area),
+                Overlay::Spotlight => render_spotlight(frame, area, app),
                 Overlay::ActionSheet => render_action_sheet(frame, area),
                 _ => unreachable!(),
             }
@@ -1584,32 +1736,76 @@ fn run() -> io::Result<()> {
     let mut app = App::new();
     loop {
         terminal.draw(|frame| render(frame, &mut app))?;
-        if event::poll(Duration::from_millis(200))? {
+        if event::poll(Duration::from_millis(120))? {
             match event::read()? {
-                Event::Key(k) => match k.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Esc | KeyCode::Char('0') => {
-                        if app.overlay == Overlay::None {
-                            break;
+                Event::Key(k) => {
+                    if app.overlay == Overlay::Spotlight {
+                        // Spotlight captures all printable keys + arrows. Esc
+                        // dismisses; the harness's `q` / `0` / `1-4` switching
+                        // is parked until the palette is closed.
+                        match k.code {
+                            KeyCode::Esc => {
+                                app.overlay = Overlay::None;
+                                app.spotlight_query.clear();
+                                app.spotlight_selected = 0;
+                            }
+                            KeyCode::Char(c) => {
+                                app.spotlight_query.push(c);
+                                app.spotlight_selected = 0;
+                            }
+                            KeyCode::Backspace => {
+                                app.spotlight_query.pop();
+                                app.spotlight_selected = 0;
+                            }
+                            KeyCode::Up => {
+                                app.spotlight_selected =
+                                    app.spotlight_selected.saturating_sub(1);
+                            }
+                            KeyCode::Down => {
+                                let max =
+                                    spotlight_filter(&app.spotlight_query)
+                                        .len()
+                                        .saturating_sub(1);
+                                app.spotlight_selected =
+                                    (app.spotlight_selected + 1).min(max);
+                            }
+                            KeyCode::Enter => {
+                                // Visual feedback only — no command bus in the POC.
+                            }
+                            _ => {}
                         }
-                        app.overlay = Overlay::None;
+                    } else {
+                        match k.code {
+                            KeyCode::Char('q') => break,
+                            KeyCode::Esc | KeyCode::Char('0') => {
+                                if app.overlay == Overlay::None {
+                                    break;
+                                }
+                                app.overlay = Overlay::None;
+                            }
+                            KeyCode::Char('1') => app.overlay = Overlay::ContextMenu,
+                            KeyCode::Char('2') => app.open_spotlight(),
+                            KeyCode::Char('3') => app.overlay = Overlay::ActionSheet,
+                            KeyCode::Char('4') => app.overlay = Overlay::SessionSwitcher,
+                            _ => {}
+                        }
                     }
-                    KeyCode::Char('1') => app.overlay = Overlay::ContextMenu,
-                    KeyCode::Char('2') => app.overlay = Overlay::Spotlight,
-                    KeyCode::Char('3') => app.overlay = Overlay::ActionSheet,
-                    KeyCode::Char('4') => app.overlay = Overlay::SessionSwitcher,
-                    _ => {}
-                },
+                }
                 Event::Mouse(m) => {
                     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-                        if app.overlay == Overlay::None {
-                            app.record_mouse(m);
+                        match app.overlay {
+                            Overlay::None => app.record_mouse(m),
+                            Overlay::SessionSwitcher => {
+                                app.dispatch_card_click(m.column, m.row);
+                            }
+                            _ => {}
                         }
                     }
                 }
                 _ => {}
             }
         }
+        app.spotlight_tick = app.spotlight_tick.wrapping_add(1);
     }
 
     disable_raw_mode()?;
