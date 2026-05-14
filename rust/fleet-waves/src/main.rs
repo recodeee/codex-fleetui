@@ -1,12 +1,14 @@
-// fleet-waves — drop-in replacement for `waves-anim-generic.sh`. Phase-4
-// minimal: in-binary tab strip + vertical wave flow showing each sub-task
-// chip + status. Uses fleet-data::plan for the source data and fleet-ui
-// chip/card for the rendering.
+// fleet-waves — drop-in replacement for `waves-anim-generic.sh`. Renders a
+// vertical wave flow showing each sub-task chip + status, using
+// fleet-data::plan for the source data and fleet-ui chip/card for the
+// rendering. The pane runs inside the `codex-fleet` tmux session, whose
+// status bar (`style-tabs.sh`) supplies the canonical tab strip; this
+// binary therefore does not draw one of its own.
 
-use std::{io, path::PathBuf, process::Command, time::Duration};
+use std::{io, path::PathBuf, time::Duration};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind},
+    event::{self, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -21,10 +23,7 @@ use ratatui::{
     Terminal,
 };
 
-const TABS: &[(&str, &str)] = &[("0","watcher"),("1","overview"),("2","fleet"),("3","plan"),("4","waves")];
-const ACTIVE_TAB: usize = 4;
-
-struct App { tab_rects: Vec<(Rect, usize)>, plan: Option<Plan> }
+struct App { plan: Option<Plan> }
 
 impl App {
     fn new() -> Self {
@@ -33,25 +32,7 @@ impl App {
             .or_else(|| Some("/home/deadpool/Documents/recodee".to_string()))
             .and_then(|root| plan::newest_plan(&PathBuf::from(root)).ok().flatten())
             .and_then(|p| plan::load(&p).ok());
-        Self { tab_rects: Vec::new(), plan }
-    }
-    fn handle_click(&self, col: u16, row: u16) -> Option<usize> {
-        self.tab_rects.iter().find(|(r, _)| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height).map(|(_, i)| *i)
-    }
-}
-
-fn render_tab_strip(frame: &mut ratatui::Frame, area: Rect, active: usize, app: &mut App) {
-    app.tab_rects.clear();
-    let mut x = area.x;
-    for (i, (idx, name)) in TABS.iter().enumerate() {
-        let label = format!(" {} {} ", idx, name);
-        let w = label.chars().count() as u16;
-        if x + w + 1 >= area.x + area.width { break; }
-        let r = Rect { x, y: area.y, width: w, height: 1 };
-        let style = if i == active { Style::default().fg(IOS_FG).bg(IOS_TINT).add_modifier(Modifier::BOLD) } else { Style::default().fg(IOS_FG_MUTED).bg(IOS_CHIP_BG) };
-        frame.render_widget(Paragraph::new(Span::styled(label, style)), r);
-        app.tab_rects.push((r, i));
-        x += w + 1;
+        Self { plan }
     }
 }
 
@@ -64,18 +45,17 @@ fn classify(s: &Subtask) -> ChipKind {
     }
 }
 
-fn render(frame: &mut ratatui::Frame, app: &mut App) {
+fn render(frame: &mut ratatui::Frame, app: &App) {
     let area = frame.area();
     if area.width < 30 || area.height < 8 { return; }
-    let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(1), Constraint::Length(3), Constraint::Min(0)]).split(area);
-    render_tab_strip(frame, rows[0], ACTIVE_TAB, app);
+    let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(3), Constraint::Min(0)]).split(area);
 
     let title = app.plan.as_ref().map(|p| format!("WAVES · {}", p.plan_slug)).unwrap_or_else(|| "WAVES · no plan".to_string());
-    frame.render_widget(card(Some(&title), false), rows[1]);
+    frame.render_widget(card(Some(&title), false), rows[0]);
 
     let block = card(Some("VERTICAL WAVE FLOW"), false);
-    let inner = block.inner(rows[2]);
-    frame.render_widget(block, rows[2]);
+    let inner = block.inner(rows[1]);
+    frame.render_widget(block, rows[1]);
 
     let Some(plan) = app.plan.as_ref() else { return; };
     let total = plan.tasks.len();
@@ -95,35 +75,25 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
-fn select_window(idx: usize) {
-    let _ = Command::new("tmux").args(["select-window", "-t", &format!("codex-fleet:{}", idx)]).status();
-}
-
 fn main() -> io::Result<()> {
     enable_raw_mode()?;
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(out, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::new();
+    let app = App::new();
     let result: io::Result<()> = (|| {
         loop {
-            terminal.draw(|f| render(f, &mut app))?;
+            terminal.draw(|f| render(f, &app))?;
             if event::poll(Duration::from_millis(250))? {
-                match event::read()? {
-                    Event::Key(k) => if matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) { break },
-                    Event::Mouse(m) => {
-                        if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-                            if let Some(idx) = app.handle_click(m.column, m.row) { select_window(idx); }
-                        }
-                    }
-                    _ => {}
+                if let Event::Key(k) = event::read()? {
+                    if matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) { break }
                 }
             }
         }
         Ok(())
     })();
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     result
 }

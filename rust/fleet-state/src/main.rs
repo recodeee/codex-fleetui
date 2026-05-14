@@ -1,29 +1,32 @@
 // fleet-state — drop-in replacement for `fleet-state-anim.sh` + render half
-// of `fleet-tick.sh`. This is the first real consumer of `fleet-data::fleet`:
-// the Phase-4 scaffold rendered four hardcoded mock rows; it now calls
+// of `fleet-tick.sh`. First real consumer of `fleet-data::fleet`: calls
 // `fleet::load_live` and renders the live join of accounts + panes.
 //
-// Wiring this call site is what makes `fleet-data::fleet` and
-// `fleet-data::tmux` *integrated* rather than merely declared — `cargo build
-// -p fleet-state` now exercises the full chain: tmux::list_panes →
-// panes::list_panes → fleet::join.
+// `cargo build -p fleet-state` exercises the full chain: tmux::list_panes
+// → panes::list_panes → fleet::join.
 //
-// Still Phase-4-minimal on the chrome side: in-binary tab strip + iOS cockpit
-// card frame. The full "G · Fleet" artboard (per-row avatars, the PANE `#N >`
-// column, Filter / New worker buttons) lands in follow-up PRs — this PR's job
+// The pane runs inside the `codex-fleet` tmux session, whose status bar
+// (`style-tabs.sh`) supplies the canonical tab strip; this binary
+// therefore does not draw one of its own. Key input is routed through
+// `fleet_input` (the dashboard-wide action matcher) — currently only the
+// `q` / `Esc` quit bindings are registered, but the plumbing is in place
+// so future bindings (refresh, jump-to-row, …) only need a `bind()` line
+// rather than another inline `matches!` branch.
+//
+// The full "G · Fleet" artboard (per-row avatars, the PANE `#N >` column,
+// Filter / New worker buttons) lands in follow-up PRs — this binary's job
 // is the data path, not pixel parity.
 
 use std::{io, time::Duration};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, MouseButton, MouseEventKind},
+    event::{self, Event, KeyEvent},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use fleet_data::{
     fleet::{self, FleetSummary, WorkerRow},
     panes::PaneState,
-    tmux,
 };
 use fleet_input::{Action, ContextStack, KeyPattern, Matcher};
 use fleet_ui::{
@@ -35,21 +38,11 @@ use fleet_ui::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     Terminal,
 };
-
-const TABS: &[(&str, &str)] = &[
-    ("0", "watcher"),
-    ("1", "overview"),
-    ("2", "fleet"),
-    ("3", "plan"),
-    ("4", "waves"),
-];
-
-const ACTIVE_TAB: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InputContext {
@@ -77,7 +70,6 @@ fn fleet_target() -> (String, String) {
 
 struct App {
     input: ContextStack<InputContext>,
-    tab_rects: Vec<(Rect, usize)>,
     /// The live join of accounts + panes. `None` until the first successful
     /// load; `Some(vec![])` is a valid "fleet is empty / not running" state.
     rows: Option<Vec<WorkerRow>>,
@@ -90,7 +82,6 @@ impl App {
     fn new() -> Self {
         Self {
             input: input_context(),
-            tab_rects: Vec::new(),
             rows: None,
             load_error: None,
         }
@@ -113,54 +104,25 @@ impl App {
         }
     }
 
-    fn handle_click(&self, col: u16, row: u16) -> Option<usize> {
-        self.tab_rects
-            .iter()
-            .find(|(r, _)| {
-                col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
-            })
-            .map(|(_, i)| *i)
-    }
-
     fn dispatch_key(&mut self, key: KeyEvent) -> Option<Action> {
         self.input.dispatch(key)
     }
 
+    /// Apply an action dispatched from the input matcher. Returns `true`
+    /// when the action requests the event loop exit. `SelectTab` is a no-op
+    /// here — tab navigation is owned by tmux's status bar
+    /// (`style-tabs.sh`), so this binary intentionally does not handle it
+    /// even though the action exists in the shared `fleet_input::Action`
+    /// enum.
     fn apply_action(&mut self, action: Action) -> bool {
         match action {
-            Action::Noop => false,
             Action::Quit => true,
             Action::Refresh => {
                 self.refresh();
                 false
             }
-            Action::SelectTab(idx) => {
-                let (session, _) = fleet_target();
-                tmux::select_window_index(&session, idx);
-                false
-            }
+            Action::Noop | Action::SelectTab(_) => false,
         }
-    }
-}
-
-fn render_tab_strip(frame: &mut ratatui::Frame, area: Rect, active: usize, app: &mut App) {
-    app.tab_rects.clear();
-    let mut x = area.x;
-    for (i, (idx, name)) in TABS.iter().enumerate() {
-        let label = format!(" {} {} ", idx, name);
-        let w = label.chars().count() as u16;
-        if x + w + 1 >= area.x + area.width {
-            break;
-        }
-        let r = Rect { x, y: area.y, width: w, height: 1 };
-        let style = if i == active {
-            Style::default().fg(IOS_FG).bg(IOS_TINT).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(IOS_FG_MUTED).bg(IOS_CHIP_BG)
-        };
-        frame.render_widget(Paragraph::new(Span::styled(label, style)), r);
-        app.tab_rects.push((r, i));
-        x += w + 1;
     }
 }
 
@@ -228,7 +190,7 @@ fn render_worker_row(frame: &mut ratatui::Frame, area: Rect, row: &WorkerRow) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render(frame: &mut ratatui::Frame, app: &mut App) {
+fn render(frame: &mut ratatui::Frame, app: &App) {
     let area = frame.area();
     if area.width < 30 || area.height < 8 {
         return;
@@ -237,12 +199,10 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // tab strip
             Constraint::Length(3), // header banner
             Constraint::Min(0),    // worker table
         ])
         .split(area);
-    render_tab_strip(frame, rows[0], ACTIVE_TAB, app);
 
     // ── Header banner: "FLEET · N workers · M live · K in review" ──────────
     let header_text = match &app.rows {
@@ -255,15 +215,15 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
         }
         None => "FLEET · loading…".to_string(),
     };
-    frame.render_widget(card(Some(&header_text), false), rows[1]);
+    frame.render_widget(card(Some(&header_text), false), rows[0]);
 
     // ── Worker table ──────────────────────────────────────────────────────
     let block = card(
         Some("ACCOUNT · WEEKLY · 5H · STATUS · WORKING ON"),
         false,
     );
-    let inner = block.inner(rows[2]);
-    frame.render_widget(block, rows[2]);
+    let inner = block.inner(rows[1]);
+    frame.render_widget(block, rows[1]);
 
     match &app.rows {
         Some(worker_rows) if !worker_rows.is_empty() => {
@@ -320,7 +280,7 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
 fn main() -> io::Result<()> {
     enable_raw_mode()?;
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(out, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
@@ -331,27 +291,14 @@ fn main() -> io::Result<()> {
 
     let result: io::Result<()> = (|| {
         loop {
-            terminal.draw(|f| render(f, &mut app))?;
+            terminal.draw(|f| render(f, &app))?;
             if event::poll(Duration::from_millis(250))? {
-                match event::read()? {
-                    Event::Key(k) => {
-                        if app
-                            .dispatch_key(k)
-                            .map(|action| app.apply_action(action))
-                            .unwrap_or(false)
-                        {
+                if let Event::Key(k) = event::read()? {
+                    if let Some(action) = app.dispatch_key(k) {
+                        if app.apply_action(action) {
                             break;
                         }
                     }
-                    Event::Mouse(m) => {
-                        if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-                            if let Some(idx) = app.handle_click(m.column, m.row) {
-                                // Best-effort: a failure (running outside tmux) is silently fine.
-                                app.apply_action(Action::SelectTab(idx));
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             } else {
                 // No input this tick — refresh the fleet state so the table
@@ -363,6 +310,6 @@ fn main() -> io::Result<()> {
     })();
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     result
 }
