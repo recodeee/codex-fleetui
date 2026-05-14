@@ -272,11 +272,17 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "bash $REPO/scripts/cod
 # stall-watcher: every 60s, `colony rescue stranded --apply` releases claims
 # held > 30m without progress, then enqueues a takeover_recommended event
 # per rescued agent into /tmp/claude-viz/supervisor-queue.jsonl.
-# supervisor: consumes that queue and spawns fresh kitty + codex workers for
-# the rescued slots with the takeover prompt. Together they unwedge the queue
-# when one agent dies holding sub-task claims that block downstream subs.
+# supervisor (opt-in): consumes that queue and spawns fresh kitty + codex
+# workers. Disabled by default because it spawns N separate kitty windows
+# per takeover event, which conflicts with the single-kitty-with-tmux-tabs
+# fleet UX. Re-enable per-bringup with CODEX_FLEET_SUPERVISOR=1, or run
+# `bash scripts/codex-fleet/supervisor.sh` manually when auto-rescue is wanted.
 tmux new-window  -d -t "$TICKER_SESSION:" -n stall-watcher "bash $REPO/scripts/codex-fleet/stall-watcher.sh"
-tmux new-window  -d -t "$TICKER_SESSION:" -n supervisor    "bash $REPO/scripts/codex-fleet/supervisor.sh"
+if [ "${CODEX_FLEET_SUPERVISOR:-0}" = "1" ]; then
+  tmux new-window  -d -t "$TICKER_SESSION:" -n supervisor    "bash $REPO/scripts/codex-fleet/supervisor.sh"
+else
+  log "supervisor window skipped (set CODEX_FLEET_SUPERVISOR=1 to enable auto-takeover spawns)"
+fi
 
 # 12b. Chrome the ticker session too so attaching to it shows the same iOS
 # tab strip / rounded pane borders / sticky menu as the main session.
