@@ -267,7 +267,22 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n review-detector "bash $REPO/scripts
 # `available` tasks, and dispatches them onto idle codex panes via
 # tmux send-keys. Keeps the fleet pulled into ready work when its
 # originally-pinned plan completes.
-tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "bash $REPO/scripts/codex-fleet/force-claim.sh --loop --interval=15"
+#
+# FORCE_CLAIM_WINDOW must point at the window that hosts the codex worker
+# panes (currently `overview`). Default `1` from force-claim.sh's own env
+# is wrong here because we have 6 windows and `1` maps to `fleet`, the
+# state-anim viz pane — so without this override the daemon reported
+# "no idle codex panes" forever while the actual workers idled in window 0.
+tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "FORCE_CLAIM_WINDOW=overview bash $REPO/scripts/codex-fleet/force-claim.sh --loop --interval=15"
+
+# claim-release-supervisor scans all openspec plans every 60s, finds claims
+# held by agents whose codex pane has gone back to the default prompt
+# placeholder (i.e. they finished or dropped the work without marking the
+# sub-task done in Colony), and releases those claims via colony rescue
+# stranded --apply so force-claim can re-route them. Distinct from
+# supervisor.sh (kitty-spawning quota replacement, opt-in via
+# CODEX_FLEET_SUPERVISOR=1) — this watcher only mutates Colony state.
+tmux new-window  -d -t "$TICKER_SESSION:" -n claim-release "CR_SUP_SESSION=$SESSION CR_SUP_WINDOW=overview bash $REPO/scripts/codex-fleet/claim-release-supervisor.sh --loop --interval=60"
 
 # stall-watcher: every 60s, `colony rescue stranded --apply` releases claims
 # held > 30m without progress, then enqueues a takeover_recommended event
