@@ -1826,19 +1826,19 @@ fn section_jump_tmux_args(key: char, session: &str) -> Option<Vec<String>> {
 }
 
 fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str>) {
-    // 3 columns × 2 rows grid; the 6th cell sits empty. Card geometry
-    // matches the screenshot reference (rounded corners via card_shadow +
-    // glass_block, ~22-wide cards, 6-high cards).
+    // 3 columns x 2 rows grid; the 6th cell sits empty. The geometry mirrors
+    // design F's compact command-K section picker: tight cards, visible row
+    // hairlines, a dense footer, and a bright active-card border.
     let card_w: u16 = 22;
-    let card_h: u16 = 6;
+    let card_h: u16 = 8;
     let gap: u16 = 1;
     let cols: u16 = 3;
     let rows: u16 = 2;
 
-    let title_block_h: u16 = 3; // title row + sub row + hairline pad
+    let title_block_h: u16 = 3; // title/sub rows + header hairline
     let footer_h: u16 = 1;
     let menu_w: u16 = 2 + (card_w * cols) + (gap * (cols - 1)) + 2;
-    let menu_h: u16 = 2 + title_block_h + (card_h * rows) + (gap * (rows - 1)) + 1 + footer_h + 2;
+    let menu_h: u16 = 2 + title_block_h + 1 + (card_h * rows) + (gap * (rows - 1)) + 1 + footer_h;
 
     let rect = center_rect(area, menu_w, menu_h);
     card_shadow(frame, rect, area);
@@ -1852,22 +1852,70 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
         height: rect.height.saturating_sub(2),
     };
 
-    // ── Title row: "codex-fleet"  +  "Jump to section" (muted) ────────────
+    // ── Title chrome: orange app chip + title/subtitle + close key chip ───
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "codex-fleet",
-                Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
-            ),
-        ])),
-        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+        Paragraph::new(Line::from(Span::styled(
+            " ◆ ",
+            Style::default()
+                .fg(Color::Rgb(28, 18, 8))
+                .bg(IOS_ORANGE)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: 3,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "codex-fleet",
+            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+        )])),
+        Rect {
+            x: inner.x + 5,
+            y: inner.y,
+            width: inner.width.saturating_sub(12),
+            height: 1,
+        },
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "Jump to section",
             Style::default().fg(IOS_FG_MUTED),
         ))),
-        Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x + 5,
+            y: inner.y + 1,
+            width: inner.width.saturating_sub(12),
+            height: 1,
+        },
+    );
+    let close_x = inner.x + inner.width.saturating_sub(6);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " × ",
+            Style::default().fg(IOS_FG_FAINT).bg(IOS_CHIP_BG),
+        ))),
+        Rect {
+            x: close_x,
+            y: inner.y,
+            width: 3,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " K ",
+            Style::default().fg(IOS_FG_FAINT).bg(IOS_CHIP_BG),
+        ))),
+        Rect {
+            x: close_x,
+            y: inner.y + 1,
+            width: 3,
+            height: 1,
+        },
     );
 
     // Hairline under the title block
@@ -1877,42 +1925,81 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
             hairline.clone(),
             Style::default().fg(IOS_HAIRLINE),
         )),
-        Rect { x: inner.x, y: inner.y + 2, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: inner.y + 2,
+            width: inner.width,
+            height: 1,
+        },
     );
 
     // ── Card grid ─────────────────────────────────────────────────────────
-    let grid_y0 = inner.y + 3 + 1; // +1 for breathing room under hairline
+    let grid_y0 = inner.y + title_block_h + 1; // +1 breathing row under hairline
     for (idx, sec) in SECTIONS.iter().enumerate() {
         let col = (idx as u16) % cols;
         let row = (idx as u16) / cols;
         let cx = inner.x + col * (card_w + gap);
         let cy = grid_y0 + row * (card_h + gap);
-        let cr = Rect { x: cx, y: cy, width: card_w, height: card_h };
+        let cr = Rect {
+            x: cx,
+            y: cy,
+            width: card_w,
+            height: card_h,
+        };
         let is_active = active_window.map(|w| w == sec.window).unwrap_or(idx == 0);
         render_jump_card(frame, cr, sec, is_active);
     }
+    let row_hairline_y = grid_y0 + card_h;
+    if row_hairline_y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(Span::styled(hairline, Style::default().fg(IOS_HAIRLINE))),
+            Rect {
+                x: inner.x,
+                y: row_hairline_y,
+                width: inner.width,
+                height: 1,
+            },
+        );
+    }
 
-    // ── Footer: "1-5 jump   ↵ open   esc close              ● Live" ──────
+    // ── Footer: "1–5 jump · ↵ open · esc close" + live status pill ───────
     let footer_y = inner.y + inner.height.saturating_sub(1);
     let hints: Vec<Span> = vec![
-        Span::styled("1–5", Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD)),
-        Span::styled(" jump   ", Style::default().fg(IOS_FG_MUTED)),
-        Span::styled("↵", Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD)),
-        Span::styled(" open   ", Style::default().fg(IOS_FG_MUTED)),
-        Span::styled("esc", Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "1–5",
+            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" jump · ", Style::default().fg(IOS_FG_MUTED)),
+        Span::styled(
+            "↵",
+            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" open · ", Style::default().fg(IOS_FG_MUTED)),
+        Span::styled(
+            "esc",
+            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" close", Style::default().fg(IOS_FG_MUTED)),
     ];
     frame.render_widget(
         Paragraph::new(Line::from(hints)),
-        Rect { x: inner.x, y: footer_y, width: inner.width.saturating_sub(8), height: 1 },
+        Rect {
+            x: inner.x,
+            y: footer_y,
+            width: inner.width.saturating_sub(8),
+            height: 1,
+        },
     );
-    let live = " ● Live ";
+    let live = " ● live ";
     let live_w = live.chars().count() as u16;
     if inner.width > live_w {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 live,
-                Style::default().fg(IOS_GREEN).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(IOS_GREEN)
+                    .bg(Color::Rgb(10, 36, 21))
+                    .add_modifier(Modifier::BOLD),
             ))),
             Rect {
                 x: inner.x + inner.width - live_w,
@@ -1925,38 +2012,86 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
 }
 
 fn render_jump_card(frame: &mut Frame, rect: Rect, sec: &Section, active: bool) {
-    let (bg, fg, sub_fg, badge_bg, badge_fg) = if active {
-        (IOS_TINT, IOS_FG, Color::Rgb(220, 232, 255), IOS_TINT_DARK, IOS_FG)
+    let (bg, fg, sub_fg, badge_bg, badge_fg, border_fg) = if active {
+        (
+            IOS_TINT,
+            IOS_FG,
+            Color::Rgb(220, 232, 255),
+            Color::Rgb(0, 82, 180),
+            IOS_FG,
+            Color::Rgb(116, 196, 255),
+        )
     } else {
-        (IOS_CARD_BG, IOS_FG, IOS_FG_MUTED, IOS_ICON_CHIP, IOS_FG_MUTED)
+        (
+            IOS_CARD_BG,
+            IOS_FG,
+            IOS_FG_MUTED,
+            IOS_ICON_CHIP,
+            IOS_FG_MUTED,
+            IOS_HAIRLINE_STRONG,
+        )
     };
     let card = Block::default()
-        .borders(Borders::NONE)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg))
         .style(Style::default().bg(bg));
+    let inner = card.inner(rect);
     frame.render_widget(card, rect);
 
     let inner = Rect {
-        x: rect.x + 1,
-        y: rect.y,
-        width: rect.width.saturating_sub(2),
-        height: rect.height,
+        x: inner.x + 1,
+        y: inner.y,
+        width: inner.width.saturating_sub(2),
+        height: inner.height,
     };
 
-    // Top row: icon badge (left) + key badge (right).
+    // Top row: icon badge (left) + key badge, or the active LIVE pill (right).
     let icon_span = Span::styled(
         format!(" {} ", sec.icon),
-        Style::default().fg(fg).bg(badge_bg).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(fg)
+            .bg(badge_bg)
+            .add_modifier(Modifier::BOLD),
     );
     frame.render_widget(
         Paragraph::new(Line::from(icon_span)),
-        Rect { x: inner.x, y: inner.y, width: 3, height: 1 },
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: 3,
+            height: 1,
+        },
     );
-    let key_span = Span::styled(
-        format!(" {} ", sec.key),
-        Style::default().fg(badge_fg).bg(badge_bg).add_modifier(Modifier::BOLD),
-    );
-    let key_w = 3u16;
-    if inner.width > key_w {
+    if active {
+        let live = " LIVE ";
+        let live_w = live.chars().count() as u16;
+        if inner.width > live_w {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    live,
+                    Style::default()
+                        .fg(IOS_GREEN)
+                        .bg(Color::Rgb(10, 36, 21))
+                        .add_modifier(Modifier::BOLD),
+                ))),
+                Rect {
+                    x: inner.x + inner.width - live_w,
+                    y: inner.y,
+                    width: live_w,
+                    height: 1,
+                },
+            );
+        }
+    } else {
+        let key_span = Span::styled(
+            format!(" {} ", sec.key),
+            Style::default()
+                .fg(badge_fg)
+                .bg(badge_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+        let key_w = 3u16;
         frame.render_widget(
             Paragraph::new(Line::from(key_span)),
             Rect {
@@ -1974,25 +2109,36 @@ fn render_jump_card(frame: &mut Frame, rect: Rect, sec: &Section, active: bool) 
             sec.title,
             Style::default().fg(fg).add_modifier(Modifier::BOLD),
         ))),
-        Rect { x: inner.x, y: inner.y + 2, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: inner.y + 2,
+            width: inner.width,
+            height: 1,
+        },
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             sec.sub,
             Style::default().fg(sub_fg),
-        ))),
-        Rect { x: inner.x, y: inner.y + 3, width: inner.width, height: 1 },
+        )))
+        .wrap(Wrap { trim: true }),
+        Rect {
+            x: inner.x,
+            y: inner.y + 3,
+            width: inner.width,
+            height: 2,
+        },
     );
 
     // Footer line at the bottom of the card.
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             sec.footer,
-            Style::default().fg(sub_fg).add_modifier(Modifier::ITALIC),
+            Style::default().fg(sub_fg).add_modifier(Modifier::BOLD),
         ))),
         Rect {
             x: inner.x,
-            y: inner.y + rect.height.saturating_sub(1),
+            y: inner.y + inner.height.saturating_sub(1),
             width: inner.width,
             height: 1,
         },
@@ -2406,6 +2552,43 @@ fn parse_overlay(name: &str) -> Overlay {
         "session-switcher" | "switcher" => Overlay::SessionSwitcher,
         "section-jump" | "section_jump" | "jump" => Overlay::SectionJump,
         _ => Overlay::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tuirealm::ratatui::backend::TestBackend;
+    use tuirealm::ratatui::buffer::Buffer;
+    use tuirealm::ratatui::Terminal;
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        let area = *buffer.area();
+        let mut out = String::new();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn section_jump_grid_keeps_design_f_chrome() {
+        let backend = TestBackend::new(110, 40);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| render_section_jump(frame, frame.area(), Some("overview")))
+            .expect("draw section jump");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("codex-fleet"));
+        assert!(rendered.contains("Jump to section"));
+        assert!(rendered.contains("Overview"));
+        assert!(rendered.contains("LIVE"));
+        assert!(rendered.contains("1–5 jump · ↵ open · esc close"));
     }
 }
 
