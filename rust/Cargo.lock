@@ -457,6 +457,7 @@ dependencies = [
  "fleet-data",
  "fleet-ui",
  "ratatui",
+ "tuirealm",
 ]
 
 [[package]]
