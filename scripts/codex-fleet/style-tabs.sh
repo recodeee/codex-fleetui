@@ -238,17 +238,25 @@ tx_set menu-border-lines   "rounded"
 # because bash splits the {} groups by whitespace.
 sticky_menu_conf=$(mktemp -t codex-fleet-menu.XXXXXX.tmux.conf)
 trap 'rm -f "$sticky_menu_conf"' EXIT
-# iOS-style sectioned menu:
-#   1. CAPTURE  — Copy whole session (full scrollback), Copy visible, Copy line
-#   2. NAVIGATE — Search history, Scroll to top/bottom
-#   3. PANE     — Horizontal/Vertical split, Zoom toggle
-#   4. ARRANGE  — Swap up/down/with-marked, Mark
-#   5. DANGER   — Respawn, Kill
-# Each item prefixed with a glyph for icon-led readability; sections separated
-# by tmux's '' separator. `-O` keeps the menu open until selection/Escape.
+# iOS-style right-click context menu.
+#
+# tmux's built-in `display-menu` can't render the rounded card chrome, the
+# pill-shaped accent shortcut chips on the right, or the live-status header
+# that the operator-approved design calls for — it only exposes menu-style /
+# menu-selected-style / menu-border-style plus inline #[…] markup, no
+# per-row two-tone layout or right-aligned chip columns.
+#
+# Switch to `display-popup -E -B`: a full pty inside the popup that runs
+# scripts/codex-fleet/bin/pane-context-menu.sh, which draws the design
+# directly with ANSI escapes (lib/ios-menu.sh palette + helpers), reads one
+# keystroke, and dispatches the same tmux commands the old display-menu did.
+#
+# CODEX_FLEET_MENU_LINE carries #{mouse_line} into the popup pty so the
+# script can implement "Copy this line"; #{q:…} quoting survives embedded
+# quotes/spaces in the line content.
 cat >"$sticky_menu_conf" <<'TMUX_CONF'
 unbind-key -T root MouseDown3Pane
-bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { display-menu -O -T "#[align=centre,fg=#FF9500,bold] ◆  pane #{pane_index} · #{pane_id} " -t = -x M -y M "  📋  Copy whole session" C "run-shell \"tmux capture-pane -t '#{pane_id}' -p -S - -E - | wl-copy && tmux display-message -d 1500 '📋  Pane history copied to clipboard'\"" "  📄  Copy visible" c "run-shell \"tmux capture-pane -t '#{pane_id}' -p | wl-copy && tmux display-message -d 1500 '📄  Visible area copied'\"" "  ✂   Copy this line" l "run-shell \"echo -n '#{q:mouse_line}' | wl-copy && tmux display-message -d 1500 '✂   Line copied'\"" '' "  🔎  Search history…" / { copy-mode -t= ; send-keys -X search-backward "" } "  ⬆   Scroll to top" '<' { copy-mode -t= ; send-keys -X history-top } "  ⬇   Scroll to bottom" '>' { copy-mode -t= ; send-keys -X history-bottom } '' "  ⬓   Horizontal split" h { split-window -h } "  ⬒   Vertical split" v { split-window -v } "#{?#{>:#{window_panes},1},,-}  ⛶   #{?window_zoomed_flag,Unzoom,Zoom}" z { resize-pane -Z } '' "#{?#{>:#{window_panes},1},,-}  ▲   Swap up" u { swap-pane -U } "#{?#{>:#{window_panes},1},,-}  ▼   Swap down" d { swap-pane -D } "#{?pane_marked_set,,-}  ⇄   Swap with marked" s { swap-pane } "  ◈   #{?pane_marked,Unmark,Mark} pane" m { select-pane -m } '' "  ↻   Respawn pane" R { respawn-pane -k } "  ✕   Kill pane" X { kill-pane } }
+bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { set-environment -g CODEX_FLEET_MENU_LINE "#{q:mouse_line}" ; display-popup -E -B -w 60 -h 28 -x M -y M -t = "bash \"${CODEX_FLEET_REPO_ROOT:-$HOME/Documents/recodee}/scripts/codex-fleet/bin/pane-context-menu.sh\" '#{pane_id}'" }
 
 # Mouse-wheel scroll into copy-mode even when the pane is in alt-screen
 # (plan-tree-anim / fleet-state-anim use \033[?1049h; the default tmux
