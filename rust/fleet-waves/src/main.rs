@@ -30,37 +30,83 @@
 
 use std::{io, path::PathBuf, time::Duration};
 
-use crossterm::{
-    event::{self, Event, KeyCode},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
 use fleet_data::plan::{self, Plan, Subtask};
 use fleet_ui::{
     chip::{status_chip, ChipKind, CHIP_WIDTH},
     palette::*,
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
-    Terminal,
-};
+use tuirealm::application::{Application, PollStrategy};
+use tuirealm::command::{Cmd, CmdResult};
+use tuirealm::component::{AppComponent, Component};
+use tuirealm::event::{Event, Key, KeyEvent, NoUserEvent};
+use tuirealm::listener::EventListenerCfg;
+use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
+use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
+use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use tuirealm::ratatui::Frame;
+use tuirealm::state::State;
+use tuirealm::subscription::{EventClause, Sub, SubClause};
+use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Msg {
+    Tick,
+    Quit,
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub enum Id {
+    Waves,
+}
 
 struct App {
     plan: Option<Plan>,
+    props: Props,
 }
 
-impl App {
-    fn new() -> Self {
+impl Default for App {
+    fn default() -> Self {
         let plan = std::env::var("FLEET_PLAN_REPO_ROOT")
             .ok()
             .or_else(|| Some("/home/deadpool/Documents/recodee".to_string()))
             .and_then(|root| plan::newest_plan(&PathBuf::from(root)).ok().flatten())
             .and_then(|p| plan::load(&p).ok());
-        Self { plan }
+        Self { plan, props: Props::default() }
+    }
+}
+
+impl Component for App {
+    fn view(&mut self, frame: &mut Frame, area: Rect) {
+        render(frame, area, self);
+    }
+
+    fn query(&self, attr: Attribute) -> Option<QueryResult<'_>> {
+        self.props.get(attr).map(|v| QueryResult::from(v.clone()))
+    }
+
+    fn attr(&mut self, attr: Attribute, value: AttrValue) {
+        self.props.set(attr, value);
+    }
+
+    fn state(&self) -> State {
+        State::None
+    }
+
+    fn perform(&mut self, _cmd: Cmd) -> CmdResult {
+        CmdResult::NoChange
+    }
+}
+
+impl AppComponent<Msg, NoUserEvent> for App {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        match ev {
+            Event::Keyboard(KeyEvent { code: Key::Char('q'), .. })
+            | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => Some(Msg::Quit),
+            Event::Tick => Some(Msg::Tick),
+            _ => None,
+        }
     }
 }
 
@@ -229,7 +275,7 @@ fn pill_visible_width(label: &str) -> u16 {
     (label.chars().count() as u16) + 2
 }
 
-fn render_header(frame: &mut ratatui::Frame, area: Rect, plan: Option<&Plan>, waves_v: &[Vec<u32>]) {
+fn render_header(frame: &mut Frame, area: Rect, plan: Option<&Plan>, waves_v: &[Vec<u32>]) {
     let (wave_n, status_word, pct) = match plan {
         Some(p) => active_wave_info(waves_v, p),
         None => (0, "no plan", 0),
@@ -269,7 +315,7 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, plan: Option<&Plan>, wa
     }
 }
 
-fn render_gantt(frame: &mut ratatui::Frame, area: Rect, plan: &Plan, waves_v: &[Vec<u32>]) {
+fn render_gantt(frame: &mut Frame, area: Rect, plan: &Plan, waves_v: &[Vec<u32>]) {
     if area.height == 0 || waves_v.is_empty() {
         return;
     }
@@ -361,7 +407,7 @@ fn render_gantt(frame: &mut ratatui::Frame, area: Rect, plan: &Plan, waves_v: &[
 }
 
 fn render_wave_bar(
-    frame: &mut ratatui::Frame,
+    frame: &mut Frame,
     bar_area: Rect,
     indices: &[u32],
     plan: &Plan,
@@ -418,8 +464,7 @@ fn render_wave_bar(
     }
 }
 
-fn render(frame: &mut ratatui::Frame, app: &App) {
-    let area = frame.area();
+fn render(frame: &mut Frame, area: Rect, app: &App) {
     if area.width < 40 || area.height < 6 {
         return;
     }
@@ -451,27 +496,80 @@ fn render(frame: &mut ratatui::Frame, app: &App) {
     }
 }
 
+// ---------- Model (tuirealm M-V-U) ----------
+
+struct Model<T: TerminalAdapter> {
+    app: Application<Id, Msg, NoUserEvent>,
+    terminal: T,
+    quit: bool,
+    redraw: bool,
+}
+
+impl Model<CrosstermTerminalAdapter> {
+    fn new() -> io::Result<Self> {
+        let app = Self::init_app().map_err(|e| io::Error::other(format!("init app: {e:?}")))?;
+        let terminal =
+            Self::init_adapter().map_err(|e| io::Error::other(format!("init adapter: {e:?}")))?;
+        Ok(Self { app, terminal, quit: false, redraw: true })
+    }
+
+    fn init_app() -> Result<Application<Id, Msg, NoUserEvent>, Box<dyn std::error::Error>> {
+        let mut app: Application<Id, Msg, NoUserEvent> = Application::init(
+            EventListenerCfg::default()
+                .crossterm_input_listener(Duration::from_millis(100), 3)
+                .tick_interval(Duration::from_millis(500)),
+        );
+        app.mount(
+            Id::Waves,
+            Box::new(App::default()),
+            vec![Sub::new(EventClause::Tick, SubClause::Always)],
+        )?;
+        app.active(&Id::Waves)?;
+        Ok(app)
+    }
+
+    fn init_adapter() -> Result<CrosstermTerminalAdapter, Box<dyn std::error::Error>> {
+        let mut adapter = CrosstermTerminalAdapter::new()?;
+        adapter.enable_raw_mode()?;
+        adapter.enter_alternate_screen()?;
+        Ok(adapter)
+    }
+}
+
+impl<T: TerminalAdapter> Model<T> {
+    fn view(&mut self) {
+        let _ = self.terminal.draw(|frame| {
+            let area = frame.area();
+            let _ = self.app.view(&Id::Waves, frame, area);
+        });
+    }
+
+    fn update(&mut self, msg: Msg) {
+        self.redraw = true;
+        match msg {
+            Msg::Quit => self.quit = true,
+            Msg::Tick => {}
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(out);
-    let mut terminal = Terminal::new(backend)?;
-    let app = App::new();
-    let result: io::Result<()> = (|| {
-        loop {
-            terminal.draw(|f| render(f, &app))?;
-            if event::poll(Duration::from_millis(250))? {
-                if let Event::Key(k) = event::read()? {
-                    if matches!(k.code, KeyCode::Char('q') | KeyCode::Esc) {
-                        break;
-                    }
+    let mut model = Model::<CrosstermTerminalAdapter>::new()?;
+    let result = (|| -> io::Result<()> {
+        while !model.quit {
+            if let Ok(messages) = model.app.tick(PollStrategy::Once(Duration::from_millis(100))) {
+                for msg in messages {
+                    model.update(msg);
                 }
+            }
+            if model.redraw {
+                model.view();
+                model.redraw = false;
             }
         }
         Ok(())
     })();
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    let _ = model.terminal.disable_raw_mode();
+    let _ = model.terminal.leave_alternate_screen();
     result
 }
