@@ -146,7 +146,6 @@ draw_item '▣'  "Copy whole session"  'C'
 draw_item '▢'  "Copy visible"        'c'
 draw_item '─'  "Copy this line"      'l'
 draw_hairline
-draw_item '⌕'  "Search history…"     '/'
 draw_item '↟'  "Scroll to top"       '<'
 draw_item '↡'  "Scroll to bottom"    '>'
 draw_hairline
@@ -161,9 +160,11 @@ draw_item '★'  "$mark_label"         'm'
 draw_hairline
 draw_item '↻'  "Respawn pane"        'R'
 draw_item '✕'  "Kill pane"           'X' danger
+draw_hairline
+draw_item '?'  "Keyboard help…"      '?'
 draw_bottom
 
-_ios_sgr "$IOS_GRAY" "$IOS_BG"; printf '\n   press a hotkey · esc cancels'
+_ios_sgr "$IOS_GRAY" "$IOS_BG"; printf '\n   press a hotkey · ? or ctrl+h for help · esc cancels'
 _ios_reset
 
 # ── input + dispatch ───────────────────────────────────────────────────────
@@ -178,8 +179,6 @@ case "$choice" in
       tmux display-message -d 1500 '▢  Visible area copied' ;;
   l)  printf '%s' "$MOUSE_LINE" | wl-copy
       tmux display-message -d 1500 '─  Line copied' ;;
-  /)  tmux copy-mode -t "$PANE_ID"
-      tmux send-keys -X -t "$PANE_ID" search-backward '' ;;
   '<') tmux copy-mode -t "$PANE_ID"
        tmux send-keys -X -t "$PANE_ID" history-top ;;
   '>') tmux copy-mode -t "$PANE_ID"
@@ -193,5 +192,10 @@ case "$choice" in
   m)  tmux select-pane -m -t "$PANE_ID" ;;
   R)  tmux respawn-pane -k -t "$PANE_ID" ;;
   X)  tmux kill-pane -t "$PANE_ID" ;;
+  '?'|$'\b'|$'\x08')
+      # `?` from the menu row, or Ctrl+H (which most Linux terminals
+      # deliver as 0x08 / backspace). Both open the iOS-style help popup
+      # showing every fleet keybinding without dismissing this menu.
+      bash "$SCRIPT_DIR/help-popup.sh" || true ;;
   *)  : ;;
 esac
