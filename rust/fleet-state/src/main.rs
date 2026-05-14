@@ -35,7 +35,7 @@ use tuirealm::event::{Event, Key, KeyEvent, NoUserEvent};
 use tuirealm::listener::EventListenerCfg;
 use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
 use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
-use tuirealm::ratatui::style::Style;
+use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::Paragraph;
 use tuirealm::ratatui::Frame;
@@ -102,42 +102,46 @@ impl Component for FleetView {
         if area.width < 30 || area.height < 8 {
             return;
         }
-        let rows = Layout::default()
+        // Design G layout:
+        //   Row 0..=4   header block (FLEET caption / big stat / button row)
+        //   Row 5       column header row (ACCOUNT, WEEKLY · 5H, WORKER · 5H, STATUS, WORKING ON, PANE)
+        //   Row 6..N    worker rows, 2 lines each (avatar+email / sub+rails+status+working+pane)
+        let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(5), // header card
+                Constraint::Length(2), // column header strip
+                Constraint::Min(0),    // worker rows
+            ])
             .split(area);
 
-        // Header banner: "FLEET · N workers · M live · K in review".
-        let header_text = match &self.rows {
-            Some(worker_rows) => {
-                let s = FleetSummary::of(worker_rows);
-                format!(
-                    "FLEET · {} workers · {} live · {} in review",
-                    s.workers, s.live, s.in_review
-                )
-            }
-            None => "FLEET · loading…".to_string(),
-        };
-        frame.render_widget(card(Some(&header_text), false), rows[0]);
+        // ── Header card ───────────────────────────────────────────────────
+        // Matches Design G's two-line title block: small "FLEET" caption
+        // above a big "N workers · M live · K in review" line. Right side
+        // carries the Filter + "+ New worker" pills (the latter accent-blue).
+        let summary = self.rows.as_ref().map(|rows| FleetSummary::of(rows.as_slice()));
+        render_header(frame, layout[0], summary.as_ref());
 
-        // Worker table card.
-        let block = card(
-            Some("ACCOUNT · WEEKLY · 5H · QUALITY · STATUS · WORKING ON"),
-            false,
-        );
-        let inner = block.inner(rows[1]);
-        frame.render_widget(block, rows[1]);
+        // ── Column header strip ───────────────────────────────────────────
+        render_column_headers(frame, layout[1]);
 
+        // ── Worker rows ───────────────────────────────────────────────────
+        let body = layout[2];
         match &self.rows {
             Some(worker_rows) if !worker_rows.is_empty() => {
-                for (i, row) in worker_rows.iter().enumerate() {
-                    let y = inner.y + i as u16;
-                    if y + 1 > inner.y + inner.height {
+                // 2 lines per worker row + a 1-line gap between, capped by area.
+                let row_h: u16 = 2;
+                let gap: u16 = 1;
+                let unit = row_h + gap;
+                let max_rows = (body.height / unit) as usize;
+                for (i, row) in worker_rows.iter().take(max_rows).enumerate() {
+                    let y = body.y + (i as u16) * unit;
+                    if y + row_h > body.y + body.height {
                         break;
                     }
                     render_worker_row(
                         frame,
-                        Rect { x: inner.x, y, width: inner.width, height: 1 },
+                        Rect { x: body.x, y, width: body.width, height: row_h },
                         row,
                     );
                 }
@@ -149,7 +153,7 @@ impl Component for FleetView {
                 };
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(msg, Style::default().fg(IOS_FG_MUTED)))),
-                    Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+                    Rect { x: body.x, y: body.y, width: body.width, height: 1 },
                 );
             }
             None => {
@@ -158,10 +162,12 @@ impl Component for FleetView {
                         "  loading fleet state…",
                         Style::default().fg(IOS_FG_MUTED),
                     ))),
-                    Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+                    Rect { x: body.x, y: body.y, width: body.width, height: 1 },
                 );
             }
         }
+
+        let inner = body; // alias used by the error-line render below
 
         if let Some(err) = &self.load_error {
             let y = inner.y + inner.height.saturating_sub(1);
@@ -221,49 +227,300 @@ fn chip_kind(state: Option<PaneState>) -> ChipKind {
     }
 }
 
-fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
-    let mut spans: Vec<Span> = Vec::new();
+// ── Column widths (cell-based) ─────────────────────────────────────────────
+// Tuned for a 274-col tmux pane (the typical codex-fleet overview width).
+// Sum = ACCOUNT(34) + sep(2) + WEEKLY(15) + sep(2) + WORKER(15) + sep(2)
+//     + STATUS(14) + sep(2) + WORKING(~rest) + sep(2) + PANE(8) ≈ 274.
+const COL_ACCOUNT: u16 = 34;
+const COL_RAIL_DUAL: u16 = 15; // for both WEEKLY · 5H and WORKER · 5H
+const COL_STATUS: u16 = 14;
+const COL_PANE: u16 = 8;
+const COL_SEP: u16 = 2;
 
-    // ACCOUNT.
-    let label = if row.is_current {
-        format!("★{}", row.email)
+/// Header card matching design G — small caption + big stat + Filter/New pills.
+fn render_header(frame: &mut Frame, area: Rect, summary: Option<&FleetSummary>) {
+    // Outer card chrome (border + title slot).
+    let block = card(None, false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 10 || inner.height < 2 {
+        return;
+    }
+    // Line 1: small "FLEET" caption.
+    let caption_y = inner.y;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  FLEET",
+            Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
+        ))),
+        Rect { x: inner.x, y: caption_y, width: inner.width, height: 1 },
+    );
+    // Line 2: big "N workers · M live · K in review" + right-aligned action
+    // pills. Both halves share the same row so the layout reads like the PNG.
+    let stat_y = inner.y + 1;
+    let big = match summary {
+        Some(s) => format!(
+            "  {} workers  ·  {} live  ·  {} in review",
+            s.workers, s.live, s.in_review
+        ),
+        None => "  loading fleet…".to_string(),
+    };
+    let big_w = visible_width(&big) as u16;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            big,
+            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+        ))),
+        Rect { x: inner.x, y: stat_y, width: big_w.min(inner.width), height: 1 },
+    );
+    // Right-side Filter + "+ New worker" pills.
+    let filter_pill = "  Filter  ";
+    let new_pill = "  + New worker  ";
+    let pill_total = visible_width(filter_pill) + 1 + visible_width(new_pill);
+    if (inner.width as usize) > pill_total + 4 {
+        let pill_x = inner.x + inner.width - pill_total as u16 - 2;
+        // Filter (outline / muted bg)
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                filter_pill,
+                Style::default().fg(IOS_FG).bg(IOS_BG_GLASS),
+            ))),
+            Rect { x: pill_x, y: stat_y, width: visible_width(filter_pill) as u16, height: 1 },
+        );
+        // + New worker (accent fill)
+        let new_x = pill_x + visible_width(filter_pill) as u16 + 1;
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                new_pill,
+                Style::default()
+                    .fg(IOS_FG)
+                    .bg(IOS_TINT)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            Rect { x: new_x, y: stat_y, width: visible_width(new_pill) as u16, height: 1 },
+        );
+    }
+}
+
+/// Column-header strip — `ACCOUNT  WEEKLY · 5H  WORKER · 5H  STATUS  WORKING ON  PANE`.
+fn render_column_headers(frame: &mut Frame, area: Rect) {
+    if area.width < 60 || area.height == 0 {
+        return;
+    }
+    let y = area.y;
+    let mut x = area.x + 2;
+    let style = Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD);
+    let put = |frame: &mut Frame, x: u16, w: u16, label: &str| {
+        let rect = Rect { x, y, width: w.min(area.width.saturating_sub(x - area.x)), height: 1 };
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(label.to_string(), style))), rect);
+    };
+    put(frame, x, COL_ACCOUNT, "ACCOUNT");
+    x += COL_ACCOUNT + COL_SEP;
+    put(frame, x, COL_RAIL_DUAL, "WEEKLY · 5H");
+    x += COL_RAIL_DUAL + COL_SEP;
+    put(frame, x, COL_RAIL_DUAL, "WORKER · 5H");
+    x += COL_RAIL_DUAL + COL_SEP;
+    put(frame, x, COL_STATUS, "STATUS");
+    x += COL_STATUS + COL_SEP;
+    let working_w = area.width.saturating_sub(x - area.x + COL_PANE + COL_SEP);
+    put(frame, x, working_w, "WORKING ON");
+    x += working_w + COL_SEP;
+    put(frame, x, COL_PANE, "PANE");
+}
+
+/// 2-character avatar initials derived from the agent_id (e.g. `bia-zazrifka`
+/// → `BZ`, `admin-magnolia` → `AM`). Used in the per-row avatar block.
+fn avatar_initials(agent_id: &str) -> String {
+    let mut parts = agent_id.split(|c: char| c == '-' || c == '_' || c == '.');
+    let first = parts.next().and_then(|s| s.chars().next()).unwrap_or('?');
+    let second = parts.next().and_then(|s| s.chars().next()).unwrap_or(first);
+    format!("{}{}", first.to_uppercase().next().unwrap_or('?'), second.to_uppercase().next().unwrap_or('?'))
+}
+
+/// Stable per-agent avatar colour drawn from a small UIColor-system palette.
+/// FNV-1a of the agent id mod 6 picks one of 6 named accents so the same
+/// agent gets the same colour run-to-run (no global state).
+fn avatar_color(agent_id: &str) -> Color {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in agent_id.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    match h % 6 {
+        0 => IOS_TINT,        // systemBlue
+        1 => IOS_GREEN,       // systemGreen
+        2 => IOS_DESTRUCTIVE, // systemRed
+        3 => Color::Rgb(255, 149, 0),  // systemOrange
+        4 => Color::Rgb(175, 82, 222), // systemPurple
+        _ => Color::Rgb(255, 204, 0),  // systemYellow
+    }
+}
+
+/// 2-line worker row matching Design G:
+///   Line 1: [avatar]  email                     ▕rail▏  ▕rail▏      [chip]    working_on            #N >
+///   Line 2:           got X.X high              5h sub-text          (pane sub)
+fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
+    if area.height < 2 || area.width < 60 {
+        return;
+    }
+    let y1 = area.y;
+    let y2 = area.y + 1;
+
+    // ── ACCOUNT (avatar + email + sub) ────────────────────────────────────
+    let mut x = area.x + 1;
+    // Avatar block: 4 cells wide, colored bg, 2-char initials centered.
+    let avatar = format!(" {} ", avatar_initials(&row.agent_id));
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            avatar.clone(),
+            Style::default()
+                .fg(IOS_FG)
+                .bg(avatar_color(&row.agent_id))
+                .add_modifier(Modifier::BOLD),
+        ))),
+        Rect { x, y: y1, width: visible_width(&avatar) as u16, height: 1 },
+    );
+    let email_x = x + visible_width(&avatar) as u16 + 1;
+    let email_w = COL_ACCOUNT.saturating_sub(visible_width(&avatar) as u16 + 2);
+    // Email line.
+    let email_label = if row.is_current {
+        format!("★ {}", row.email)
     } else {
         row.email.clone()
     };
-    spans.push(Span::styled(format!("  {:<26}", label), Style::default().fg(IOS_FG)));
-    spans.push(Span::raw(" "));
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate_chars(&email_label, email_w as usize),
+            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+        ))),
+        Rect { x: email_x, y: y1, width: email_w, height: 1 },
+    );
+    // Sub-line: model label (e.g. "gpt-5.5 xhigh") or "got X high" placeholder.
+    let sub_text = match &row.model_label {
+        Some(m) => format!("got {}", m),
+        None => "got — ".to_string(),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate_chars(&sub_text, email_w as usize),
+            Style::default().fg(IOS_FG_MUTED),
+        ))),
+        Rect { x: email_x, y: y2, width: email_w, height: 1 },
+    );
+    x = area.x + 1 + COL_ACCOUNT + COL_SEP;
 
-    // WEEKLY · 5H rails.
-    spans.extend(progress_rail(row.weekly_pct, RailAxis::Usage, 8));
-    spans.push(Span::raw(" "));
-    spans.extend(progress_rail(row.five_h_pct, RailAxis::Usage, 8));
-    spans.push(Span::raw(" "));
+    // ── WEEKLY · 5H dual rails ────────────────────────────────────────────
+    // Two stacked rails — WEEKLY on row 1, 5H label on row 2 ("X% / Y%"
+    // style of the design's sub-bar isn't replicable so we put the rail on
+    // line 1 and the numeric on line 2 for parity).
+    let rail_w: u16 = COL_RAIL_DUAL.saturating_sub(2);
+    let weekly_rail: Vec<Span> = progress_rail(row.weekly_pct, RailAxis::Usage, rail_w);
+    frame.render_widget(
+        Paragraph::new(Line::from(weekly_rail)),
+        Rect { x, y: y1, width: COL_RAIL_DUAL, height: 1 },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{}%", row.weekly_pct),
+            Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
+        ))),
+        Rect { x, y: y2, width: COL_RAIL_DUAL, height: 1 },
+    );
+    x += COL_RAIL_DUAL + COL_SEP;
 
-    // QUALITY rail (advisory).
-    match row.quality {
-        Some(pct) => spans.extend(progress_rail(pct, RailAxis::Done, 8)),
-        None => spans.push(Span::raw(" ".repeat(10))),
-    }
-    spans.push(Span::raw(" "));
+    // ── WORKER · 5H rails (the 5h budget, displayed as second dual rail) ─
+    let worker_rail: Vec<Span> = progress_rail(row.five_h_pct, RailAxis::Usage, rail_w);
+    frame.render_widget(
+        Paragraph::new(Line::from(worker_rail)),
+        Rect { x, y: y1, width: COL_RAIL_DUAL, height: 1 },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{}%", row.five_h_pct),
+            Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
+        ))),
+        Rect { x, y: y2, width: COL_RAIL_DUAL, height: 1 },
+    );
+    x += COL_RAIL_DUAL + COL_SEP;
 
-    // STATUS chip.
-    spans.extend(status_chip(chip_kind(row.state)));
-    spans.push(Span::raw("  "));
+    // ── STATUS chip ───────────────────────────────────────────────────────
+    let chip_spans: Vec<Span> = status_chip(chip_kind(row.state));
+    frame.render_widget(
+        Paragraph::new(Line::from(chip_spans)),
+        Rect { x, y: y1, width: COL_STATUS, height: 1 },
+    );
+    x += COL_STATUS + COL_SEP;
 
-    // WORKING ON.
+    // ── WORKING ON (2-line) ──────────────────────────────────────────────
+    let working_w = area.width.saturating_sub(x - area.x + COL_PANE + COL_SEP + 1);
     if row.working_on.is_empty() {
-        spans.push(Span::styled("—  reserve", Style::default().fg(IOS_FG_FAINT)));
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "—  reserve",
+                Style::default().fg(IOS_FG_FAINT),
+            ))),
+            Rect { x, y: y1, width: working_w, height: 1 },
+        );
     } else {
-        spans.push(Span::styled(row.working_on.clone(), Style::default().fg(IOS_FG)));
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncate_chars(&row.working_on, working_w as usize),
+                Style::default().fg(IOS_FG),
+            ))),
+            Rect { x, y: y1, width: working_w, height: 1 },
+        );
         if !row.pane_subtext.is_empty() {
-            spans.push(Span::styled(
-                format!("   {}", row.pane_subtext),
-                Style::default().fg(IOS_FG_MUTED),
-            ));
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    truncate_chars(&row.pane_subtext, working_w as usize),
+                    Style::default().fg(IOS_FG_MUTED),
+                ))),
+                Rect { x, y: y2, width: working_w, height: 1 },
+            );
         }
     }
+    x += working_w + COL_SEP;
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    // ── PANE pill (#N >) ─────────────────────────────────────────────────
+    let pane_label = row
+        .pane_id
+        .as_deref()
+        .map(|p| {
+            // tmux pane ids are `%47`; the design's pill renders `#7 >` style
+            // by stripping the `%`. Fall back to the raw id when stripping fails.
+            let stripped = p.trim_start_matches('%');
+            format!(" #{stripped} > ")
+        })
+        .unwrap_or_else(|| "        ".to_string());
+    let pane_style = if row.pane_id.is_some() {
+        Style::default().fg(IOS_FG).bg(IOS_BG_GLASS)
+    } else {
+        Style::default().fg(IOS_FG_FAINT)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(pane_label, pane_style))),
+        Rect { x, y: y1, width: COL_PANE, height: 1 },
+    );
+}
+
+/// Width-in-cells approximation for ASCII strings. We don't pull in
+/// `unicode-width` here — every glyph used by this binary is single-cell.
+fn visible_width(s: &str) -> usize {
+    s.chars().count()
+}
+
+fn truncate_chars(s: &str, n: usize) -> String {
+    let mut out = String::new();
+    let mut chars = 0;
+    for c in s.chars() {
+        if chars + 1 > n {
+            out.push('…');
+            break;
+        }
+        out.push(c);
+        chars += 1;
+    }
+    out
 }
 
 // ---------- Model (tuirealm's M in M-V-U) ----------
