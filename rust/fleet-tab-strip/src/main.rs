@@ -17,7 +17,7 @@
 // re-implemented with the same mental model.
 
 use std::io;
-use std::process::Command;
+// std::process::Command moved into fleet_components::select_tmux_window.
 use std::time::Duration;
 
 use tuirealm::application::{Application, PollStrategy};
@@ -158,11 +158,10 @@ impl Model<CrosstermTerminalAdapter> {
     }
 
     fn init_adapter() -> Result<CrosstermTerminalAdapter, Box<dyn std::error::Error>> {
-        let mut adapter = CrosstermTerminalAdapter::new()?;
-        adapter.enable_raw_mode()?;
-        adapter.enter_alternate_screen()?;
-        adapter.enable_mouse_capture()?;
-        Ok(adapter)
+        // Delegate to the shared helper. `true` opts into
+        // EnableMouseCapture because fleet-tab-strip's pills are
+        // clickable.
+        Ok(fleet_components::init_crossterm_adapter(true)?)
     }
 }
 
@@ -187,12 +186,12 @@ impl<T: TerminalAdapter> Model<T> {
 // ---------- tmux integration helpers ----------
 
 fn current_tab() -> Tab {
-    let idx: usize = Command::new("tmux")
+    let idx: usize = std::process::Command::new("tmux")
         .args(["display-message", "-p", "-F", "#{window_index}"])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.trim().parse().ok())
+        .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(0);
     match idx {
         0 => Tab::Overview,
@@ -204,11 +203,9 @@ fn current_tab() -> Tab {
 }
 
 fn select_window(idx: usize) {
-    let session =
-        std::env::var("CODEX_FLEET_SESSION").unwrap_or_else(|_| "codex-fleet".to_string());
-    let _ = Command::new("tmux")
-        .args(["select-window", "-t", &format!("{}:{}", session, idx)])
-        .status();
+    // Delegated to the shared helper so every dashboard's tmux
+    // click-routing semantics match.
+    fleet_components::select_tmux_window(idx);
 }
 
 // ---------- Entry point ----------
@@ -231,8 +228,6 @@ fn main() -> io::Result<()> {
         Ok(())
     })();
 
-    let _ = model.terminal.disable_mouse_capture();
-    let _ = model.terminal.disable_raw_mode();
-    let _ = model.terminal.leave_alternate_screen();
+    fleet_components::shutdown_adapter(&mut model.terminal);
     result
 }

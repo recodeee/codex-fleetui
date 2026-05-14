@@ -1,0 +1,9 @@
+[package]
+name = "fleet-components"
+version = "0.0.1"
+edition = "2021"
+description = "Shared tuirealm helpers for the codex-fleet dashboard binaries — Crossterm terminal-adapter setup, adapter shutdown, and tmux select-window dispatch. Consumed by fleet-tab-strip in this PR; other binaries can adopt the helpers as they refactor."
+publish = false
+
+[dependencies]
+tuirealm = "4.1"
