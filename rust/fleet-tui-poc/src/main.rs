@@ -1825,7 +1825,7 @@ fn section_jump_tmux_args(key: char, session: &str) -> Option<Vec<String>> {
     ])
 }
 
-fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str>) {
+fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str>, session: &str) {
     // 3 columns x 2 rows grid; the 6th cell sits empty. The geometry mirrors
     // design F's compact command-K section picker: tight cards, visible row
     // hairlines, a dense footer, and a bright active-card border.
@@ -1836,9 +1836,11 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
     let rows: u16 = 2;
 
     let title_block_h: u16 = 3; // title/sub rows + header hairline
+    let grid_h: u16 = (card_h * rows) + (gap * (rows - 1));
+    let shortcuts_h: u16 = 5;
     let footer_h: u16 = 1;
     let menu_w: u16 = 2 + (card_w * cols) + (gap * (cols - 1)) + 2;
-    let menu_h: u16 = 2 + title_block_h + 1 + (card_h * rows) + (gap * (rows - 1)) + 1 + footer_h;
+    let menu_h: u16 = 2 + title_block_h + 1 + grid_h + 1 + shortcuts_h + 1 + footer_h;
 
     let rect = center_rect(area, menu_w, menu_h);
     card_shadow(frame, rect, area);
@@ -1962,6 +1964,19 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
         );
     }
 
+    let shortcuts_y = grid_y0 + grid_h + 1;
+    render_shortcuts_panel(
+        frame,
+        Rect {
+            x: inner.x,
+            y: shortcuts_y,
+            width: inner.width,
+            height: shortcuts_h,
+        },
+        active_window,
+        session,
+    );
+
     // ── Footer: "1–5 jump · ↵ open · esc close" + live status pill ───────
     let footer_y = inner.y + inner.height.saturating_sub(1);
     let hints: Vec<Span> = vec![
@@ -2005,6 +2020,77 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
                 x: inner.x + inner.width - live_w,
                 y: footer_y,
                 width: live_w,
+                height: 1,
+            },
+        );
+    }
+}
+
+fn render_shortcuts_panel(
+    frame: &mut Frame,
+    rect: Rect,
+    active_window: Option<&str>,
+    session: &str,
+) {
+    if rect.width < 12 || rect.height < 4 {
+        return;
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(IOS_HAIRLINE_STRONG))
+        .style(Style::default().fg(IOS_FG));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "ACTIVE SHORTCUTS",
+                Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" · tmux select-window", Style::default().fg(IOS_FG_MUTED)),
+        ])),
+        Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        },
+    );
+
+    for (row, chunk) in SECTIONS.chunks(3).enumerate() {
+        let y = inner.y + 1 + row as u16;
+        if y >= inner.y + inner.height {
+            break;
+        }
+
+        let mut spans: Vec<Span> = Vec::new();
+        for sec in chunk {
+            let selected = active_window.map(|w| w == sec.window).unwrap_or(sec.key == '1');
+            let target = format!("{session}:{}", sec.window);
+            let (key_fg, key_bg, target_fg) = if selected {
+                (IOS_FG, IOS_TINT, IOS_FG)
+            } else {
+                (IOS_FG_MUTED, IOS_CHIP_BG, IOS_FG_MUTED)
+            };
+            spans.push(Span::styled(
+                format!(" {} ", sec.key),
+                Style::default().fg(key_fg).bg(key_bg).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                format!(" {target:<20}"),
+                Style::default().fg(target_fg),
+            ));
+        }
+
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect {
+                x: inner.x + 1,
+                y,
+                width: inner.width.saturating_sub(2),
                 height: 1,
             },
         );
@@ -2226,7 +2312,7 @@ fn render(frame: &mut Frame, app: &mut App) {
                 Overlay::Spotlight => render_spotlight(frame, area, app),
                 Overlay::ActionSheet => render_action_sheet(frame, area),
                 Overlay::SectionJump => {
-                    render_section_jump(frame, area, app.section_active.as_deref());
+                    render_section_jump(frame, area, app.section_active.as_deref(), &app.session);
                 }
                 _ => unreachable!(),
             }
@@ -2580,7 +2666,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("test terminal");
 
         terminal
-            .draw(|frame| render_section_jump(frame, frame.area(), Some("overview")))
+            .draw(|frame| render_section_jump(frame, frame.area(), Some("overview"), "codex-fleet"))
             .expect("draw section jump");
 
         let rendered = buffer_text(terminal.backend().buffer());
@@ -2588,6 +2674,9 @@ mod tests {
         assert!(rendered.contains("Jump to section"));
         assert!(rendered.contains("Overview"));
         assert!(rendered.contains("LIVE"));
+        assert!(rendered.contains("ACTIVE SHORTCUTS"));
+        assert!(rendered.contains("codex-fleet:overview"));
+        assert!(rendered.contains("codex-fleet:review"));
         assert!(rendered.contains("1–5 jump · ↵ open · esc close"));
     }
 }
