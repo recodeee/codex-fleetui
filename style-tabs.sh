@@ -184,6 +184,14 @@ unbind-key -T root WheelUpPane
 unbind-key -T root WheelDownPane
 bind-key   -T root WheelUpPane   if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" "send-keys -M" "copy-mode -e"
 bind-key   -T root WheelDownPane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" "send-keys -M" "copy-mode -e"
+
+# Close ONLY the focused pane on `prefix + w` (operator's habit). Default
+# `prefix + w` is `choose-window` which we lose — keep `prefix + s` for the
+# session/window picker, and `prefix + 0..9` for direct window-by-index.
+# Use kill-pane (not kill-window) so the surrounding tmux session + the
+# kitty terminal stay alive.
+unbind-key -T prefix w
+bind-key   -T prefix w kill-pane
 TMUX_CONF
 tmux source-file "$sticky_menu_conf" >/dev/null 2>&1 || echo "[style-tabs] WARN: sticky menu rebind failed (see $sticky_menu_conf)"
 
