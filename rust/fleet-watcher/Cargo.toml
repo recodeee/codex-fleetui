@@ -14,3 +14,5 @@ ratatui = "0.30"
 crossterm = "0.29"
 fleet-ui = { path = "../fleet-ui" }
 fleet-data = { path = "../fleet-data" }
+# tuirealm — fifth binary ported (after #50, #52, #53, #54).
+tuirealm = "4.1"
