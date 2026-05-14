@@ -78,6 +78,11 @@ IOS_GRAY=$'\033[38;2;142;142;147m'
 IOS_GRAY2=$'\033[38;2;174;174;178m'
 IOS_GRAY6=$'\033[38;2;242;242;247m'
 IOS_WHITE=$'\033[38;2;255;255;255m'
+IOS_BG_BLUE=$'\033[48;2;0;122;255m'
+IOS_BG_GREEN=$'\033[48;2;52;199;89m'
+IOS_BG_RED=$'\033[48;2;255;59;48m'
+IOS_BG_ORANGE=$'\033[48;2;255;149;0m'
+IOS_BG_GRAY=$'\033[48;2;142;142;147m'
 G="$IOS_GREEN"     # green for done/running
 Y="$IOS_YELLOW"    # yellow for claimed/warn
 RED="$IOS_RED"     # red for blocked/down
@@ -96,6 +101,9 @@ GRAD6="$IOS_GREEN"
 MAG="$IOS_ORANGE"  # rate-limited
 ICE="$IOS_BLUE"    # working
 IOS_CARD_WIDTH="${FLEET_TICK_CARD_WIDTH:-86}"
+IOS_CHIP_LEFT="◖"
+IOS_CHIP_RIGHT="◗"
+IOS_STATUS_CHIP_WIDTH=9
 
 strip_ansi() {
   sed -E $'s/\x1B\\[[0-9;]*m//g' <<<"${1:-}"
@@ -221,6 +229,60 @@ ios_progress_rail() {
   empty=${empty// /░}
   color=$(ios_axis_color "$pct" "$axis")
   printf '%b▕%b%s%b%s%b▏%b' "$IOS_GRAY2" "$color" "$fill" "$IOS_GRAY6" "$empty" "$IOS_GRAY2" "$R"
+}
+
+ios_status_chip_label() {
+  local kind="${1:-idle}"
+  local raw pad_len pad
+  case "$kind" in
+    run|running) raw="● running" ;;
+    work|working|busy) raw="● working" ;;
+    exhaust|exhausted|capped) raw="⚠ exhaust" ;;
+    limit|limited|rate_limited|rate-limited) raw="◍ limited" ;;
+    idle|*) raw="◌ idle" ;;
+  esac
+  pad_len=$(( IOS_STATUS_CHIP_WIDTH - ${#raw} ))
+  (( pad_len < 0 )) && pad_len=0
+  printf -v pad '%*s' "$pad_len" ""
+  printf '%s%s' "$raw" "$pad"
+}
+
+ios_status_chip_bg() {
+  local kind="${1:-idle}"
+  case "$kind" in
+    run|running) printf '%s' "$IOS_BG_GREEN" ;;
+    work|working|busy) printf '%s' "$IOS_BG_BLUE" ;;
+    exhaust|exhausted|capped) printf '%s' "$IOS_BG_RED" ;;
+    limit|limited|rate_limited|rate-limited) printf '%s' "$IOS_BG_ORANGE" ;;
+    idle|*) printf '%s' "$IOS_BG_GRAY" ;;
+  esac
+}
+
+ios_status_chip_hex() {
+  local kind="${1:-idle}"
+  case "$kind" in
+    run|running) printf '#34C759' ;;
+    work|working|busy) printf '#007AFF' ;;
+    exhaust|exhausted|capped) printf '#FF3B30' ;;
+    limit|limited|rate_limited|rate-limited) printf '#FF9500' ;;
+    idle|*) printf '#8E8E93' ;;
+  esac
+}
+
+ios_worker_chip() {
+  local kind="${1:-idle}"
+  local label bg
+  label=$(ios_status_chip_label "$kind")
+  bg=$(ios_status_chip_bg "$kind")
+  printf '%b%s %s %s%b' "${bg}${IOS_WHITE}${B}" "$IOS_CHIP_LEFT" "$label" "$IOS_CHIP_RIGHT" "$R"
+}
+
+tmux_status_chip() {
+  local kind="${1:-idle}"
+  local label bg
+  label=$(ios_status_chip_label "$kind")
+  bg=$(ios_status_chip_hex "$kind")
+  printf '#[bg=%s,fg=#FFFFFF,bold]%s %s %s#[default]' "$bg" "$IOS_CHIP_LEFT" "$label" "$IOS_CHIP_RIGHT"
 }
 
 subtask_progress_bar() {
@@ -384,18 +446,18 @@ while true; do
       wkc=$(pct_color "$wk_avail"); h5c=$(pct_color "$h5_avail")
       wk_bar=$(ios_progress_rail "$wk_avail" available); h5_bar=$(ios_progress_rail "$h5_avail" available)
       # Worker status
+      live_kind="idle"
       if [[ -n "${EXHAUSTED[$aid]:-}" ]]; then
-        live="${B}${RED}⚠ EXHAUST${R} "
+        live_kind="exhausted"
       elif [[ "$st" == "running" ]]; then
-        live="${B}${G}● run${R}      "
-      else
-        live="${DIM}◌ idle${R}     "
+        live_kind="running"
       fi
       # What is this codex actually doing right now? (scrape pane content)
       working=""
       agent_key="codex-$aid"
       if [[ -n "${WORKER_SUB[$agent_key]:-}" ]]; then
         sub_idx="${WORKER_SUB[$agent_key]}"
+        live_kind="working"
         working="${C}→ sub-$sub_idx${R} ${DIM}${SUB_TITLES[$sub_idx]}${R}"
       elif [[ "$st" == "running" ]]; then
         # Find the tmux pane for this agent and parse its tail
@@ -415,6 +477,7 @@ while true; do
           # Strip ANSI for matching
           tail_clean=$(echo "$tail" | sed 's/\[[0-9;]*m//g')
           if echo "$tail_clean" | grep -qE "usage limit|rate.?limit hit|429"; then
+            live_kind="rate_limited"
             working="${MAG}◍ rate-limited${R}"
           elif w=$(echo "$tail_clean" | tail -10 | grep -oE "Reviewing approval request" | head -1); [[ -n "$w" ]]; then
             cmd_being_approved=$(echo "$tail_clean" | tail -8 | grep -oE "└ [^[:space:]].*" | head -1 | sed 's/└ //; s/.\{60\}.*/…/')
@@ -422,14 +485,17 @@ while true; do
           elif w=$(echo "$tail_clean" | tail -12 | grep -oE "Working \([0-9]+[ms][^)]*\)" | tail -1); [[ -n "$w" ]]; then
             # codex draws the › prompt placeholder beneath `Working (…)` so
             # this MUST run before the idle-prompt regex below.
+            live_kind="working"
             secs=$(echo "$w" | grep -oE "[0-9]+[ms]" | head -1)
             working="${G}⚡ working ${secs}${R}"
           elif w=$(echo "$tail_clean" | tail -12 | grep -oE "Worked for [0-9]+m[^─]*" | tail -1); [[ -n "$w" ]]; then
             secs=$(echo "$w" | grep -oE "[0-9]+m [0-9]+s" | head -1)
             working="${G}✓ worked ${secs}${R}"
           elif w=$(echo "$tail_clean" | tail -10 | grep -oE "Calling [a-zA-Z_]+\.[a-zA-Z_]+" | tail -1); [[ -n "$w" ]]; then
+            live_kind="working"
             working="${C}● ${w}${R}"
           elif w=$(echo "$tail_clean" | tail -10 | grep -oE "Ran [a-z_]+" | tail -1); [[ -n "$w" ]]; then
+            live_kind="working"
             working="${C}● ${w}${R}"
           elif echo "$tail_clean" | tail -8 | grep -qE "^› (Find and fix|Use /skills|Run /review|Improve documentation|Implement|Summarize|Explain|Write tests)"; then
             working="${DIM}idle (default prompt)${R}"
@@ -439,6 +505,7 @@ while true; do
           unset NP; declare -a NP=()
         fi
       fi
+      live=$(ios_worker_chip "$live_kind")
       printf "${B}%-12s${R}  ${h5c}%-4s${R} %s  ${wkc}%-5s${R} %s  %b  %b" \
         "${SHORT[$email]:-$email}" "$h5" "$h5_bar" "$wk" "$wk_bar" "$live" "$working"
   }
@@ -756,6 +823,12 @@ while true; do
       if [[ -z "$branch" ]]; then
         branch=$(echo "$ptail" | grep -oE "(agent/codex/[a-zA-Z0-9_-]+|spec/[a-zA-Z0-9_-]+/sub-[0-9]+|auto-plan-[a-zA-Z0-9-]+)" | tail -1)
       fi
+      pane_status_kind="running"
+      if echo "$ptail" | grep -qE "usage limit|rate.?limit hit|429"; then
+        pane_status_kind="rate_limited"
+      elif echo "$ptail" | tail -12 | grep -qE "Working \([0-9]+[ms][^)]*\)|Calling [a-zA-Z_]+\.[a-zA-Z_]+|Ran [a-z_]+"; then
+        pane_status_kind="working"
+      fi
       # Trim branch for display
       branch_short=$(echo "$branch" | sed -E 's|^agent/codex/||; s|^spec/||; s|(.{32}).*|\1…|')
       # Find last PR URL + nearby state word
@@ -787,7 +860,11 @@ while true; do
       # Fallback hint when nothing scraped
       if [[ -z "$sub" && -z "$branch_short" && -z "$pr_num" ]]; then
         title="${title} polling"
+        if [[ "$pane_status_kind" == "running" ]]; then
+          pane_status_kind="idle"
+        fi
       fi
+      title="$(tmux_status_chip "$pane_status_kind") ${title}"
       tmux set-option -t "$TMUX_SESSION:overview.${pidx}" -p @panel "$title" 2>/dev/null || true
       pane_i=$((pane_i+1))
     done
