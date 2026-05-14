@@ -448,15 +448,18 @@ tmux set-option -w -t "$SESSION:overview" remain-on-exit on
 # global numeric `status N` style-tabs sets, clamping back to 1 row and
 # silently hiding the tab strip.
 
-# 8.5 Reserve a 1-row top pane on overview for fleet-tab-strip. The five
-# ratatui dashboards (windows 1-5) draw the in-binary tab strip themselves;
-# overview is a tmux worker grid (no ratatui binary) so it needs an
-# explicit header pane to carry the same nav surface. Split MUST happen
-# now, while overview has a single pane spanning the full window — once
-# the worker tile lands, splitting above a column produces a zero-height
-# pane (no caller can shrink the rest of the column to make room).
-# CODEX_FLEET_OVERVIEW_HEADER_ROWS=0 skips the header entirely.
-HEADER_ROWS="${CODEX_FLEET_OVERVIEW_HEADER_ROWS:-1}"
+# 8.5 Reserve a 1-row top pane on overview for fleet-tab-strip — OFF by
+# default. tmux's own status bar (styled by style-tabs.sh, status=on) is
+# already a navigation surface for every window in the session, and the
+# extra in-pane strip stacked under it duplicated chrome with a different
+# styling (gray "▶ codex-fleet" vs. the orange "◆ codex-fleet" pill).
+# That's the same visual bug PR #30 originally fixed for the dashboards'
+# in-binary strips; this disables it for overview too.
+#
+# Operators who explicitly want the in-pane strip back can set
+# CODEX_FLEET_OVERVIEW_HEADER_ROWS=1 (or N rows). The code below stays
+# wired so the env flip is the only change needed to re-enable.
+HEADER_ROWS="${CODEX_FLEET_OVERVIEW_HEADER_ROWS:-0}"
 HEADER_PANE_ID=""
 WORKER_ROOT_PANE_ID="$(tmux list-panes -t "$SESSION:overview" -F '#{pane_id}' | head -1)"
 if (( HEADER_ROWS > 0 )); then
