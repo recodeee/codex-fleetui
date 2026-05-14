@@ -87,8 +87,16 @@ cmd_emit_pending() {
 
   local files_json
   files_json=$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)
+  # Pane is stored as a JSON string (or null) so non-numeric tmux pane ids
+  # like "%5" or fixture-mode names parse cleanly. The renderer reads it as a
+  # plain string via `jq -r '.pane // ""'`, so the string-vs-number wire shape
+  # is invisible to consumers.
   local pane_arg
-  if [[ -n "$pane" ]]; then pane_arg="$pane"; else pane_arg=null; fi
+  if [[ -n "$pane" ]]; then
+    pane_arg=$(jq -nc --arg p "$pane" '$p')
+  else
+    pane_arg=null
+  fi
   local event
   event=$(jq -nc \
     --arg kind "pending" \
