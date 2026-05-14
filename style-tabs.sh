@@ -250,6 +250,14 @@ unbind-key -T prefix w
 bind-key   -T prefix w if-shell -F '#{>:#{window_panes},1}' \
   'kill-pane' \
   'display-message -d 2500 " single pane in window — use prefix+& to kill window "'
+
+# Status-bar tab click: tmux's inherited default binds `MouseDown1Status` to
+# `switch-client -t =`, which does not reliably select the window under the
+# mouse when the active pane is a TUI app holding mouse_any_flag (codex CLI).
+# Rebind to the canonical `select-window -t=` so clicking a tab always jumps
+# to that window in the current session.
+unbind-key -T root MouseDown1Status
+bind-key   -T root MouseDown1Status select-window -t=
 TMUX_CONF
 tmux source-file "$sticky_menu_conf" >/dev/null 2>&1 || echo "[style-tabs] WARN: sticky menu rebind failed (see $sticky_menu_conf)"
 
