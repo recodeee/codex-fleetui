@@ -37,7 +37,7 @@ use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
 use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::Paragraph;
+use tuirealm::ratatui::widgets::{Block, Paragraph};
 use tuirealm::ratatui::Frame;
 use tuirealm::state::State;
 use tuirealm::subscription::{EventClause, Sub, SubClause};
@@ -76,7 +76,11 @@ struct FleetView {
 
 impl Default for FleetView {
     fn default() -> Self {
-        let mut view = Self { rows: None, load_error: None, props: Props::default() };
+        let mut view = Self {
+            rows: None,
+            load_error: None,
+            props: Props::default(),
+        };
         view.refresh();
         view
     }
@@ -102,6 +106,11 @@ impl Component for FleetView {
         if area.width < 30 || area.height < 8 {
             return;
         }
+        frame.render_widget(
+            Block::default().style(Style::default().bg(IOS_BG_GLASS)),
+            area,
+        );
+
         // Design G layout:
         //   Row 0..=4   header block (FLEET caption / big stat / button row)
         //   Row 5       column header row (ACCOUNT, WEEKLY · 5H, WORKER · 5H, STATUS, WORKING ON, PANE)
@@ -110,8 +119,8 @@ impl Component for FleetView {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(5), // header card
-                Constraint::Length(2), // column header strip
-                Constraint::Min(0),    // worker rows
+                Constraint::Length(3), // column header strip card
+                Constraint::Min(0),    // worker rows card
             ])
             .split(area);
 
@@ -119,14 +128,22 @@ impl Component for FleetView {
         // Matches Design G's two-line title block: small "FLEET" caption
         // above a big "N workers · M live · K in review" line. Right side
         // carries the Filter + "+ New worker" pills (the latter accent-blue).
-        let summary = self.rows.as_ref().map(|rows| FleetSummary::of(rows.as_slice()));
+        let summary = self
+            .rows
+            .as_ref()
+            .map(|rows| FleetSummary::of(rows.as_slice()));
         render_header(frame, layout[0], summary.as_ref());
 
         // ── Column header strip ───────────────────────────────────────────
-        render_column_headers(frame, layout[1]);
+        let column_block = card(Some("COLUMNS"), false);
+        let column_inner = column_block.inner(layout[1]);
+        frame.render_widget(column_block, layout[1]);
+        render_column_headers(frame, column_inner);
 
         // ── Worker rows ───────────────────────────────────────────────────
-        let body = layout[2];
+        let rows_block = card(Some("WORKERS"), false);
+        let body = rows_block.inner(layout[2]);
+        frame.render_widget(rows_block, layout[2]);
         match &self.rows {
             Some(worker_rows) if !worker_rows.is_empty() => {
                 // 2 lines per worker row + a 1-line gap between, capped by area.
@@ -141,7 +158,12 @@ impl Component for FleetView {
                     }
                     render_worker_row(
                         frame,
-                        Rect { x: body.x, y, width: body.width, height: row_h },
+                        Rect {
+                            x: body.x,
+                            y,
+                            width: body.width,
+                            height: row_h,
+                        },
                         row,
                     );
                 }
@@ -152,8 +174,16 @@ impl Component for FleetView {
                     None => "  no workers — is the codex-fleet session up?",
                 };
                 frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(msg, Style::default().fg(IOS_FG_MUTED)))),
-                    Rect { x: body.x, y: body.y, width: body.width, height: 1 },
+                    Paragraph::new(Line::from(Span::styled(
+                        msg,
+                        Style::default().fg(IOS_FG_MUTED),
+                    ))),
+                    Rect {
+                        x: body.x,
+                        y: body.y,
+                        width: body.width,
+                        height: 1,
+                    },
                 );
             }
             None => {
@@ -162,7 +192,12 @@ impl Component for FleetView {
                         "  loading fleet state…",
                         Style::default().fg(IOS_FG_MUTED),
                     ))),
-                    Rect { x: body.x, y: body.y, width: body.width, height: 1 },
+                    Rect {
+                        x: body.x,
+                        y: body.y,
+                        width: body.width,
+                        height: 1,
+                    },
                 );
             }
         }
@@ -176,7 +211,12 @@ impl Component for FleetView {
                     format!("  load error: {err}"),
                     Style::default().fg(IOS_FG_FAINT),
                 ))),
-                Rect { x: inner.x, y, width: inner.width, height: 1 },
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
             );
         }
     }
@@ -201,7 +241,10 @@ impl Component for FleetView {
 impl AppComponent<Msg, NoUserEvent> for FleetView {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
-            Event::Keyboard(KeyEvent { code: Key::Char('q'), .. })
+            Event::Keyboard(KeyEvent {
+                code: Key::Char('q'),
+                ..
+            })
             | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => Some(Msg::Quit),
             Event::Tick => {
                 // Refresh under the hood so the next frame sees fresh rows.
@@ -251,9 +294,16 @@ fn render_header(frame: &mut Frame, area: Rect, summary: Option<&FleetSummary>) 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "  FLEET",
-            Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(IOS_FG_MUTED)
+                .add_modifier(Modifier::BOLD),
         ))),
-        Rect { x: inner.x, y: caption_y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: caption_y,
+            width: inner.width,
+            height: 1,
+        },
     );
     // Line 2: big "N workers · M live · K in review" + right-aligned action
     // pills. Both halves share the same row so the layout reads like the PNG.
@@ -271,7 +321,12 @@ fn render_header(frame: &mut Frame, area: Rect, summary: Option<&FleetSummary>) 
             big,
             Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
         ))),
-        Rect { x: inner.x, y: stat_y, width: big_w.min(inner.width), height: 1 },
+        Rect {
+            x: inner.x,
+            y: stat_y,
+            width: big_w.min(inner.width),
+            height: 1,
+        },
     );
     // Right-side Filter + "+ New worker" pills.
     let filter_pill = "  Filter  ";
@@ -285,7 +340,12 @@ fn render_header(frame: &mut Frame, area: Rect, summary: Option<&FleetSummary>) 
                 filter_pill,
                 Style::default().fg(IOS_FG).bg(IOS_BG_GLASS),
             ))),
-            Rect { x: pill_x, y: stat_y, width: visible_width(filter_pill) as u16, height: 1 },
+            Rect {
+                x: pill_x,
+                y: stat_y,
+                width: visible_width(filter_pill) as u16,
+                height: 1,
+            },
         );
         // + New worker (accent fill)
         let new_x = pill_x + visible_width(filter_pill) as u16 + 1;
@@ -297,7 +357,12 @@ fn render_header(frame: &mut Frame, area: Rect, summary: Option<&FleetSummary>) 
                     .bg(IOS_TINT)
                     .add_modifier(Modifier::BOLD),
             ))),
-            Rect { x: new_x, y: stat_y, width: visible_width(new_pill) as u16, height: 1 },
+            Rect {
+                x: new_x,
+                y: stat_y,
+                width: visible_width(new_pill) as u16,
+                height: 1,
+            },
         );
     }
 }
@@ -309,10 +374,20 @@ fn render_column_headers(frame: &mut Frame, area: Rect) {
     }
     let y = area.y;
     let mut x = area.x + 2;
-    let style = Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD);
+    let style = Style::default()
+        .fg(IOS_FG_MUTED)
+        .add_modifier(Modifier::BOLD);
     let put = |frame: &mut Frame, x: u16, w: u16, label: &str| {
-        let rect = Rect { x, y, width: w.min(area.width.saturating_sub(x - area.x)), height: 1 };
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(label.to_string(), style))), rect);
+        let rect = Rect {
+            x,
+            y,
+            width: w.min(area.width.saturating_sub(x - area.x)),
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(label.to_string(), style))),
+            rect,
+        );
     };
     put(frame, x, COL_ACCOUNT, "ACCOUNT");
     x += COL_ACCOUNT + COL_SEP;
@@ -334,7 +409,11 @@ fn avatar_initials(agent_id: &str) -> String {
     let mut parts = agent_id.split(|c: char| c == '-' || c == '_' || c == '.');
     let first = parts.next().and_then(|s| s.chars().next()).unwrap_or('?');
     let second = parts.next().and_then(|s| s.chars().next()).unwrap_or(first);
-    format!("{}{}", first.to_uppercase().next().unwrap_or('?'), second.to_uppercase().next().unwrap_or('?'))
+    format!(
+        "{}{}",
+        first.to_uppercase().next().unwrap_or('?'),
+        second.to_uppercase().next().unwrap_or('?')
+    )
 }
 
 /// Stable per-agent avatar colour drawn from a small UIColor-system palette.
@@ -347,9 +426,9 @@ fn avatar_color(agent_id: &str) -> Color {
         h = h.wrapping_mul(0x100000001b3);
     }
     match h % 6 {
-        0 => IOS_TINT,        // systemBlue
-        1 => IOS_GREEN,       // systemGreen
-        2 => IOS_DESTRUCTIVE, // systemRed
+        0 => IOS_TINT,                 // systemBlue
+        1 => IOS_GREEN,                // systemGreen
+        2 => IOS_DESTRUCTIVE,          // systemRed
         3 => Color::Rgb(255, 149, 0),  // systemOrange
         4 => Color::Rgb(175, 82, 222), // systemPurple
         _ => Color::Rgb(255, 204, 0),  // systemYellow
@@ -378,7 +457,12 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
                 .bg(avatar_color(&row.agent_id))
                 .add_modifier(Modifier::BOLD),
         ))),
-        Rect { x, y: y1, width: visible_width(&avatar) as u16, height: 1 },
+        Rect {
+            x,
+            y: y1,
+            width: visible_width(&avatar) as u16,
+            height: 1,
+        },
     );
     let email_x = x + visible_width(&avatar) as u16 + 1;
     let email_w = COL_ACCOUNT.saturating_sub(visible_width(&avatar) as u16 + 2);
@@ -393,7 +477,12 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
             truncate_chars(&email_label, email_w as usize),
             Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
         ))),
-        Rect { x: email_x, y: y1, width: email_w, height: 1 },
+        Rect {
+            x: email_x,
+            y: y1,
+            width: email_w,
+            height: 1,
+        },
     );
     // Sub-line: model label (e.g. "gpt-5.5 xhigh") or "got X high" placeholder.
     let sub_text = match &row.model_label {
@@ -405,7 +494,12 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
             truncate_chars(&sub_text, email_w as usize),
             Style::default().fg(IOS_FG_MUTED),
         ))),
-        Rect { x: email_x, y: y2, width: email_w, height: 1 },
+        Rect {
+            x: email_x,
+            y: y2,
+            width: email_w,
+            height: 1,
+        },
     );
     x = area.x + 1 + COL_ACCOUNT + COL_SEP;
 
@@ -417,14 +511,26 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
     let weekly_rail: Vec<Span> = progress_rail(row.weekly_pct, RailAxis::Usage, rail_w);
     frame.render_widget(
         Paragraph::new(Line::from(weekly_rail)),
-        Rect { x, y: y1, width: COL_RAIL_DUAL, height: 1 },
+        Rect {
+            x,
+            y: y1,
+            width: COL_RAIL_DUAL,
+            height: 1,
+        },
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("{}%", row.weekly_pct),
-            Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(IOS_FG_MUTED)
+                .add_modifier(Modifier::BOLD),
         ))),
-        Rect { x, y: y2, width: COL_RAIL_DUAL, height: 1 },
+        Rect {
+            x,
+            y: y2,
+            width: COL_RAIL_DUAL,
+            height: 1,
+        },
     );
     x += COL_RAIL_DUAL + COL_SEP;
 
@@ -432,14 +538,26 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
     let worker_rail: Vec<Span> = progress_rail(row.five_h_pct, RailAxis::Usage, rail_w);
     frame.render_widget(
         Paragraph::new(Line::from(worker_rail)),
-        Rect { x, y: y1, width: COL_RAIL_DUAL, height: 1 },
+        Rect {
+            x,
+            y: y1,
+            width: COL_RAIL_DUAL,
+            height: 1,
+        },
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("{}%", row.five_h_pct),
-            Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(IOS_FG_MUTED)
+                .add_modifier(Modifier::BOLD),
         ))),
-        Rect { x, y: y2, width: COL_RAIL_DUAL, height: 1 },
+        Rect {
+            x,
+            y: y2,
+            width: COL_RAIL_DUAL,
+            height: 1,
+        },
     );
     x += COL_RAIL_DUAL + COL_SEP;
 
@@ -447,19 +565,31 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
     let chip_spans: Vec<Span> = status_chip(chip_kind(row.state));
     frame.render_widget(
         Paragraph::new(Line::from(chip_spans)),
-        Rect { x, y: y1, width: COL_STATUS, height: 1 },
+        Rect {
+            x,
+            y: y1,
+            width: COL_STATUS,
+            height: 1,
+        },
     );
     x += COL_STATUS + COL_SEP;
 
     // ── WORKING ON (2-line) ──────────────────────────────────────────────
-    let working_w = area.width.saturating_sub(x - area.x + COL_PANE + COL_SEP + 1);
+    let working_w = area
+        .width
+        .saturating_sub(x - area.x + COL_PANE + COL_SEP + 1);
     if row.working_on.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "—  reserve",
                 Style::default().fg(IOS_FG_FAINT),
             ))),
-            Rect { x, y: y1, width: working_w, height: 1 },
+            Rect {
+                x,
+                y: y1,
+                width: working_w,
+                height: 1,
+            },
         );
     } else {
         frame.render_widget(
@@ -467,7 +597,12 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
                 truncate_chars(&row.working_on, working_w as usize),
                 Style::default().fg(IOS_FG),
             ))),
-            Rect { x, y: y1, width: working_w, height: 1 },
+            Rect {
+                x,
+                y: y1,
+                width: working_w,
+                height: 1,
+            },
         );
         if !row.pane_subtext.is_empty() {
             frame.render_widget(
@@ -475,7 +610,12 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
                     truncate_chars(&row.pane_subtext, working_w as usize),
                     Style::default().fg(IOS_FG_MUTED),
                 ))),
-                Rect { x, y: y2, width: working_w, height: 1 },
+                Rect {
+                    x,
+                    y: y2,
+                    width: working_w,
+                    height: 1,
+                },
             );
         }
     }
@@ -499,7 +639,12 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(pane_label, pane_style))),
-        Rect { x, y: y1, width: COL_PANE, height: 1 },
+        Rect {
+            x,
+            y: y1,
+            width: COL_PANE,
+            height: 1,
+        },
     );
 }
 
@@ -537,7 +682,12 @@ impl Model<CrosstermTerminalAdapter> {
         let app = Self::init_app().map_err(|e| io::Error::other(format!("init app: {e:?}")))?;
         let terminal =
             Self::init_adapter().map_err(|e| io::Error::other(format!("init adapter: {e:?}")))?;
-        Ok(Self { app, terminal, quit: false, redraw: true })
+        Ok(Self {
+            app,
+            terminal,
+            quit: false,
+            redraw: true,
+        })
     }
 
     fn init_app() -> Result<Application<Id, Msg, NoUserEvent>, Box<dyn std::error::Error>> {
@@ -588,7 +738,10 @@ fn main() -> io::Result<()> {
 
     let result = (|| -> io::Result<()> {
         while !model.quit {
-            if let Ok(messages) = model.app.tick(PollStrategy::Once(Duration::from_millis(100))) {
+            if let Ok(messages) = model
+                .app
+                .tick(PollStrategy::Once(Duration::from_millis(100)))
+            {
                 for msg in messages {
                     model.update(msg);
                 }
