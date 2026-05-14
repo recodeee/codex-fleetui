@@ -1,152 +1,142 @@
 # codex-fleet
 
-Spin up a tmux session of parallel **codex workers**, each logged in
-under a different `~/.codex/accounts/<email>.json` account, all pulling
-tasks from a shared **Colony queue**. The host Claude session is the
-orchestrator; the panes are the worker bees.
+Multi-account Codex worker pool. Spawns N parallel `codex` panes in a tmux
+session, each on its own `~/.codex/accounts/<email>.json` auth, all pulling
+work from a shared [Colony](https://github.com/colonyq) task queue.
 
-This is the answer to "I have N codex accounts — can I have N parallel
-codex agents working on one feature without burning a single account's
-quota?". Yes, you can.
+Ships with:
 
-## Architecture
+- **`full-bringup.sh`** — single command. Publishes the priority plan,
+  cap-probes the account pool, stages N isolated `CODEX_HOME`s, creates
+  the tmux session (overview / fleet / plan / waves / review / watcher
+  windows) and the sibling `fleet-ticker` daemon session (ticker /
+  cap-swap / state-pump / force-claim / claim-release / stall-watcher).
+- **`force-claim.sh`** — polls Colony every 15 s, dispatches ready
+  sub-tasks to idle codex panes via `tmux send-keys`.
+- **`claim-release-supervisor.sh`** — watches for panes that go idle
+  while still holding a Colony claim; releases the claim so force-claim
+  can re-route the work.
+- **`cap-swap-daemon.sh`** — replaces capped panes with healthy accounts
+  using a live `codex exec` probe (not the codex-auth meter — those are
+  different things).
+- **iOS-style tmux chrome** (`style-tabs.sh`, `watcher-board.sh`, etc.) —
+  rounded pill tabs, clickable status row, six animated dashboards.
 
-```
-host Claude session (orchestrator)
-   │
-   │ task_propose × N  (Colony MCP)
-   ▼
-Colony task queue (~/.colony/data.db)
-   ▲
-   │ task_ready_for_agent  (each pane polls)
-   │
-┌──┴────── tmux session: codex-fleet ─────────────────────────┐
-│ pane 1   CODEX_HOME=/tmp/codex-fleet/research/  codex (...) │
-│ pane 2   CODEX_HOME=/tmp/codex-fleet/coding/    codex (...) │
-│ pane 3   CODEX_HOME=/tmp/codex-fleet/review/    codex (...) │
-│ pane 4   CODEX_HOME=/tmp/codex-fleet/docs/      codex (...) │
-└─────────────────────────────────────────────────────────────┘
-```
-
-Each pane has its **own isolated `CODEX_HOME`**, populated by `up.sh`
-from a chosen `~/.codex/accounts/<email>.json` auth file. That isolation
-matters because `codex` reads `$CODEX_HOME/auth.json` at startup and any
-shared file would race between panes after spawn.
-
-## Quick start
+## Install
 
 ```bash
-# 1. Copy the example config and edit it to match your real accounts.
-cp scripts/codex-fleet/accounts.example.yml scripts/codex-fleet/accounts.yml
-$EDITOR scripts/codex-fleet/accounts.yml
-
-# 2. Verify each `email:` field has a matching auth file.
-for f in $(awk -F': ' '/email:/{print $2}' scripts/codex-fleet/accounts.yml); do
-  test -f "$HOME/.codex/accounts/$f.json" \
-    && echo "✓ $f" \
-    || echo "✗ MISSING: $HOME/.codex/accounts/$f.json"
-done
-
-# 3. Dry-run to inspect the plan.
-bash scripts/codex-fleet/up.sh --dry-run
-
-# 4. Bring the fleet up.
-bash scripts/codex-fleet/up.sh
-
-# 5. From the orchestrator session, propose tasks.
-#    (Use the Colony MCP tools from your host Claude session.)
-
-# 6. Tear down when done.
-bash scripts/codex-fleet/down.sh           # preserves /tmp/codex-fleet/
-bash scripts/codex-fleet/down.sh --purge   # also wipes the staged auth files
+git clone git@github.com:recodeee/codex-fleet.git ~/codex-fleet
+cd ~/codex-fleet
+bash install.sh
 ```
 
-## How it routes tasks
+`install.sh` symlinks `~/.claude/skills/codex-fleet` → `<clone>/skills/codex-fleet`,
+seeds `scripts/codex-fleet/accounts.yml` from the example, and prints the
+PATH / env additions you should add to your shell rc.
 
-The orchestrator does **not** push tasks directly to specific panes. It
-proposes tasks into the Colony queue tagged with skills / hints, and
-panes pull via `task_ready_for_agent` on their own.
+## Dependencies
 
-This is intentional:
+Standard:
 
-- **Fault tolerance** — a dead pane (network, rate-limit, panic) does
-  not block work. Other panes pick up the orphaned claim.
-- **Skill match** — the orchestrator hints which `skills` a task wants
-  (e.g. `skills: [code-review]`); Colony's ready queue surfaces it to a
-  pane whose agent profile includes that skill first.
-- **Rate-limit absorption** — when one account hits 429, that pane
-  releases the claim and sleeps; another pane with a different account
-  picks it up within the next ready-poll cycle.
+- `bash` ≥ 4, `tmux` ≥ 3.4, `kitty`, `python3` ≥ 3.10, `git`, `inotifywait`,
+  `jq`.
 
-The worker prompt in `worker-prompt.md` codifies these rules in the
-codex pane's behavior.
+Account / task layer:
 
-## Claim dispatch mode
+- `codex` CLI + `codex-auth` (Anthropic Codex)
+- `colony` CLI ([colonyq](https://github.com/colonyq)) for the task queue,
+  plan publishing, and stranded-claim rescue.
+- One auth file per worker at `~/.codex/accounts/<email>.json`. Generate
+  them with `codex-auth login` per account.
 
-`force-claim.sh --loop` starts `claim-trigger.sh` in the background and
-keeps a slower 30s polling pass as a backstop. The trigger watches
-`openspec/plans/*/plan.json` plus Colony WAL/event files under
-`~/.colony`, then wakes the first idle `codex-fleet:overview` pane.
+## Usage
 
-Set `CODEX_FLEET_CLAIM_MODE` to choose the path:
+```bash
+# bring up an 8-pane fleet against the newest openspec/plans/* plan
+bash scripts/codex-fleet/full-bringup.sh --n 8
 
-- `both` (default): event trigger plus 30s poll backstop
-- `event`: event trigger only
-- `poll`: polling only, no trigger
+# pin to a specific plan
+bash scripts/codex-fleet/full-bringup.sh \
+  --plan-slug my-feature-2026-05-14 --n 4
 
-## Requirements
+# attach
+tmux attach -t codex-fleet
 
-- `tmux` on PATH
-- `codex` on PATH (the actual CLI, not just `codex login` — must run a
-  worker-loop session)
-- `inotifywait` on PATH for event-driven claim dispatch
-- `python3` on PATH (used by the YAML parser in `up.sh` to avoid a
-  hard `yq` dep)
-- Auth files staged at `~/.codex/accounts/<email>.json` for every
-  account referenced in `accounts.yml`
-- Colony MCP server reachable from `codex` (configure once via
-  `codex mcp add colony ...`)
-
-## File layout
-
-```
-scripts/codex-fleet/
-├── README.md              this file
-├── up.sh                  spawn tmux session, stage CODEX_HOME per account
-├── down.sh                tear down session, optionally purge staged dirs
-├── accounts.example.yml   commit-tracked template
-├── accounts.yml           your real config (gitignored)
-└── worker-prompt.md       prompt loaded into every codex pane at boot
+# tear down
+bash scripts/codex-fleet/down.sh
 ```
 
-Run `bash scripts/codex-fleet/up.sh --help` for full flag reference.
+## Plan-source layout
 
-## Limitations
+`full-bringup.sh` reads OpenSpec-style plans from
+`$REPO/openspec/plans/<slug>/plan.json`. Out of the box, `$REPO` is the
+codex-fleet clone itself — so seed your plans there OR set
+`CODEX_FLEET_REPO_ROOT` to point at your project repo:
 
-- **Single-host only.** All panes run on the same machine. Distributing
-  panes across hosts would need an explicit message-bus / process
-  supervisor (k8s, nomad). Out of scope.
-- **No automatic account discovery.** You have to list which accounts
-  to use in `accounts.yml`. The script does not enumerate
-  `~/.codex/accounts/` for you, because most users have stale or
-  disabled accounts mixed in there.
-- **No live UI.** The status line is plain tmux. The Colony viewer
-  (`colony viewer` web UI) shows the task queue + observations in real
-  time — that is the recommended dashboard while the fleet runs.
-- **Smoke-test caveat.** This crate cannot self-test the multi-account
-  flow on a single-account dev box. Per-account isolation is verified
-  by the `CODEX_HOME=...` per-pane env line; the actual "different
-  account" verification is a manual `nvidia-smi`-equivalent: spawn the
-  fleet, attach to two panes, run a token-counting MCP call in each,
-  confirm two distinct usage counters move.
+```bash
+CODEX_FLEET_REPO_ROOT=$HOME/Documents/my-project \
+  bash ~/codex-fleet/scripts/codex-fleet/full-bringup.sh --n 8
+```
 
-## Related
+The fleet runs entirely against the plan tree referenced by that env var;
+the clone itself contributes the scripts, not the plans.
 
-- recodee#1702 — `codex-gpu-embedder` perf pack (lets Colony's
-  semantic features run at GPU latency)
-- colony#515 — `codex-gpu` embedding provider
-- colony#517 — `semantic_search` MCP tool
-- colony#518 — `cluster_observations` MCP tool (handoff dedupe)
+## Configuration
 
-Together: the fleet propose-and-supervise UX gets sub-50ms semantic
-recall + dedupe from the same hardware that runs the workers.
+`scripts/codex-fleet/accounts.yml` (gitignored, copied from
+`accounts.example.yml` by `install.sh`):
+
+```yaml
+accounts:
+  - id: research
+    email: research@example.com         # ~/.codex/accounts/research@example.com.json
+    skills: [research, planning]
+    rate_limit_tier: high
+  - id: coding
+    email: coding@example.com
+    skills: [implementation, testing]
+    rate_limit_tier: standard
+```
+
+The `skills` list is informational — Colony's `task_ready_for_agent`
+reads it to bias routing toward the right pane, but does not gate
+assignment.
+
+## Self-healing
+
+- **force-claim** dispatches available tasks to idle panes (~15 s loop)
+- **claim-release-supervisor** releases stale claims from agents whose
+  panes went idle without completing (~60 s loop)
+- **cap-swap-daemon** replaces capped accounts (~30 s loop)
+- **stall-watcher** runs `colony rescue stranded --apply` for claims
+  held > 30 min without progress
+
+Together: a pane that dies, gets stuck on a usage-limit, or just stops
+polling Colony is recovered automatically without operator intervention.
+
+## Optional supervisors
+
+By default, `full-bringup.sh` skips the kitty-spawning takeover
+supervisor (legacy autonomous rescue that opens one external kitty
+window per replacement) because most fleets prefer the
+in-tmux `claim-release` daemon. Re-enable explicitly:
+
+```bash
+CODEX_FLEET_SUPERVISOR=1 bash scripts/codex-fleet/full-bringup.sh ...
+```
+
+## Skill
+
+`skills/codex-fleet/SKILL.md` is the Claude Code orchestrator skill.
+After `install.sh`, Claude Code in any repo recognizes "codex fleet"
+trigger phrases and routes through this skill (lifecycle, monitoring,
+deduping handoffs, dispatching tasks).
+
+## License
+
+MIT. See `LICENSE`.
+
+## Origin
+
+Extracted from [`recodeee/recodee/scripts/codex-fleet/`](https://github.com/recodeee/recodee)
+in May 2026. Full commit history preserved via `git subtree split`.
