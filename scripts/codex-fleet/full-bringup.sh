@@ -145,29 +145,67 @@ log "pruning stale remote refs"
 git -C "$REPO" remote prune origin 2>&1 | sed 's/^/  /' || true
 git -C "$REPO" fetch --prune origin 2>&1 | sed 's/^/  /' >/dev/null || true
 
-# 4. Ensure the plan is published to Colony so task_plan_list shows it.
-# 5-min publish cache short-circuits the second/third bringup of the same
-# plan slug — colony plan publish is idempotent but the round-trip costs
-# ~2-3s and an MCP call.
-PLAN_PUBLISH_MARK="/tmp/codex-fleet/.plan-publish.$PLAN_SLUG.mark"
+# 4. Ensure ALL plans on disk are published to Colony so task_plan_list shows them.
+#
+# Why publish every plan, not just the priority one: this is what unlocks
+# fleet parallelism. With 8 worker panes and a single linear plan, panes
+# serialize on `task_ready_for_agent` against one task graph. With every
+# `openspec/plans/*/plan.json` published, Colony can route concurrent work
+# across all of them — workers pull from whichever plan has deps-satisfied
+# `available` tasks, not just the priority one. The priority plan stays
+# first in the list (used by force-claim's plan-pinning and by 2b's
+# writable-roots preflight) but is no longer the only published plan.
+#
+# 5-min per-slug publish cache short-circuits the second/third bringup of
+# the same plan — colony plan publish is idempotent but the round-trip
+# costs ~2-3s + an MCP call per plan, which adds up across N plans.
+#
+# Errors on a single plan are non-fatal: one bad plan.json shouldn't block
+# the whole bringup. We warn and continue so the rest of the fleet still
+# comes up with the plans that did publish.
+ALL_PLAN_SLUGS=$(PRIORITY="$PLAN_SLUG" python3 - <<PY
+import os, re, glob
+priority = os.environ.get("PRIORITY", "")
+plans = glob.glob("$REPO/openspec/plans/*/plan.json")
+def key(p):
+    s = os.path.basename(os.path.dirname(p))
+    m = re.search(r'(\d{4})-(\d{2})-(\d{2})$', s)
+    d = (int(m[1]),int(m[2]),int(m[3])) if m else (0,0,0)
+    return (d, os.path.getmtime(p))
+plans.sort(key=key, reverse=True)
+slugs = [os.path.basename(os.path.dirname(p)) for p in plans]
+# Stable order: priority first, then everything else newest-by-date desc.
+if priority and priority in slugs:
+    slugs = [priority] + [s for s in slugs if s != priority]
+for s in slugs:
+    print(s)
+PY
+)
 mkdir -p /tmp/codex-fleet
-plan_publish_skip=0
-if [ -f "$PLAN_PUBLISH_MARK" ]; then
-  mark_age=$(( $(date +%s) - $(stat -c %Y "$PLAN_PUBLISH_MARK" 2>/dev/null || echo 0) ))
-  if [ "$mark_age" -lt 300 ]; then
-    log "plan publish: cache hit, skipping (age=${mark_age}s)"
-    plan_publish_skip=1
+plan_publish_total=0
+plan_publish_ok=0
+plan_publish_cached=0
+while IFS= read -r slug; do
+  [ -z "$slug" ] && continue
+  plan_publish_total=$((plan_publish_total + 1))
+  mark_file="/tmp/codex-fleet/.plan-publish.$slug.mark"
+  if [ -f "$mark_file" ]; then
+    mark_age=$(( $(date +%s) - $(stat -c %Y "$mark_file" 2>/dev/null || echo 0) ))
+    if [ "$mark_age" -lt 300 ]; then
+      log "plan publish: cache hit ($slug) age=${mark_age}s"
+      plan_publish_cached=$((plan_publish_cached + 1))
+      continue
+    fi
   fi
-fi
-if [ "$plan_publish_skip" = "0" ]; then
-  log "ensuring plan is published"
-  if colony plan publish "$PLAN_SLUG" --agent claude --session "full-bringup-$(date +%s)" 2>&1 | sed 's/^/  /'; then
-    log "publish: ok (or already published — publish is idempotent)"
-    touch "$PLAN_PUBLISH_MARK"
+  log "publishing plan: $slug"
+  if colony plan publish "$slug" --agent claude --session "full-bringup-$(date +%s)" 2>&1 | sed 's/^/  /'; then
+    touch "$mark_file"
+    plan_publish_ok=$((plan_publish_ok + 1))
   else
-    warn "publish returned non-zero; check above. Workers may not see this plan in task_ready_for_agent."
+    warn "publish returned non-zero for $slug; continuing. Workers may not see this plan in task_ready_for_agent."
   fi
-fi
+done <<< "$ALL_PLAN_SLUGS"
+log "published $((plan_publish_ok + plan_publish_cached))/$plan_publish_total plans (priority=$PLAN_SLUG, ok=$plan_publish_ok, cached=$plan_publish_cached)"
 
 # 5. Verify wake prompt exists
 if [ ! -f "$WAKE" ]; then
@@ -515,10 +553,33 @@ mkdir -p "$FLEET_STATE_DIR/supervisor"
 # ticker uses fleet-tick-daemon.sh wrapper — re-spawn-safe vs the raw
 # fleet-tick.sh which `set -eo pipefail`-crashes mid-tick on any failed
 # regex / capture-pane and silently halts the live viz.
-tmux new-session -d -s "$TICKER_SESSION" -n ticker     "bash $SCRIPT_DIR/fleet-tick-daemon.sh"
-tmux new-window  -d -t "$TICKER_SESSION:" -n cap-swap  "bash $SCRIPT_DIR/cap-swap-daemon.sh"
-tmux new-window  -d -t "$TICKER_SESSION:" -n state-pump "bash $SCRIPT_DIR/colony-state-pump.sh"
-tmux new-window  -d -t "$TICKER_SESSION:" -n review-detector "bash $SCRIPT_DIR/plan-complete-detector.sh"
+# ticker_window — open a ticker daemon window. Set remain-on-exit so a
+# crashed daemon stays visible as a dead window with its last stderr,
+# instead of silently disappearing (the 2026-05-14 force-claim/state-pump/
+# review-detector regression: their windows vanished the moment bash
+# exited non-zero because no remain-on-exit was attached, leaving the
+# operator with a fleet that idled forever while looking healthy).
+ticker_window() {
+  local name="$1" cmd="$2"
+  tmux new-window -d -t "$TICKER_SESSION:" -n "$name" "$cmd" || {
+    warn "ticker window create failed: $name"
+    return 0
+  }
+  tmux set-option -w -t "$TICKER_SESSION:$name" remain-on-exit on 2>/dev/null || true
+}
+tmux new-session -d -s "$TICKER_SESSION" -n ticker "bash $SCRIPT_DIR/fleet-tick-daemon.sh"
+tmux set-option -w -t "$TICKER_SESSION:ticker" remain-on-exit on 2>/dev/null || true
+ticker_window cap-swap "bash $SCRIPT_DIR/cap-swap-daemon.sh"
+# state-pump + review-detector — guard the spawn: their scripts may not
+# exist on every install (script extracted out of recodee inherited a
+# subset of daemons). Skip silently when missing so the window doesn't
+# create-then-die and pollute the strip with a dead tab.
+if [ -f "$SCRIPT_DIR/colony-state-pump.sh" ]; then
+  ticker_window state-pump "bash $SCRIPT_DIR/colony-state-pump.sh"
+fi
+if [ -f "$SCRIPT_DIR/plan-complete-detector.sh" ]; then
+  ticker_window review-detector "bash $SCRIPT_DIR/plan-complete-detector.sh"
+fi
 # force-claim scans ALL openspec plans every 15s, finds deps-satisfied
 # `available` tasks, and dispatches them onto idle codex panes via
 # tmux send-keys. Keeps the fleet pulled into ready work when its
@@ -529,7 +590,19 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n review-detector "bash $SCRIPT_DIR/p
 # is wrong here because we have 6 windows and `1` maps to `fleet`, the
 # state-anim viz pane — so without this override the daemon reported
 # "no idle codex panes" forever while the actual workers idled in window 0.
-tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "FORCE_CLAIM_WINDOW=overview bash $SCRIPT_DIR/force-claim.sh --loop --interval=15"
+#
+# FORCE_CLAIM_REPO must pin the disk-plan scan to codex-fleet. Without it,
+# the daemon honours CODEX_FLEET_REPO_ROOT (set globally by codex-fleet-2
+# to recodee for cross-repo work), and dispatches workers onto plans whose
+# files are inside recodee — which the panes then try to claim against
+# a cwd of codex-fleet, hitting the writable-root preflight blocker on
+# every cycle (2026-05-14 stuck-fleet regression).
+#
+# CODEX_FLEET_CLAIM_MODE=poll forces poll-only, skipping the event-driven
+# claim-trigger.sh subprocess that requires inotifywait (not always
+# installed; without it claim-trigger crashes immediately and force-claim
+# logs "claim-trigger exited early status=127").
+ticker_window force-claim "FORCE_CLAIM_WINDOW=overview FORCE_CLAIM_REPO=$REPO CODEX_FLEET_CLAIM_MODE=poll bash $SCRIPT_DIR/force-claim.sh --loop --interval=15"
 
 # claim-release-supervisor scans all openspec plans every 60s, finds claims
 # held by agents whose codex pane has gone back to the default prompt
@@ -538,7 +611,7 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n force-claim "FORCE_CLAIM_WINDOW=ove
 # stranded --apply so force-claim can re-route them. Distinct from
 # supervisor.sh (kitty-spawning quota replacement, opt-in via
 # CODEX_FLEET_SUPERVISOR=1) — this watcher only mutates Colony state.
-tmux new-window  -d -t "$TICKER_SESSION:" -n claim-release "CR_SUP_SESSION=$SESSION CR_SUP_WINDOW=overview bash $SCRIPT_DIR/claim-release-supervisor.sh --loop --interval=60"
+ticker_window claim-release "CR_SUP_SESSION=$SESSION CR_SUP_WINDOW=overview bash $SCRIPT_DIR/claim-release-supervisor.sh --loop --interval=60"
 
 # stall-watcher: every 60s, `colony rescue stranded --apply` releases claims
 # held > 30m without progress, then enqueues a takeover_recommended event
@@ -548,9 +621,9 @@ tmux new-window  -d -t "$TICKER_SESSION:" -n claim-release "CR_SUP_SESSION=$SESS
 # per takeover event, which conflicts with the single-kitty-with-tmux-tabs
 # fleet UX. Re-enable per-bringup with CODEX_FLEET_SUPERVISOR=1, or run
 # `bash scripts/codex-fleet/supervisor.sh` manually when auto-rescue is wanted.
-tmux new-window  -d -t "$TICKER_SESSION:" -n stall-watcher "bash $SCRIPT_DIR/stall-watcher.sh"
+ticker_window stall-watcher "bash $SCRIPT_DIR/stall-watcher.sh"
 if [ "${CODEX_FLEET_SUPERVISOR:-0}" = "1" ]; then
-  tmux new-window  -d -t "$TICKER_SESSION:" -n supervisor    "bash $SCRIPT_DIR/supervisor.sh"
+  ticker_window supervisor "bash $SCRIPT_DIR/supervisor.sh"
 else
   log "supervisor window skipped (set CODEX_FLEET_SUPERVISOR=1 to enable auto-takeover spawns)"
 fi

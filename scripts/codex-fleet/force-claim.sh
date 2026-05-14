@@ -16,7 +16,15 @@
 #   3. Sort plans by newest-first (date suffix tiebreaker on mtime).
 #   4. Find idle codex panes (default-prompt placeholder, no Working /
 #      Reviewing approval state).
-#   5. Zip ready_tasks → panes 1:1 and send-keys a claim prompt.
+#   5. NEW (wave-parallel + token-aware): for the priority (newest) plan
+#      query `colony task ready` per healthy pane, group readys by
+#      `wave_index`, pick the lowest wave with work, and round-robin
+#      dispatch ALL ready sub-tasks in that wave to distinct healthy
+#      idle panes in a single tick. Panes near their 5h or weekly cap
+#      are skipped via token-meter.sh --json (graceful fallback if
+#      token-meter is unavailable).
+#   6. Fall back to the legacy plan.json scan when colony returns no
+#      ready items (covers the "colony unavailable" path).
 #
 # Loop mode now starts claim-trigger.sh for event-driven wakeups and keeps this
 # script's polling pass as a slow backstop.
@@ -27,7 +35,10 @@
 # Usage:
 #   bash scripts/codex-fleet/force-claim.sh                 # one-shot
 #   bash scripts/codex-fleet/force-claim.sh --dry-run       # show plan, no dispatch
-#   bash scripts/codex-fleet/force-claim.sh --loop          # event + poll every 30s
+#   bash scripts/codex-fleet/force-claim.sh --loop          # event + poll every 15s
+#   bash scripts/codex-fleet/force-claim.sh --no-token-check
+#                                                            # bypass token-meter skip
+#                                                            # (debug / meter is broken)
 #   bash scripts/codex-fleet/force-claim.sh --loop --quit-when-empty
 #                                                            # exit 0 after 3 consecutive
 #                                                            # passes with no available/claimed
@@ -48,11 +59,17 @@ SESSION="${FORCE_CLAIM_SESSION:-codex-fleet}"
 WINDOW="${FORCE_CLAIM_WINDOW:-overview}"
 LOOP=0
 DRY=0
-INTERVAL="${FORCE_CLAIM_INTERVAL:-30}"
+NO_TOKEN_CHECK=0
+INTERVAL="${FORCE_CLAIM_INTERVAL:-15}"
 CLAIM_MODE="${CODEX_FLEET_CLAIM_MODE:-both}"
 FLEET_STATE_DIR="${FLEET_STATE_DIR:-/tmp/claude-viz}"
 CLAIM_TRIGGER_LOG="${CLAIM_TRIGGER_LOG:-$FLEET_STATE_DIR/claim-trigger.log}"
 CLAIM_TRIGGER_PID=""
+TOKEN_METER="${FORCE_CLAIM_TOKEN_METER:-$SCRIPT_DIR/token-meter.sh}"
+# Thresholds match token-meter.sh is_hot() so cockpit and dispatcher agree
+# on what "near cap" means. 5h%<20 or wk%<15 = skip.
+TOKEN_MIN_5H="${FORCE_CLAIM_TOKEN_MIN_5H:-20}"
+TOKEN_MIN_WK="${FORCE_CLAIM_TOKEN_MIN_WK:-15}"
 # --quit-when-empty: exit 0 after N consecutive passes where every plan is
 # fully complete (no `available` and no `claimed` tasks anywhere). N comes
 # from --empty-threshold or env FORCE_CLAIM_EMPTY_THRESHOLD (default 3) so
@@ -66,6 +83,7 @@ for a in "$@"; do
     --interval=*) INTERVAL="${a#--interval=}" ;;
     --quit-when-empty) QUIT_EMPTY=1 ;;
     --empty-threshold=*) EMPTY_THRESHOLD="${a#--empty-threshold=}" ;;
+    --no-token-check) NO_TOKEN_CHECK=1 ;;
   esac
 done
 
@@ -119,7 +137,33 @@ for p in plans:
         if not all(status.get(str(d)) == "completed" for d in deps):
             continue
         title = (t.get("title") or "").replace("\t", " ")
-        print(f"{slug}\t{t.get('subtask_index')}\t{title}")
+        wave = t.get("wave_index")
+        wave = -1 if wave is None else int(wave)
+        print(f"{slug}\t{t.get('subtask_index')}\t{wave}\t{title}")
+PYEOF
+}
+
+# Resolve the priority plan slug = newest under openspec/plans/* (or the
+# pinned single plan). Used to scope wave-parallel dispatch to one plan
+# per tick. Other plans still get the legacy serial fallback below.
+priority_plan_slug() {
+  python3 - "$REPO" "${FORCE_CLAIM_PLAN_JSON:-}" <<'PYEOF'
+import os, sys, re, glob
+repo, pin = sys.argv[1], sys.argv[2]
+if pin and os.path.isfile(pin):
+    print(os.path.basename(os.path.dirname(pin)))
+    sys.exit(0)
+plans = glob.glob(f"{repo}/openspec/plans/*/plan.json")
+def keyfn(p):
+    s = os.path.basename(os.path.dirname(p))
+    m = re.search(r'(\d{4})-(\d{2})-(\d{2})$', s)
+    d = (int(m[1]), int(m[2]), int(m[3])) if m else (0, 0, 0)
+    try: mt = os.path.getmtime(p)
+    except OSError: mt = 0
+    return (d, mt)
+plans.sort(key=keyfn, reverse=True)
+if plans:
+    print(os.path.basename(os.path.dirname(plans[0])))
 PYEOF
 }
 
@@ -147,8 +191,33 @@ print(f"{avail}\t{claimed}\t{completed}\t{blocked}")
 PYEOF
 }
 
+# Read CODEX_FLEET_AGENT_NAME from a pane's /proc tree (walk children).
+# Mirrors token-meter.sh resolve_pane() but trimmed to just the agent.
+pane_agent_name() {
+  local pane_idx="$1"
+  local pane_pid
+  pane_pid=$(tmux display-message -p -t "$SESSION:$WINDOW.$pane_idx" '#{pane_pid}' 2>/dev/null || true)
+  [[ -z "$pane_pid" ]] && { echo ""; return; }
+  local q="$pane_pid" next p kids val
+  while [[ -n "$q" ]]; do
+    next=""
+    for p in $q; do
+      if [[ -r "/proc/$p/environ" ]]; then
+        val=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null \
+              | awk -F= '$1=="CODEX_FLEET_AGENT_NAME" {print substr($0,length($1)+2); exit}')
+        if [[ -n "$val" ]]; then echo "$val"; return; fi
+      fi
+      kids=$(pgrep -P "$p" 2>/dev/null || true)
+      [[ -n "$kids" ]] && next="$next $kids"
+    done
+    q="$next"
+  done
+  echo ""
+}
+
 # Identify idle codex panes — last 12 lines show the default-prompt placeholder,
-# no `Working (…)`, no `Reviewing approval request`.
+# no `Working (…)`, no `Reviewing approval request`. Emits TSV: pane_idx \t agent.
+# (agent may be empty if /proc env was unreadable — caller handles fallback.)
 idle_panes() {
   while read -r pane_idx; do
     [[ -z "$pane_idx" ]] && continue
@@ -157,9 +226,161 @@ idle_panes() {
     if echo "$tail" | grep -qE "Working \([0-9]+[ms]"; then continue; fi
     if echo "$tail" | grep -qE "Reviewing approval request"; then continue; fi
     if echo "$tail" | grep -qE "^› (Find and fix|Use /skills|Run /review|Improve documentation|Implement|Summarize|Explain|Write tests)"; then
-      printf '%s\n' "$pane_idx"
+      local agent
+      agent=$(pane_agent_name "$pane_idx")
+      printf '%s\t%s\n' "$pane_idx" "$agent"
     fi
   done < <(tmux list-panes -t "$SESSION:$WINDOW" -F '#{pane_index}' 2>/dev/null)
+}
+
+# Run token-meter.sh --json and emit TSV: agent \t 5h_pct \t wk_pct.
+# Strips trailing %; "n/a" → -1. Empty stdout on error (caller treats as
+# "no signal — keep all panes" so token-meter outages don't stall dispatch).
+token_meter_snapshot() {
+  if (( NO_TOKEN_CHECK == 1 )); then
+    return 0
+  fi
+  if [[ ! -x "$TOKEN_METER" && ! -f "$TOKEN_METER" ]]; then
+    printf 'force-claim: token-meter not at %s — skipping cap filter (graceful)\n' "$TOKEN_METER" >&2
+    return 0
+  fi
+  local raw
+  raw=$(bash "$TOKEN_METER" --json --session "$SESSION" 2>/dev/null || true)
+  [[ -z "$raw" ]] && {
+    printf 'force-claim: token-meter --json returned nothing — skipping cap filter\n' >&2
+    return 0
+  }
+  # NOTE: pipe stdin → python via -c (NOT `python3 - <<HEREDOC` — that form
+  # uses the heredoc itself as stdin, so the JSON pipe would be ignored).
+  printf '%s' "$raw" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw)
+except Exception as e:
+    sys.stderr.write(f"force-claim: token-meter JSON parse failed ({e})\n")
+    sys.exit(0)
+def pct(v):
+    if v is None: return -1
+    s = str(v).strip().rstrip("%")
+    if not s or s.lower() == "n/a": return -1
+    try: return int(float(s))
+    except: return -1
+for row in data.get("agents", []) or []:
+    agent = row.get("agent") or ""
+    if not agent: continue
+    fh = pct(row.get("five_hour_pct"))
+    wk = pct(row.get("weekly_pct"))
+    print(f"{agent}\t{fh}\t{wk}")
+'
+}
+
+# Filter idle panes against token-meter caps. Inputs:
+#   $1 = TSV "pane_idx\tagent" lines
+#   $2 = TSV "agent\tfh\twk" lines (may be empty → no filter applied)
+# Outputs (stdout): healthy "pane_idx\tagent" TSV.
+# Side-channel: prints "[skip] pane=X agent=Y 5h=Z wk=W" for each dropped pane
+# to stderr and sets SKIPPED_CAPPED via tmp file path (see one_pass()).
+filter_panes_by_cap() {
+  local idle_tsv="$1" meter_tsv="$2" skip_path="$3"
+  IDLE="$idle_tsv" METER="$meter_tsv" MIN5H="$TOKEN_MIN_5H" MINWK="$TOKEN_MIN_WK" \
+    SKIP_PATH="$skip_path" NO_CHECK="$NO_TOKEN_CHECK" python3 - <<'PYEOF'
+import os, sys
+idle = os.environ["IDLE"]
+meter = os.environ["METER"]
+min5h = int(os.environ["MIN5H"])
+minwk = int(os.environ["MINWK"])
+skip_path = os.environ["SKIP_PATH"]
+no_check = os.environ.get("NO_CHECK","0") == "1"
+caps = {}
+for line in meter.splitlines():
+    parts = line.split("\t")
+    if len(parts) != 3: continue
+    agent, fh, wk = parts
+    try:
+        caps[agent] = (int(fh), int(wk))
+    except ValueError:
+        continue
+skipped = 0
+kept_lines = []
+skip_lines = []
+have_meter = bool(caps) and not no_check
+for line in idle.splitlines():
+    if not line.strip(): continue
+    parts = line.split("\t")
+    if len(parts) < 2:
+        kept_lines.append(line)
+        continue
+    pane_idx, agent = parts[0], parts[1]
+    if no_check or not have_meter or not agent or agent not in caps:
+        kept_lines.append(line)
+        continue
+    fh, wk = caps[agent]
+    # fh==-1 / wk==-1 means token-meter has no signal → keep the pane.
+    cap_5h = fh != -1 and fh < min5h
+    cap_wk = wk != -1 and wk < minwk
+    if cap_5h or cap_wk:
+        skipped += 1
+        skip_lines.append(f"[skip] pane={pane_idx} agent={agent} 5h={fh}% wk={wk}% (min 5h>={min5h} wk>={minwk})")
+        continue
+    kept_lines.append(line)
+print("\n".join(kept_lines))
+with open(skip_path, "w") as f:
+    f.write(str(skipped))
+    if skip_lines:
+        f.write("\n" + "\n".join(skip_lines))
+PYEOF
+}
+
+# Query Colony for ready items in the priority plan, using each healthy
+# pane's agent name as the lens. Returns TSV "sub_idx\twave_idx\ttitle"
+# de-duplicated. Caller filters to lowest wave + round-robins to panes.
+#
+# We pick the agent slug of the first healthy pane (any pane will do —
+# `task_ready_for_agent` reports global readiness, the agent argument
+# just sets the routing lens). If colony is unreachable or returns no
+# rows, this function emits nothing and the legacy plan.json scan takes
+# over.
+colony_ready_for_plan() {
+  local plan_slug="$1" agent="$2"
+  [[ -z "$plan_slug" || -z "$agent" ]] && return 0
+  if ! command -v colony >/dev/null 2>&1; then
+    return 0
+  fi
+  local raw
+  raw=$(colony task ready \
+          --agent "$agent" \
+          --session "force-claim-${SESSION}" \
+          --repo-root "$REPO" \
+          --limit 50 \
+          --json 2>/dev/null || true)
+  [[ -z "$raw" ]] && return 0
+  # See token_meter_snapshot for why we use `python3 -c` instead of
+  # `python3 - <<HEREDOC` (heredoc would replace the JSON on stdin).
+  printf '%s' "$raw" | PLAN="$plan_slug" python3 -c '
+import json, os, sys
+plan = os.environ["PLAN"]
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw)
+except Exception:
+    sys.exit(0)
+ready = data.get("ready") or []
+seen = set()
+out = []
+for r in ready:
+    if r.get("plan_slug") != plan: continue
+    si = r.get("subtask_index")
+    if si is None or si in seen: continue
+    seen.add(si)
+    wave = r.get("wave_index")
+    if wave is None: wave = -1
+    title = (r.get("title") or "").replace("\t", " ")
+    out.append((int(wave), int(si), title))
+out.sort()
+for w, s, t in out:
+    print(f"{s}\t{w}\t{t}")
+'
 }
 
 dispatch() {
@@ -170,43 +391,178 @@ dispatch() {
   local prompt
   prompt="OVERRIDE current plan pinning. Claim sub-task ${sub_idx} of plan ${slug} via Colony task_plan_claim_subtask (force the agent slug to your CODEX_FLEET_AGENT_NAME). Title: ${title}. Implement it on a fresh agent worktree per AGENTS.md, run the narrowest verification, open + merge a PR, post a Colony note with evidence (branch, PR URL, MERGED state), then mark the sub-task completed."
   if (( DRY == 1 )); then
-    printf '[dry] pane=%s plan=%s sub=%s title=%s\n' "$pane_idx" "$slug" "$sub_idx" "$title"
+    printf '[dry] dispatched %s/sub-%s -> pane=%s title=%s\n' "$slug" "$sub_idx" "$pane_idx" "$title"
     return
   fi
   tmux send-keys -t "$SESSION:$WINDOW.$pane_idx" -l "$prompt"
   tmux send-keys -t "$SESSION:$WINDOW.$pane_idx" Enter
-  printf '[dispatch] pane=%s plan=%s sub=%s title=%s\n' "$pane_idx" "$slug" "$sub_idx" "$title"
+  printf 'dispatched %s/sub-%s -> pane=%s title=%s\n' "$slug" "$sub_idx" "$pane_idx" "$title"
 }
 
+# Single dispatch tick = (a) inventory idle panes, (b) token-cap filter,
+# (c) plan + wave selection via Colony for the priority plan,
+# (d) wave-parallel round-robin send-keys. Falls back to the legacy
+# plan.json scan when Colony has no rows for the priority plan (covers
+# multi-plan + colony-down paths).
 one_pass() {
-  local -a tasks=()
-  while IFS=$'\t' read -r slug idx title; do
-    [[ -z "$slug" ]] && continue
-    tasks+=("$slug"$'\t'"$idx"$'\t'"$title")
-  done < <(ready_tasks_all)
+  local ts; ts=$(date +%T)
 
-  local -a panes=()
-  while read -r p; do
-    [[ -z "$p" ]] && continue
-    panes+=("$p")
+  # (a) Inventory: idle panes as "pane_idx\tagent"
+  local idle_raw=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    idle_raw+="$line"$'\n'
   done < <(idle_panes)
 
-  if (( ${#tasks[@]} == 0 )); then
-    printf '[%s] no ready tasks across any plan\n' "$(date +%T)"
-    return
-  fi
-  if (( ${#panes[@]} == 0 )); then
-    printf '[%s] no idle codex panes (ready tasks=%d)\n' "$(date +%T)" "${#tasks[@]}"
+  if [[ -z "$idle_raw" ]]; then
+    printf '[%s] no idle codex panes\n' "$ts"
     return
   fi
 
-  local n=${#tasks[@]}
-  (( ${#panes[@]} < n )) && n=${#panes[@]}
-  local i slug sub title
-  for ((i=0; i<n; i++)); do
-    IFS=$'\t' read -r slug sub title <<<"${tasks[$i]}"
-    dispatch "${panes[$i]}" "$slug" "$sub" "$title"
+  # (b) Pane filter: drop panes near 5h/wk cap.
+  local meter_tsv=""
+  if (( NO_TOKEN_CHECK == 0 )); then
+    meter_tsv=$(token_meter_snapshot || true)
+  fi
+  local skip_tmp; skip_tmp=$(mktemp)
+  local healthy_raw
+  healthy_raw=$(filter_panes_by_cap "$idle_raw" "$meter_tsv" "$skip_tmp")
+
+  local skipped_count=0
+  if [[ -s "$skip_tmp" ]]; then
+    skipped_count=$(head -n1 "$skip_tmp" 2>/dev/null || echo 0)
+    # Echo per-pane skip reasons (only first line is the counter). The
+    # `|| [[ -n $sl ]]` guard catches the last line when the file has no
+    # trailing newline.
+    while IFS= read -r sl || [[ -n "$sl" ]]; do
+      [[ -n "$sl" ]] && printf '%s\n' "$sl"
+    done < <(tail -n +2 "$skip_tmp" 2>/dev/null)
+  fi
+  rm -f "$skip_tmp"
+
+  local -a healthy_panes=() healthy_agents=()
+  while IFS=$'\t' read -r p a; do
+    [[ -z "$p" ]] && continue
+    healthy_panes+=("$p")
+    healthy_agents+=("$a")
+  done <<<"$healthy_raw"
+
+  if (( ${#healthy_panes[@]} == 0 )); then
+    printf 'tick: claimed 0 of 0 ready (wave=-); skipped %s capped panes\n' "$skipped_count"
+    return
+  fi
+
+  # (c) Plan selection: priority plan = newest. Query Colony per first
+  # healthy agent, then group by wave_index → pick lowest wave with work.
+  local priority_slug
+  priority_slug=$(priority_plan_slug)
+  local lens_agent=""
+  local i
+  for i in "${!healthy_agents[@]}"; do
+    if [[ -n "${healthy_agents[$i]}" ]]; then
+      lens_agent="${healthy_agents[$i]}"; break
+    fi
   done
+
+  local colony_tsv=""
+  if [[ -n "$priority_slug" && -n "$lens_agent" ]]; then
+    colony_tsv=$(colony_ready_for_plan "$priority_slug" "$lens_agent" || true)
+  fi
+
+  # Decide wave-parallel batch.
+  local wave_pick=-1
+  local -a batch_sub=() batch_title=()
+  if [[ -n "$colony_tsv" ]]; then
+    # Pick lowest wave_idx with any ready items.
+    wave_pick=$(printf '%s\n' "$colony_tsv" | awk -F'\t' 'NF>=2 {print $2}' | sort -n | head -1)
+    if [[ -n "$wave_pick" ]]; then
+      while IFS=$'\t' read -r s w t; do
+        [[ -z "$s" ]] && continue
+        [[ "$w" != "$wave_pick" ]] && continue
+        batch_sub+=("$s")
+        batch_title+=("$t")
+      done < <(printf '%s\n' "$colony_tsv")
+    fi
+  fi
+
+  # Fallback: legacy plan.json scan. Used when Colony returned nothing
+  # for the priority plan (colony unreachable, priority plan exhausted,
+  # or pane agent slugs not yet resolvable). We still try to keep the
+  # wave-parallel shape: if the priority plan has any ready tasks in the
+  # plan.json scan, batch its lowest-wave group; otherwise fall back to
+  # the cross-plan list (older multi-plan path).
+  if (( ${#batch_sub[@]} == 0 )); then
+    local -a fb_slugs=() fb_subs=() fb_titles=() fb_waves=()
+    while IFS=$'\t' read -r slug idx wave title; do
+      [[ -z "$slug" ]] && continue
+      fb_slugs+=("$slug")
+      fb_subs+=("$idx")
+      fb_waves+=("$wave")
+      fb_titles+=("$title")
+    done < <(ready_tasks_all)
+    if (( ${#fb_subs[@]} == 0 )); then
+      printf '[%s] no ready tasks across any plan\n' "$ts"
+      printf 'tick: claimed 0 of 0 ready (wave=-); skipped %s capped panes\n' "$skipped_count"
+      return
+    fi
+
+    # Prefer rows on the priority plan, grouped by lowest wave_idx.
+    if [[ -n "$priority_slug" ]]; then
+      local lowest_wave=""
+      local -a prio_sub=() prio_title=()
+      local fi
+      for fi in "${!fb_slugs[@]}"; do
+        [[ "${fb_slugs[$fi]}" != "$priority_slug" ]] && continue
+        local w="${fb_waves[$fi]}"
+        if [[ -z "$lowest_wave" ]] || (( w < lowest_wave )); then
+          lowest_wave="$w"
+        fi
+      done
+      if [[ -n "$lowest_wave" ]]; then
+        for fi in "${!fb_slugs[@]}"; do
+          [[ "${fb_slugs[$fi]}" != "$priority_slug" ]] && continue
+          [[ "${fb_waves[$fi]}" != "$lowest_wave" ]] && continue
+          prio_sub+=("${fb_subs[$fi]}")
+          prio_title+=("${fb_titles[$fi]}")
+        done
+        if (( ${#prio_sub[@]} > 0 )); then
+          local total_ready=${#prio_sub[@]}
+          local n=$total_ready
+          (( ${#healthy_panes[@]} < n )) && n=${#healthy_panes[@]}
+          local idx
+          for ((idx=0; idx<n; idx++)); do
+            dispatch "${healthy_panes[$idx]}" "$priority_slug" "${prio_sub[$idx]}" "${prio_title[$idx]}"
+          done
+          printf 'tick: claimed %d of %d ready (wave=%s); skipped %s capped panes\n' \
+            "$n" "$total_ready" "$lowest_wave" "$skipped_count"
+          return
+        fi
+      fi
+    fi
+
+    # Cross-plan fallback (older multi-plan path). Round-robin 1:1.
+    local total_ready=${#fb_subs[@]}
+    local n=$total_ready
+    (( ${#healthy_panes[@]} < n )) && n=${#healthy_panes[@]}
+    local idx
+    for ((idx=0; idx<n; idx++)); do
+      dispatch "${healthy_panes[$idx]}" "${fb_slugs[$idx]}" "${fb_subs[$idx]}" "${fb_titles[$idx]}"
+    done
+    printf 'tick: claimed %d of %d ready (wave=mixed-fallback); skipped %s capped panes\n' \
+      "$n" "$total_ready" "$skipped_count"
+    return
+  fi
+
+  # (d) Wave-parallel dispatch for priority plan.
+  local total_ready=${#batch_sub[@]}
+  local n=$total_ready
+  (( ${#healthy_panes[@]} < n )) && n=${#healthy_panes[@]}
+  local idx
+  for ((idx=0; idx<n; idx++)); do
+    dispatch "${healthy_panes[$idx]}" "$priority_slug" "${batch_sub[$idx]}" "${batch_title[$idx]}"
+  done
+  printf 'tick: claimed %d of %d ready (wave=%s); skipped %s capped panes\n' \
+    "$n" "$total_ready" "$wave_pick" "$skipped_count"
 }
 
 start_claim_trigger() {
