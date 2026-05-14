@@ -123,6 +123,71 @@ for i in sorted(level):
 PYEOF
 }
 
+# ── PR enrichment cache ──────────────────────────────────────────────
+# plan.json often lacks claimed_by_agent / completed_summary for tasks whose
+# workers never wrote back. We backfill from `gh pr list` matched against the
+# task title. Cached to disk for PLAN_TREE_PR_CACHE_TTL seconds (default 60s).
+PR_CACHE_FILE="${PLAN_TREE_PR_CACHE_FILE:-/tmp/claude-viz/plan-tree-prs.json}"
+PR_CACHE_TTL="${PLAN_TREE_PR_CACHE_TTL:-60}"
+
+refresh_pr_cache() {
+  local now age
+  now=$(date +%s)
+  if [[ -f "$PR_CACHE_FILE" ]]; then
+    local mt; mt=$(stat -c '%Y' "$PR_CACHE_FILE" 2>/dev/null || echo 0)
+    age=$(( now - mt ))
+    (( age < PR_CACHE_TTL )) && return 0
+  fi
+  # `gh pr list` runs once per ~60s. Tolerate failure (offline, etc.).
+  mkdir -p "$(dirname "$PR_CACHE_FILE")"
+  gh pr list --state all --limit 80 \
+      --json number,title,headRefName,state,mergedAt \
+      > "$PR_CACHE_FILE.tmp" 2>/dev/null \
+    && mv -f "$PR_CACHE_FILE.tmp" "$PR_CACHE_FILE" \
+    || rm -f "$PR_CACHE_FILE.tmp"
+}
+
+# Find best-matching PR for a task title via word overlap.
+# Returns "<pr_num>\t<agent_slug>" or empty.
+lookup_pr_for_title() {
+  local title="$1"
+  [[ -f "$PR_CACHE_FILE" ]] || return 0
+  python3 - "$PR_CACHE_FILE" "$title" <<'PYEOF' 2>/dev/null
+import json, sys, re
+cache, title = sys.argv[1], sys.argv[2]
+try:
+    prs = json.load(open(cache))
+except Exception:
+    sys.exit(0)
+def tokens(s):
+    s = s.lower()
+    return set(t for t in re.split(r'[^a-z0-9]+', s) if len(t) >= 3)
+target = tokens(title)
+if not target:
+    sys.exit(0)
+best = None
+best_score = 0
+for pr in prs:
+    pt = tokens(pr.get("title", ""))
+    if not pt:
+        continue
+    score = len(target & pt)
+    # Prefer merged PRs at equal score
+    if pr.get("mergedAt"):
+        score += 0.1
+    if score > best_score:
+        best_score = score; best = pr
+# Require at least 2 shared meaningful tokens
+if not best or best_score < 2:
+    sys.exit(0)
+ref = best.get("headRefName", "") or ""
+# Branch slugs look like agent/<who>/<work-slug>-DATE; pick segment 2
+parts = ref.split("/")
+agent = parts[1] if len(parts) >= 2 and parts[0] == "agent" else ""
+print(f"{best.get('number','')}\t{agent}")
+PYEOF
+}
+
 # Per-tick task pull: idx \t status \t title \t agent
 pull_tasks() {
   jq -r '.tasks | sort_by(.subtask_index) | .[] |
@@ -248,6 +313,9 @@ render() {
   local f="$1"
   local ts
   ts=$(date '+%H:%M:%S')
+
+  # Keep the gh-pr lookup cache warm — no-op if file is < TTL old.
+  refresh_pr_cache
 
   # Pull task state into 4 parallel arrays indexed by sub_idx
   declare -A T_STATUS T_TITLE T_AGENT
@@ -496,22 +564,48 @@ render() {
       row_b+="${DIM}·${R} "
       row_b_vis=$(( row_b_vis + 2 ))
     fi
-    # Worker chip
+    # PR number + branch-derived agent.
+    # Source priority:
+    #   1. PR number from completed_summary (fast, authoritative)
+    #   2. GitHub PR list lookup by title keywords (covers null summary)
+    # We always do the gh lookup when claimed_by_agent is null so the worker
+    # chip can show the branch-derived agent slug even when summary had the PR.
+    local pr_num="" gh_agent=""
+    if [[ "$status" == "completed" ]]; then
+      pr_num=$(pr_from_summary "$summary")
+      local need_lookup=0
+      [[ -z "$pr_num" ]] && need_lookup=1
+      [[ -z "$agent" || "$agent" == "null" ]] && need_lookup=1
+      if (( need_lookup )); then
+        local _lookup _lookup_pr _lookup_agent
+        _lookup=$(lookup_pr_for_title "$title")
+        if [[ -n "$_lookup" ]]; then
+          _lookup_pr="${_lookup%%$'\t'*}"
+          _lookup_agent="${_lookup##*$'\t'}"
+          [[ -z "$pr_num"   && -n "$_lookup_pr"    ]] && pr_num="$_lookup_pr"
+          [[ -z "$gh_agent" && -n "$_lookup_agent" ]] && gh_agent="$_lookup_agent"
+        fi
+      fi
+    fi
+
+    # Worker chip — plan.json agent wins; fall back to gh-derived branch slug.
+    local worker_disp=""
     if [[ -n "$agent" && "$agent" != "null" ]]; then
-      row_b+="${DIM}👤${R} ${ICE}${agent}${R} "
-      row_b_vis=$(( row_b_vis + 3 + ${#agent} + 1 ))
+      worker_disp="$agent"
+    elif [[ -n "$gh_agent" ]]; then
+      worker_disp="$gh_agent"
+    fi
+    if [[ -n "$worker_disp" ]]; then
+      row_b+="${DIM}👤${R} ${ICE}${worker_disp}${R} "
+      row_b_vis=$(( row_b_vis + 3 + ${#worker_disp} + 1 ))
     else
       row_b+="${DIM}👤 —${R} "
       row_b_vis=$(( row_b_vis + 5 ))
     fi
-    # PR chip (only if completed and we extracted a number)
-    if [[ "$status" == "completed" ]]; then
-      local pr_num
-      pr_num=$(pr_from_summary "$summary")
-      if [[ -n "$pr_num" ]]; then
-        row_b+="${DIM}·${R} ${G}✓${R} ${ICE}PR#${pr_num}${R} "
-        row_b_vis=$(( row_b_vis + 4 + 4 + ${#pr_num} + 1 ))
-      fi
+    # PR chip
+    if [[ -n "$pr_num" ]]; then
+      row_b+="${DIM}·${R} ${G}✓${R} ${ICE}PR#${pr_num}${R} "
+      row_b_vis=$(( row_b_vis + 4 + 4 + ${#pr_num} + 1 ))
     fi
     # Rail pinned to right side — compute pad so rail lands flush right
     local rail; rail=$(task_rail "$status")
