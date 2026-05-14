@@ -114,6 +114,11 @@ DEFAULT_TABS_FORMAT='#[align=left range=left #{E:status-left-style}]#[push-defau
 # Uniform dark padding row — 400 spaces is wider than any reasonable terminal.
 PADDING_ROW="#[fg=#0a0a0a,bg=#0a0a0a]$(printf '%*s' 400 '')"
 
+# Clear any session-local `status` override first. tmux's new-session default
+# can leave a per-session `status on` (boolean) that shadows the global numeric
+# `status N`, clamping back to 1 row and silently hiding the tab strip on
+# row N-1 (the dark padding row then appears as a thin bar with no tabs).
+tmux set-option -t "$SESSION" -u status >/dev/null 2>&1 || true
 # Set status height as a number (NOT via `-t SESSION` — that misparses the int).
 tmux set-option -g status "$HEIGHT" >/dev/null
 

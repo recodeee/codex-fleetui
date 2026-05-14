@@ -154,21 +154,12 @@ tmux new-session -d -s "$SESSION" -n overview -x 274 -y 76
 tmux set-option -t "$SESSION" -g mouse on
 tmux set-option -w -t "$SESSION:overview" remain-on-exit on
 
-# Status bar — always-on window tabs so operators can see overview / fleet /
-# plan / waves / review / watcher without memorizing Ctrl+B digits. Inherited
-# global config is too low-contrast on dark terminals; force a visible style
-# per-session.
-tmux set-option -t "$SESSION" status on
-tmux set-option -t "$SESSION" status-position bottom
-tmux set-option -t "$SESSION" status-justify left
-tmux set-option -t "$SESSION" status-style 'bg=colour24,fg=white,bold'
-tmux set-option -t "$SESSION" status-left '#[bg=colour16,fg=colour39,bold] CODEX-FLEET '
-tmux set-option -t "$SESSION" status-left-length 20
-tmux set-option -t "$SESSION" status-right '#[bg=colour16,fg=colour39] %H:%M '
-tmux set-option -t "$SESSION" status-right-length 12
-tmux set-option -t "$SESSION" window-status-format ' #I:#W '
-tmux set-option -t "$SESSION" window-status-current-format ' #I:#W '
-tmux set-option -t "$SESSION" window-status-current-style 'bg=colour33,fg=white,bold'
+# Status bar styling is owned by style-tabs.sh (iOS-style 3-row tab strip,
+# rounded pane borders, sticky right-click menu). It runs after windows are
+# created so window-status-format applies to all six tabs. Do NOT set
+# per-session `status on/off` here — a boolean session-local value shadows the
+# global numeric `status N` style-tabs sets, clamping back to 1 row and
+# silently hiding the tab strip.
 
 # 9. Split overview into N panes (default 2 columns x 4 rows = 8)
 ROWS=$((N_PANES / 2))
@@ -210,6 +201,13 @@ tmux new-window -d -t "$SESSION:" -n watcher "bash $REPO/scripts/codex-fleet/wat
 # tmux new-window ... "watch -n 2 -t -c 'cat /tmp/claude-viz/cap-swap-status.txt 2>/dev/null; echo; echo --- recent swaps ---; tail -20 /tmp/claude-viz/cap-swap.log 2>/dev/null'"
 tmux set-option -w -t "$SESSION:plan"  remain-on-exit on
 tmux set-option -w -t "$SESSION:waves" remain-on-exit on
+
+# 11b. Apply canonical iOS-style chrome (3-row tab strip at top, rounded pane
+# borders with `▭ #{@panel}` headers, sticky right-click menu). Runs after
+# windows exist so window-status-format covers all six tabs.
+log "applying iOS-style chrome"
+CODEX_FLEET_SESSION="$SESSION" bash "$REPO/scripts/codex-fleet/style-tabs.sh" >/dev/null 2>&1 \
+  || warn "style-tabs.sh failed (chrome will fall back to tmux defaults)"
 
 # 12. Sibling fleet-ticker session: ticker + cap-swap + state-pump
 log "creating sibling session: $TICKER_SESSION"
