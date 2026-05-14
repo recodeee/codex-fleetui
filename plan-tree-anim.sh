@@ -17,7 +17,9 @@
 set -eo pipefail
 
 REPO="${PLAN_TREE_ANIM_REPO:-/home/deadpool/Documents/recodee}"
-INTERVAL_MS="${PLAN_TREE_ANIM_INTERVAL_MS:-1000}"
+# 500ms keeps the spinner pulse feeling alive without burning CPU — each
+# render is ~60ms (jq + tmux display-message + awk clamp) so duty-cycle ≈ 12%.
+INTERVAL_MS="${PLAN_TREE_ANIM_INTERVAL_MS:-500}"
 ONCE=0
 for a in "$@"; do
   case "$a" in
@@ -85,6 +87,61 @@ YELLOW="${E}[38;2;255;204;0m"    # systemYellow
 BLUE="${E}[38;2;0;122;255m"      # systemBlue
 
 SPIN=("◐" "◓" "◑" "◒")
+
+# SGR-aware line clamp.
+#
+# Why: pane-width visible cells are not the same as Bash string length —
+# emojis (📂 👤) are width-2, SGR escapes are zero-width. When the body
+# emitted a line whose visible width exceeded $PANE_W the terminal wrapped it
+# onto the next row, and the next frame's cursor-home repaint left wrap
+# fragments visible. That is the "re-rendered again and again" flicker the
+# user sees.
+#
+# This awk filter walks each line cell-by-cell, copies CSI escapes verbatim
+# (zero visible cells), and stops counting visible cells at $PANE_W − 1.
+# Combined with the single-write at the end of render() this gives an atomic
+# redraw with no wrap.
+clamp_lines_to_pane() {
+  local w="$1"
+  awk -v W="$w" '
+    BEGIN {
+      E = sprintf("%c", 27)
+      for (k = 0; k < 256; k++) ORD[sprintf("%c", k)] = k
+    }
+    {
+      n = length($0); i = 1; vis = 0; out = ""
+      while (i <= n) {
+        c = substr($0, i, 1); b = ORD[c]
+        if (b == 27) {
+          # CSI: copy verbatim until a letter (final byte). Zero visible cells.
+          j = i + 1
+          while (j <= n && substr($0, j, 1) !~ /[A-Za-z]/) j++
+          out = out substr($0, i, j - i + 1)
+          i = j + 1
+        } else if (b < 128) {
+          if (vis + 1 > W) break
+          out = out c; vis++; i++
+        } else {
+          # UTF-8 leading byte → determine sequence length and visible width.
+          # 4-byte (0xF0-0xF7) is supplementary plane (emoji) → width 2.
+          # 2/3-byte covers box-drawing, dingbats, CJK BMP — treat as width 1
+          # (BMP CJK is technically 2, but the script does not emit it).
+          if      (b >= 240) { len = 4; v = 2 }
+          else if (b >= 224) { len = 3; v = 1 }
+          else if (b >= 192) { len = 2; v = 1 }
+          else               { len = 1; v = 1 }  # stray continuation byte
+          if (vis + v > W) break
+          out = out substr($0, i, len); vis += v; i += len
+        }
+      }
+      # Always tail-clear to EOL. The PROPOSAL-card printfs in _render_body
+      # do not emit \e[K themselves, so without this enforcement, residue
+      # from a longer previous frame (e.g. box-border fragments) stays
+      # visible at the right edge of card rows.
+      print out E "[K"
+    }
+  '
+}
 
 # Kahn topological-levels — produces a wave assignment per subtask.
 # Output: one line per task: "<sub_idx>\t<wave_idx>" (wave starts at 0).
@@ -309,7 +366,11 @@ status_chip() {
 # Visible length of the chip (constant) — used for column padding math
 STATUS_CHIP_VIS=13
 
-render() {
+# Body of one render frame — writes the frame to stdout. The outer `render`
+# wrapper captures stdout into a buffer, clamps lines to $PANE_W, and emits
+# the whole frame in a single write so the user does not see top-to-bottom
+# repaint flicker.
+_render_body() {
   local f="$1"
   local ts
   ts=$(date '+%H:%M:%S')
@@ -647,11 +708,30 @@ render() {
   printf '%s' "${E}[J"
 }
 
+# Atomic-write wrapper around `_render_body`. The subshell capture also gives
+# us a stable buffer to run the SGR-aware line clamp over before any byte
+# reaches the terminal. One write syscall ≈ one frame.
+render() {
+  local f="$1" frame
+  frame=$(_render_body "$f")
+  # Re-detect pane width each frame so resizes don't keep wrapping.
+  local pw
+  pw=$(tmux display-message -p '#{pane_width}' 2>/dev/null || echo "$PANE_W")
+  [[ -n "$pw" && "$pw" -gt 0 ]] && PANE_W="$pw"
+  frame=$(printf '%s' "$frame" | clamp_lines_to_pane "$PANE_W")
+  # Cursor-home and wipe to end-of-screen wrap the buffered frame so any
+  # leftover rows from a taller previous frame disappear cleanly.
+  printf '%s%s%s' "${E}[H" "$frame" "${E}[J"
+}
+
 if (( ONCE == 1 )); then
   render 0
 else
-  printf '%s' "${E}[?25l"
-  trap 'printf "%s" "${E}[?25h"; exit' INT TERM EXIT
+  # Alternate screen buffer isolates the live render from the terminal
+  # scrollback; combined with hidden cursor it gives a clean canvas. Both
+  # are restored on any clean or signal-driven exit.
+  printf '%s' "${E}[?1049h${E}[?25l"
+  trap 'printf "%s" "${E}[?25h${E}[?1049l"; exit' INT TERM EXIT
   f=0
   while true; do
     render "$f"
