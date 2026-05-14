@@ -129,8 +129,21 @@ tx_set status-right-length 64
 tx_set status-right \
   "#[fg=#34C759,bg=#000000]◖#[fg=#000000,bg=#34C759,bold] ● live #[fg=#34C759,bg=#000000]◗ #[fg=#AEAEB2,bg=#000000] #(date +%H:%M:%S)  "
 
-# ── tab separator — single space on bg, no harsh divider ─────────────────────
-tx_set window-status-separator "#[fg=#2C2C2E,bg=#000000] "
+# ── tab separator — empty so range=window|N markers butt up against each ────
+# Why empty: tmux emits `#{window-status-separator}` AFTER each tab's
+# `range=window|N ... norange` pair closes — meaning the separator cell falls
+# in a no-range region. `MouseDown1Status` only fires when the click lands
+# inside a `range=window|N` zone, so a 1-cell space gap was the difference
+# between "click the pill" (works) and "click the gap between pills" (silently
+# does nothing because `MouseDown1StatusDefault` was deliberately unbound in
+# the STATUSDEFAULT-toast fix to suppress debug overlays).
+#
+# With separator = "", consecutive pills' `◗` and `◖` half-caps touch
+# directly and every horizontal cell of the tab strip is inside some window's
+# range, eliminating dead pixels for click handling. Visual: the pills look
+# slightly tighter together; with the iOS palette + contrasting `◗◖` cap
+# colours, the boundary stays legible without a literal space gap.
+tx_set window-status-separator ""
 
 # ── inactive tab — recessed pill, secondary label ────────────────────────────
 # iOS ghost-pill: faint secondarySystemBackground card, tertiaryLabel text.
