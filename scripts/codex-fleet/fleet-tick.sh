@@ -27,7 +27,7 @@ if [[ "${FLEET_TICK_SOURCE_ONLY:-0}" != "1" ]]; then
 fi
 
 # AID, SHORT, FLEET_EMAILS, IS_CURRENT are populated every tick by the
-# discovery block in the main loop, sourced from `codex-auth list` so any
+# discovery block in the main loop, sourced from `agent-auth list` so any
 # account the cap-swap-daemon swaps in (or the operator newly logs in) shows
 # up automatically.
 declare -A AID
@@ -388,8 +388,8 @@ fi
 while true; do
   ts=$(date '+%H:%M:%S')
 
-  # ── 1. Discover accounts + usage from codex-auth list ─────────────────────
-  # codex-auth list output:
+  # ── 1. Discover accounts + usage from agent-auth list ─────────────────────
+  # agent-auth list output:
   #   *  zeus@kollarrobert.sk  type=ChatGPT seat (Business)  5h=100%  weekly=36%
   # The leading "*" marks the currently-authenticated CLI account. Every email
   # in the output becomes part of the live fleet view; no more hardcoded list.
@@ -414,7 +414,7 @@ while true; do
     fi
     local_part="${email%%@*}"
     SHORT_LOCAL_COUNT[$local_part]=$(( ${SHORT_LOCAL_COUNT[$local_part]:-0} + 1 ))
-  done < <(codex-auth list 2>/dev/null || true)
+  done < <(agent-auth list 2>/dev/null || true)
 
   # Populate AID + SHORT now that we know the full email set (so SHORT can
   # disambiguate collisions like admin@mite.hu vs admin@pipacsclub.hu with a
@@ -481,10 +481,10 @@ while true; do
       h5=${pair%% *}; wk=${pair##* }
       aid=${AID[$email]}
       st=${ALIVE[$aid]:-}
-      # Display raw USED-% from codex-auth list. Operator request: color
+      # Display raw USED-% from agent-auth list. Operator request: color
       # the value/bar on the `available` (battery) axis so 100% reads
       # green and 0% reads red regardless of what the number means.
-      # The displayed value still matches `codex-auth list` exactly; only
+      # The displayed value still matches `agent-auth list` exactly; only
       # the color gradient changed direction.
       wk_num=${wk%\%}; h5_num=${h5%\%}
       [[ "$wk_num" =~ ^[0-9]+$ ]] || wk_num=0
@@ -630,7 +630,7 @@ while true; do
     render_fleet_section "RESERVE" "reserve"
     echo
     # Footer counts: live = panes actually running codex (regardless of cap),
-    # capped = those marked EXHAUSTED at 5h=100%, accounts = full codex-auth set.
+    # capped = those marked EXHAUSTED at 5h=100%, accounts = full agent-auth set.
     n_panes=${#PANE_FOR_AID[@]}
     n_capped=${#EXHAUSTED[@]}
     if   (( n_panes >= 5 )); then awc=$GRAD6

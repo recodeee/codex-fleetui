@@ -41,7 +41,7 @@ bash scripts/codex-fleet/full-bringup.sh           # default: newest plan, 8 wor
 bash scripts/codex-fleet/full-bringup.sh --plan-slug <slug> --n 8 --no-attach
 ```
 
-`full-bringup.sh` atomically: prunes stale `refs/remotes/origin/<base>` → picks newest plan → `colony plan publish <slug>` (idempotent) → ranks 3N candidates by `codex-auth list` → runs `cap-probe.sh` to verify each candidate live → stages CODEX_HOMEs → creates `codex-fleet` session with FIVE windows in this order: `0 watcher` / `1 overview` / `2 fleet` / `3 plan` / `4 waves` → creates sibling `fleet-ticker` session with `ticker` + `cap-swap` + `state-pump` → attaches. Refuses to start if a `codex-fleet` session already exists.
+`full-bringup.sh` atomically: prunes stale `refs/remotes/origin/<base>` → picks newest plan → `colony plan publish <slug>` (idempotent) → ranks 3N candidates by `agent-auth list` → runs `cap-probe.sh` to verify each candidate live → stages CODEX_HOMEs → creates `codex-fleet` session with FIVE windows in this order: `0 watcher` / `1 overview` / `2 fleet` / `3 plan` / `4 waves` → creates sibling `fleet-ticker` session with `ticker` + `cap-swap` + `state-pump` → attaches. Refuses to start if a `codex-fleet` session already exists.
 
 ## Canonical visual design (lock this in)
 
@@ -96,7 +96,7 @@ The bash `*-anim.sh` scripts stay one release as the `FLEET_DASHBOARD_RENDERER=b
 1. Every codex spawn line includes `CODEX_GUARD_BYPASS=1` to avoid the codex-guard branch-collision storm when N panes spawn within the same second.
 2. Pre-spawn `git remote prune origin && git fetch --prune origin` to clear stale `refs/remotes/origin/<base>`.
 3. Plan publish (`colony plan publish <slug>`) is non-negotiable — workers can only claim from registered plans.
-4. Account selection runs through `cap-probe.sh` (live `codex exec` probe), not raw `codex-auth list` percentages — codex CLI's rolling cap is separate from the API meter.
+4. Account selection runs through `cap-probe.sh` (live `codex exec` probe), not raw `agent-auth list` percentages — codex CLI's rolling cap is separate from the API meter.
 5. Capped accounts are remembered with their reset epoch at `/tmp/claude-viz/cap-probe-cache/<email>.json`; cache lookups skip re-probing for the duration (could be hours, days, or weeks).
 6. The cap-swap daemon runs in `fleet-ticker:cap-swap` as the autonomous global watcher — never spawn a separate Claude session to "watch the fleet".
 
@@ -187,8 +187,8 @@ When the user reports "i can't click tabs", "menu doesn't work",
 
 The watcher's `FLEET PANES` card has two quota-related columns:
 
-- `5h-LIVE` — verdict from the cap-probe cache (`/tmp/claude-viz/cap-probe-cache/<email>.json`), set by an actual `codex exec` round-trip during the sweep. `✓ OK` green if healthy, `✕ <eta>` red if capped (eta is time until reset, e.g. `6d`), `? ??` gray if unknown. This is the authoritative "is this account usable right now" signal — codex-auth's `5h=` column is the API meter and reads 100% even when the rolling cap is fine, so the watcher does **not** display that value directly.
-- `WK-USED` — raw `weekly=N%` value parsed from `codex-auth list`, no inversion. Green ≤40%, yellow ≤75%, red above. Reads identically to what the operator sees in their shell.
+- `5h-LIVE` — verdict from the cap-probe cache (`/tmp/claude-viz/cap-probe-cache/<email>.json`), set by an actual `codex exec` round-trip during the sweep. `✓ OK` green if healthy, `✕ <eta>` red if capped (eta is time until reset, e.g. `6d`), `? ??` gray if unknown. This is the authoritative "is this account usable right now" signal — agent-auth's `5h=` column is the API meter and reads 100% even when the rolling cap is fine, so the watcher does **not** display that value directly.
+- `WK-USED` — raw `weekly=N%` value parsed from `agent-auth list`, no inversion. Green ≤40%, yellow ≤75%, red above. Reads identically to what the operator sees in their shell.
 
 ### `down` — tear it down
 

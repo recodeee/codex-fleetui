@@ -3,7 +3,7 @@
 # codex fleet. Every INTERVAL seconds:
 #   1. Scans every pane in $SESSION:overview.
 #   2. If a pane's scrollback contains the cap banner, picks a fresh
-#      account via cap-probe.sh (LIVE codex exec probe, not codex-auth
+#      account via cap-probe.sh (LIVE codex exec probe, not agent-auth
 #      meter) and respawns the pane with that account.
 #   3. Writes a human-readable status snapshot to STATUS_FILE so the
 #      operator can watch what the watcher is doing.
@@ -143,10 +143,10 @@ current_emails() {
     | sort -u
 }
 
-# Rank candidates by codex-auth score, exclude those currently in fleet
+# Rank candidates by agent-auth score, exclude those currently in fleet
 rank_candidates() {
   local in_use; in_use=$(current_emails | tr '\n' '|'); in_use="${in_use%|}"
-  codex-auth list 2>/dev/null \
+  agent-auth list 2>/dev/null \
     | MIN5="$MIN_5H" MINW="$MIN_WK" INUSE="$in_use" python3 -c '
 import os, sys, re
 min5=int(os.environ["MIN5"]); minw=int(os.environ["MINW"])

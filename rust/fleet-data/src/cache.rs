@@ -3,7 +3,7 @@
 //! The fleet has four separate dashboard binaries (`fleet-state`,
 //! `fleet-watcher`, `fleet-ui`, `fleet-tui-poc`) that each poll account /
 //! pane state on a ~250 ms tick. Without a cache, every loader call shells
-//! out — `codex-auth list` is hundreds of ms, and `tmux capture-pane`
+//! out — `agent-auth list` is hundreds of ms, and `tmux capture-pane`
 //! adds one fork per pane. With a small in-process TTL this collapses
 //! to one real call per TTL window, regardless of how many widgets in the
 //! same binary ask for the data.

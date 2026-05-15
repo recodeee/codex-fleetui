@@ -4,7 +4,7 @@
 //! can reuse: it stitches together the three independent data sources that
 //! already live in this crate —
 //!
-//!   * [`crate::accounts`] — `codex-auth list` percents per account email.
+//!   * [`crate::accounts`] — `agent-auth list` percents per account email.
 //!   * [`crate::panes`]    — tmux pane scrollback + [`PaneState`] classifier.
 //!   * the `@panel` label  — `[codex-<aid>]`, the join key between the two.
 //!
@@ -33,9 +33,9 @@ pub struct WorkerRow {
     /// Dim model label under the email, e.g. `gpt-5.5 xhigh`. `None` when the
     /// pane scrollback didn't surface a model line.
     pub model_label: Option<String>,
-    /// `weekly=` percent from `codex-auth list` — the `WEEKLY · 5H` rail.
+    /// `weekly=` percent from `agent-auth list` — the `WEEKLY · 5H` rail.
     pub weekly_pct: u8,
-    /// `5h=` percent from `codex-auth list` — the `WORKER · 5H` rail.
+    /// `5h=` percent from `agent-auth list` — the `WORKER · 5H` rail.
     pub five_h_pct: u8,
     /// Classified pane state — drives the `STATUS` chip. `None` when the
     /// account has no live pane (reserve account; renders as a blank/idle row
@@ -50,7 +50,7 @@ pub struct WorkerRow {
     /// tmux pane id (`%47`) — the `PANE` column's `#N >` affordance. `None`
     /// for reserve accounts.
     pub pane_id: Option<String>,
-    /// `true` when this account is the one `codex-auth` marks current (`*`).
+    /// `true` when this account is the one `agent-auth` marks current (`*`).
     /// The artboard stars it; also useful for sort stability.
     pub is_current: bool,
     /// Advisory quality score for this agent's most recently merged PR,
@@ -231,7 +231,7 @@ fn scrape_activity(tail: &str) -> PaneActivity {
 /// Fleet table's rows.
 ///
 /// `accounts` is the authoritative row set — one [`WorkerRow`] per account,
-/// in the order `codex-auth list` returned them. Each account is matched to a
+/// in the order `agent-auth list` returned them. Each account is matched to a
 /// pane by `derive_agent_id(account.email) == agent_id_from_panel(pane.@panel)`.
 /// An account with no matching pane is a reserve account: `state`, `pane_id`,
 /// `working_on` stay empty. A pane with no matching account is dropped (it's
@@ -302,7 +302,7 @@ pub fn join(
         .collect()
 }
 
-/// Live runner: shell out to `codex-auth list` + `tmux` and join the results.
+/// Live runner: shell out to `agent-auth list` + `tmux` and join the results.
 ///
 /// `session` / `window` are the tmux target for [`crate::panes::list_panes`]
 /// (`"codex-fleet"`, `Some("overview")` for the standard fleet). Mirrors

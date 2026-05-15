@@ -1,0 +1,9 @@
+schema: 1
+plan: agent-claude-masterplan-wip-pre-dispatch-sync-2026-05-16-00-00
+role: writer
+status: draft
+artifacts:
+  prompt: prompt.md
+  proposal: proposal.md
+  tasks: tasks.md
+  spec: specs/writer/spec.md

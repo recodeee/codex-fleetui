@@ -263,14 +263,14 @@ if [ ! -f "$WAKE" ]; then
 fi
 
 # 6. Pick candidate accounts. Two-stage filter:
-#    (a) Score by codex-auth's 5h% * weekly% (fast, but unreliable for codex
+#    (a) Score by agent-auth's 5h% * weekly% (fast, but unreliable for codex
 #        CLI's own rolling cap).
 #    (b) Probe each candidate with `codex exec` to detect the *real* cap
 #        state. Take top 3N candidates so we can skip up to 2N capped
 #        accounts and still end up with N healthy ones.
 TOP=$((N_PANES * 3))
 log "picking $TOP candidate accounts (will probe + filter down to $N_PANES healthy)"
-CANDIDATES=$(codex-auth list 2>/dev/null | N="$TOP" python3 -c '
+CANDIDATES=$(agent-auth list 2>/dev/null | N="$TOP" python3 -c '
 import os, sys, re
 n = int(os.environ["N"])
 rows = []
@@ -287,9 +287,9 @@ rows.sort(reverse=True)
 for _, email in rows[:n]:
     print(email)
 ')
-[ -n "$CANDIDATES" ] || die "no candidate accounts found (need 5h>=40%, wk>=25% in codex-auth list)"
+[ -n "$CANDIDATES" ] || die "no candidate accounts found (need 5h>=40%, wk>=25% in agent-auth list)"
 CAND_N=$(printf "%s\n" "$CANDIDATES" | wc -l)
-log "ranked $CAND_N candidates by codex-auth score; running live probe..."
+log "ranked $CAND_N candidates by agent-auth score; running live probe..."
 
 # (b) Live probe — keep only candidates whose codex CLI is actually usable.
 # 5-min cache short-circuits back-to-back bringups (each probe spawns N codex
@@ -542,13 +542,14 @@ while IFS='|' read -r id email tier specialty; do
   # Runtime selection (CODEX_FLEET_RUNTIME, default codex). spawn-fleet.sh
   # exposes this via `--runtime claude` for the fallback case where the
   # codex account pool is exhausted (every account capped). The claude
-  # branch uses claude's --print + --permission-mode bypassPermissions so
-  # it operates non-interactively with the same wake-prompt the codex
-  # workers consume — the worker-prompt template is runtime-agnostic.
+  # branch hands off to claude-worker.sh which loops `claude` with the
+  # Claude-tailored wake-prompt and applies rate-limit-aware backoff —
+  # one-shot `claude --print` would exit after a single task instead of
+  # pulling more from Colony.
   case "${CODEX_FLEET_RUNTIME:-codex}" in
     claude)
       tmux respawn-pane -k -t "$pid" \
-        "env CODEX_FLEET_AGENT_NAME=codex-$id CODEX_FLEET_ACCOUNT_EMAIL=$email CODEX_FLEET_TIER=${tier:-high} CODEX_FLEET_SPECIALTY=\"$specialty\" claude --print --permission-mode bypassPermissions \"\$(cat $WAKE)\""
+        "env CLAUDE_FLEET_AGENT_NAME=claude-fleet-$id CLAUDE_FLEET_ACCOUNT_LABEL=$email CLAUDE_FLEET_TIER=${tier:-high} CLAUDE_FLEET_SPECIALTY=\"$specialty\" bash $REPO/scripts/codex-fleet/claude-worker.sh"
       ;;
     *)
       tmux respawn-pane -k -t "$pid" \

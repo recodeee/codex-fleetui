@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # token-meter.sh — per-pane spend snapshot for codex-fleet tmux.
-# pane /proc env + codex-auth list + tmux capture-pane → sorted table/JSON.
+# pane /proc env + agent-auth list + tmux capture-pane → sorted table/JSON.
 
 set -u; LC_ALL=C
 
@@ -42,9 +42,9 @@ if [ "$USE_COLOR" = "1" ]; then
   c_red=$'\033[31m'; c_dim=$'\033[2m'; c_bold=$'\033[1m'; c_reset=$'\033[0m'
 fi
 
-# pull `codex-auth list` once; cache as email\t5h\twk per line
+# pull `agent-auth list` once; cache as email\t5h\twk per line
 fetch_auth() {
-  codex-auth list 2>/dev/null \
+  agent-auth list 2>/dev/null \
     | awk '/type=ChatGPT/ {
         email=""; fh="n/a"; wk="n/a";
         for (i=1;i<=NF;i++) {
@@ -104,7 +104,7 @@ pct_num() {  # "62%" → 62; "n/a" → -1
 }
 
 is_hot() {
-  # codex-auth's 5h% / weekly% report REMAINING quota; codex's ctx% reports
+  # agent-auth's 5h% / weekly% report REMAINING quota; codex's ctx% reports
   # REMAINING context. Low values = about to wedge → red. (Earlier draft had
   # these inverted because the design brief used "spend %" semantics.)
   local fh wk ctx

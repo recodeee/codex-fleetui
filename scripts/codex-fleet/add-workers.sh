@@ -4,7 +4,7 @@
 # pick up ready sub-tasks. Use when the plan board has `available` subs but
 # the existing panes are dead, capped, or stuck idle.
 #
-# Picks N healthy accounts (cap-probe if present, else codex-auth list with
+# Picks N healthy accounts (cap-probe if present, else agent-auth list with
 # the canonical 5h<100% / weekly<90% / not-already-active filter), then
 # defaults to respawning dead/idle panes in the running tmux fleet's
 # `overview` window. Falls back to kitty windows when no fleet session
@@ -132,7 +132,7 @@ log "plan=$PLAN_SLUG  N=$N  active-file=$ACTIVE_FILE"
 #      gap with zero manual upkeep.
 #   2. cap-probe.sh — same emails but pre-filtered through the 5h/weekly
 #      cap budget. Use when present so we don't pick a capped account.
-#   3. codex-auth list — legacy fallback for hosts without cap-probe.
+#   3. agent-auth list — legacy fallback for hosts without cap-probe.
 #
 # Each path emits TSV: `<aid>\t<email>` lines. Accounts already in
 # $ACTIVE_FILE are filtered out at every layer.
@@ -197,17 +197,17 @@ print(m.group(1) if m else '')
       return
     fi
   fi
-  # Fallback: parse `codex-auth list` directly.
-  if ! command -v codex-auth >/dev/null 2>&1; then
+  # Fallback: parse `agent-auth list` directly.
+  if ! command -v agent-auth >/dev/null 2>&1; then
     return
   fi
-  # NB: cannot use `codex-auth list | python3 - <<'PY' ...` — the `-` tells
+  # NB: cannot use `agent-auth list | python3 - <<'PY' ...` — the `-` tells
   # python to read its script from stdin, which collides with the pipe.
-  # Capture codex-auth output to a tempfile and pass it as a positional arg.
+  # Capture agent-auth output to a tempfile and pass it as a positional arg.
   local auth_tmp
   auth_tmp="$(mktemp)"
   trap "rm -f '$auth_tmp'" RETURN
-  codex-auth list >"$auth_tmp" 2>/dev/null || return
+  agent-auth list >"$auth_tmp" 2>/dev/null || return
   python3 - "$need" "$ACTIVE_FILE" "$SCRIPT_DIR/accounts.yml" "$auth_tmp" <<'PY'
 import re, sys, os
 need = int(sys.argv[1])
@@ -248,7 +248,7 @@ PICKED_N="${#PICKED[@]}"
 if [ "$PICKED_N" -lt "$N" ]; then
   warn "only $PICKED_N healthy unallocated accounts available (wanted $N)"
 fi
-[ "$PICKED_N" -gt 0 ] || die "no healthy accounts available — check codex-auth list / accounts.yml"
+[ "$PICKED_N" -gt 0 ] || die "no healthy accounts available — check agent-auth list / accounts.yml"
 
 # Render worker prompt with plan slug pre-pinned so each new pane goes
 # straight to the right plan instead of re-deriving via openspec scan.

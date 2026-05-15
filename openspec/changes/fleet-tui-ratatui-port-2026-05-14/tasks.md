@@ -33,7 +33,7 @@ Once all three boxes are ticked by the operator, Phase 1 is unblocked.
 
 - [ ] Scaffold `rust/fleet-data/` library crate, register in workspace `Cargo.toml`
 - [ ] `plan.rs` — serde structs for `openspec/plans/*/plan.json`; `load(path)` + `newest_plan(repo_root)` helpers; fixture-based test
-- [ ] `accounts.rs` — `codex-auth list` parser → `Account` struct; fixture-based test
+- [ ] `accounts.rs` — `agent-auth list` parser → `Account` struct; fixture-based test
 - [ ] `panes.rs` — tmux pane introspection + `PaneState` enum; classification test against captured scrollback fixtures
 
 ## Phase 3 — `fleet-watcher` (proves the framework)

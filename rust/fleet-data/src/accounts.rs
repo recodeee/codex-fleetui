@@ -1,4 +1,4 @@
-//! Typed parser for `codex-auth list` output.
+//! Typed parser for `agent-auth list` output.
 //!
 //! Replaces the awk/sed regex scattered across `cap-probe.sh`,
 //! `cap-swap-daemon.sh`, and `fleet-tick.sh`'s account-discovery block.
@@ -21,7 +21,7 @@ pub struct Account {
     pub is_current: bool,
 }
 
-/// Parse the entire stdout of `codex-auth list` into a vector of [`Account`].
+/// Parse the entire stdout of `agent-auth list` into a vector of [`Account`].
 ///
 /// Lines that don't match the expected shape are silently skipped (matches
 /// the bash `awk` lenience). Each returned account has both `5h=` and
@@ -86,11 +86,11 @@ fn extract_percent(s: &str, key: &str) -> Option<u8> {
     digits.parse().ok()
 }
 
-/// Convenience runner: shells out to `codex-auth list`, parses stdout. The
+/// Convenience runner: shells out to `agent-auth list`, parses stdout. The
 /// dashboards keep calling this on a tick; the parse cost is negligible
 /// next to the subprocess spawn.
 pub fn load_live() -> std::io::Result<Vec<Account>> {
-    let output = std::process::Command::new("codex-auth").arg("list").output()?;
+    let output = std::process::Command::new("agent-auth").arg("list").output()?;
     Ok(parse(&String::from_utf8_lossy(&output.stdout)))
 }
 
@@ -101,7 +101,7 @@ fn cache() -> &'static crate::cache::TtlCache<Vec<Account>> {
 }
 
 /// Cached variant of [`load_live`]. Dashboards on a 250 ms tick should call
-/// this instead — the `codex-auth list` subprocess is the most expensive
+/// this instead — the `agent-auth list` subprocess is the most expensive
 /// part of a tick (account list shifts on the order of seconds, not frames),
 /// so a 5 s TTL keeps the UI responsive without burning a fork per frame.
 ///

@@ -9,13 +9,13 @@ mkdir -p "$TMP"
 mkdir -p "$TMP/bin"
 printf '{"tasks":[]}\n' > "$TMP/plan.json"
 : > "$TMP/active.txt"
-cat > "$TMP/bin/codex-auth" <<'SH'
+cat > "$TMP/bin/agent-auth" <<'SH'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "list" ]]; then
   printf '  chip@example.com type=ChatGPT seat (Business) 5h=0%% weekly=10%%\n'
 fi
 SH
-chmod +x "$TMP/bin/codex-auth"
+chmod +x "$TMP/bin/agent-auth"
 export PATH="$TMP/bin:$PATH"
 
 export FLEET_TICK_SOURCE_ONLY=1
