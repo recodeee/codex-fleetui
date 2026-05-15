@@ -143,15 +143,35 @@ pick_accounts() {
     local discovered_tmp
     discovered_tmp="$(mktemp)"
     local discover_session="${CODEX_FLEET_SESSION:-codex-fleet${FLEET_ID:+-$FLEET_ID}}"
+    # Try with --exclude-tmux first (filters accounts already wired to a
+    # live pane). discover-accounts.sh runs `tmux list-panes -s -t <sess>`
+    # under `set -eo pipefail`; on a host where that session doesn't exist
+    # the pipe fails and the helper exits with 0 rows. Retry without
+    # --exclude-tmux when the first pass returns empty so we don't
+    # fail-closed and report "0 healthy" while accounts are on disk.
     ACTIVE_FILE="$ACTIVE_FILE" bash "$SCRIPT_DIR/lib/discover-accounts.sh" \
       --exclude-active --exclude-tmux "$discover_session" \
       > "$discovered_tmp" 2>/dev/null || true
+    if [ ! -s "$discovered_tmp" ]; then
+      ACTIVE_FILE="$ACTIVE_FILE" bash "$SCRIPT_DIR/lib/discover-accounts.sh" \
+        --exclude-active \
+        > "$discovered_tmp" 2>/dev/null || true
+    fi
     if [ -s "$discovered_tmp" ]; then
       # Optionally filter through cap-probe to drop capped accounts. If
       # cap-probe isn't available, take everything discovered as-is.
       if [ -x "$SCRIPT_DIR/cap-probe.sh" ]; then
-        local healthy_emails
-        healthy_emails="$(bash "$SCRIPT_DIR/cap-probe.sh" "$need" 2>/dev/null || true)"
+        # cap-probe.sh requires `<need_n> email1 email2 ...` — without
+        # the email list it has nothing to probe and exits with 0 healthy
+        # rows. Feed it every discovered email so the cap filter can
+        # actually run.
+        local discovered_emails
+        discovered_emails="$(awk -F'\t' 'NF>=2 && $2!="" {print $2}' "$discovered_tmp")"
+        local healthy_emails=""
+        if [ -n "$discovered_emails" ]; then
+          # shellcheck disable=SC2086
+          healthy_emails="$(bash "$SCRIPT_DIR/cap-probe.sh" "$need" $discovered_emails 2>/dev/null || true)"
+        fi
         if [ -n "$healthy_emails" ]; then
           # Intersection: discovered ∩ healthy.
           while IFS=$'\t' read -r aid email; do
