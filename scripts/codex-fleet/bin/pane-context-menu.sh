@@ -235,6 +235,36 @@ case "$choice" in
       tmux display-message -d 1500 '▢  Visible area copied' ;;
   l)  printf '%s' "$MOUSE_LINE" | wl-copy
       tmux display-message -d 1500 '─  Line copied' ;;
+  p)  # Paste from the SYSTEM clipboard (Wayland wl-paste). Falls through to
+      # tmux's own buffer if wl-paste is unavailable. Images are detected via
+      # MIME type and saved to /tmp/clipboard-paste-<ts>.<ext>; the saved path
+      # is then pasted as text so downstream CLIs (codex/claude) can read it.
+      if command -v wl-paste >/dev/null 2>&1; then
+        mimes="$(wl-paste --list-types 2>/dev/null || true)"
+        img_mime="$(printf '%s\n' "$mimes" | grep -m1 -oE '^image/(png|jpeg|gif|webp|bmp)' || true)"
+        if [ -n "$img_mime" ]; then
+          ext="${img_mime#image/}"; [ "$ext" = "jpeg" ] && ext="jpg"
+          out="/tmp/clipboard-paste-$(date +%s).$ext"
+          if wl-paste --type "$img_mime" > "$out" 2>/dev/null && [ -s "$out" ]; then
+            printf '%s' "$out" | tmux load-buffer -b _menu_paste -
+            tmux paste-buffer -b _menu_paste -t "$PANE_ID" -p
+            tmux delete-buffer -b _menu_paste 2>/dev/null || true
+            tmux display-message -d 1800 "⤓  Image pasted as path: $out"
+          else
+            rm -f "$out" 2>/dev/null || true
+            tmux display-message -d 1500 '⚠  Image paste failed'
+          fi
+        else
+          wl-paste --no-newline 2>/dev/null | tmux load-buffer -b _menu_paste -
+          tmux paste-buffer -b _menu_paste -t "$PANE_ID" -p
+          tmux delete-buffer -b _menu_paste 2>/dev/null || true
+          tmux display-message -d 1500 '⤓  Pasted from clipboard'
+        fi
+      else
+        tmux paste-buffer -t "$PANE_ID" -p
+        tmux display-message -d 1500 '⤓  Pasted from tmux buffer (no wl-paste)'
+      fi
+      ;;
   '<') tmux copy-mode -t "$PANE_ID"
        tmux send-keys -X -t "$PANE_ID" history-top ;;
   '>') tmux copy-mode -t "$PANE_ID"
