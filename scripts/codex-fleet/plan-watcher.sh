@@ -71,6 +71,124 @@ log() { printf '\033[36m[plan-watcher]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[plan-watcher]\033[0m %s\n' "$*" >&2; }
 dryrun() { (( DRY_RUN == 1 )) && printf '\033[35m[plan-watcher][dry-run]\033[0m %s\n' "$*" || true; }
 
+# ── plan-validator log sink ─────────────────────────────────────────────────
+# All PLAN-VALIDATE: lines append to /tmp/plan-watcher.log so operators can
+# grep them out without scraping the supervisor pane buffer. We also stream
+# the line to stdout (via log) so it remains visible in `--once` runs.
+PLAN_WATCHER_LOG="${PLAN_WATCHER_LOG:-/tmp/plan-watcher.log}"
+plan_validate_log() {
+  local line="$*"
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$PLAN_WATCHER_LOG" 2>/dev/null || true
+  log "$line"
+}
+
+# ── plan-validator hook ─────────────────────────────────────────────────────
+# Called at the top of every tick. Reads .codex-fleet/active-plan to find
+# the currently-pinned plan slug, resolves the on-disk plan.json, and
+# invokes scripts/codex-fleet/lib/plan-validator.sh on it. The validator is
+# owned by Lane 4 and may not exist yet — when it's missing we log a
+# 'skipped' marker and return 0 so the watcher keeps dispatching.
+#
+# Exit-code contract (matches the Lane 4 spec):
+#   0 → ok (log once)
+#   2 → warnings (log WARN <count> + JSON summary, continue dispatching)
+#   3 → hard errors (log ERROR <count> + JSON summary, SKIP dispatch)
+#   * → other (treated like an internal error; skip dispatch defensively)
+#
+# Returns 0 to caller when dispatch should proceed, 1 when dispatch must
+# be skipped for this tick.
+run_plan_validator() {
+  local active_plan_file="$REPO_ROOT/.codex-fleet/active-plan"
+  if [ ! -f "$active_plan_file" ]; then
+    plan_validate_log "PLAN-VALIDATE: skipped (no .codex-fleet/active-plan)"
+    return 0
+  fi
+
+  local slug
+  slug="$(tr -d '[:space:]' < "$active_plan_file" 2>/dev/null || true)"
+  if [ -z "$slug" ]; then
+    plan_validate_log "PLAN-VALIDATE: skipped (empty active-plan slug)"
+    return 0
+  fi
+
+  local plan_json="$REPO_ROOT/openspec/plans/$slug/plan.json"
+  if [ ! -f "$plan_json" ]; then
+    plan_validate_log "PLAN-VALIDATE: skipped (plan.json missing for $slug)"
+    return 0
+  fi
+
+  local validator="$SCRIPT_DIR/lib/plan-validator.sh"
+  if [ ! -f "$validator" ]; then
+    plan_validate_log "PLAN-VALIDATE: skipped (validator missing)"
+    return 0
+  fi
+
+  # Capture stdout (JSON summary) separately from exit code so we can log
+  # both without losing the rc. set -e is enabled at the top of the script,
+  # so we must guard the validator call so a non-zero exit doesn't abort
+  # the watcher.
+  local summary rc
+  set +e
+  if [ -x "$validator" ]; then
+    summary="$("$validator" "$plan_json" 2>/dev/null)"
+  else
+    summary="$(bash "$validator" "$plan_json" 2>/dev/null)"
+  fi
+  rc=$?
+  set -e
+
+  # Best-effort count extraction from the JSON summary. The validator
+  # emits a JSON object with either "warnings"/"errors" as arrays or
+  # "warning_count"/"error_count" as ints. We accept both shapes; arrays
+  # collapse to their len(). Falls back to "?" on parse failure.
+  # The "next line" JSON summary is also compacted to one line so it
+  # stays grep-friendly in /tmp/plan-watcher.log.
+  local count summary_oneline
+  summary_oneline="$(printf '%s' "$summary" | python3 -c 'import json,sys
+try:
+    d=json.loads(sys.stdin.read() or "{}")
+    print(json.dumps(d, separators=(",",":")))
+except Exception:
+    pass' 2>/dev/null || true)"
+  [ -z "$summary_oneline" ] && summary_oneline="$summary"
+
+  case "$rc" in
+    0)
+      plan_validate_log "PLAN-VALIDATE: ok"
+      return 0
+      ;;
+    2)
+      count="$(printf '%s' "$summary" | python3 -c 'import json,sys
+try:
+    d=json.loads(sys.stdin.read() or "{}")
+    v=d.get("warnings", d.get("warning_count", "?"))
+    print(len(v) if isinstance(v,(list,tuple)) else v)
+except Exception:
+    print("?")' 2>/dev/null || printf '?')"
+      plan_validate_log "PLAN-VALIDATE: WARN $count"
+      [ -n "$summary_oneline" ] && plan_validate_log "$summary_oneline"
+      return 0
+      ;;
+    3)
+      count="$(printf '%s' "$summary" | python3 -c 'import json,sys
+try:
+    d=json.loads(sys.stdin.read() or "{}")
+    v=d.get("errors", d.get("error_count", "?"))
+    print(len(v) if isinstance(v,(list,tuple)) else v)
+except Exception:
+    print("?")' 2>/dev/null || printf '?')"
+      plan_validate_log "PLAN-VALIDATE: ERROR $count"
+      [ -n "$summary_oneline" ] && plan_validate_log "$summary_oneline"
+      return 1
+      ;;
+    *)
+      plan_validate_log "PLAN-VALIDATE: ERROR (validator exited $rc)"
+      [ -n "$summary_oneline" ] && plan_validate_log "$summary_oneline"
+      return 1
+      ;;
+  esac
+}
+
 # Telltale phrases the worker prints when task_ready_for_agent has no work
 # for its current pin. These are the lines we see in the overview screenshot
 # when a plan is exhausted or stuck behind a stale blocker.
@@ -338,6 +456,14 @@ send_prompt() {
 tick() {
   local now; now="$(date +%s)"
   log "tick @ $(date +%H:%M:%S) — session=$SESSION"
+
+  # Plan-validator gate: runs before dispatch. On hard errors (rc=3) we
+  # skip dispatch for this tick but keep the loop going so the next tick
+  # picks up any operator fix. Warnings pass through.
+  if ! run_plan_validator; then
+    log "plan-validator reported hard errors; skipping dispatch this tick"
+    return 0
+  fi
 
   # Snapshot live state in two reads, then iterate in-memory.
   local plans idle_workers
