@@ -2486,21 +2486,21 @@ fn render_shortcuts_panel(
 fn render_jump_card(frame: &mut Frame, rect: Rect, sec: &Section, active: bool) {
     let (bg, fg, sub_fg, badge_bg, badge_fg, border_fg) = if active {
         (
+            IOS_BG_GLASS,
+            IOS_FG,
+            IOS_FG_MUTED,
             IOS_TINT,
             IOS_FG,
-            Color::Rgb(220, 232, 255),
-            Color::Rgb(0, 82, 180),
-            IOS_FG,
-            Color::Rgb(116, 196, 255),
+            IOS_TINT,
         )
     } else {
         (
-            IOS_CARD_BG,
+            IOS_BG_GLASS,
             IOS_FG,
             IOS_FG_MUTED,
             IOS_ICON_CHIP,
             IOS_FG_MUTED,
-            IOS_HAIRLINE_STRONG,
+            IOS_HAIRLINE,
         )
     };
     let card = Block::default()
@@ -3075,6 +3075,61 @@ mod tests {
         assert!(rendered.contains("codex-fleet:overview"));
         assert!(rendered.contains("codex-fleet:review"));
         assert!(rendered.contains("1–5 jump · ↵ open · esc close"));
+    }
+
+    #[test]
+    fn section_jump_cards_use_glass_hairline_surface() {
+        let backend = TestBackend::new(30, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| {
+                render_jump_card(
+                    frame,
+                    Rect {
+                        x: 1,
+                        y: 1,
+                        width: 24,
+                        height: 9,
+                    },
+                    &SECTIONS[1],
+                    false,
+                )
+            })
+            .expect("draw jump card");
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(2, 1)].fg, IOS_HAIRLINE);
+        assert_eq!(buffer[(8, 2)].bg, IOS_BG_GLASS);
+        assert_eq!(buffer[(3, 2)].bg, IOS_ICON_CHIP);
+    }
+
+    #[test]
+    fn active_section_jump_card_uses_tint_border_and_live_pill() {
+        let backend = TestBackend::new(30, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| {
+                render_jump_card(
+                    frame,
+                    Rect {
+                        x: 1,
+                        y: 1,
+                        width: 24,
+                        height: 9,
+                    },
+                    &SECTIONS[0],
+                    true,
+                )
+            })
+            .expect("draw active jump card");
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(2, 1)].fg, IOS_TINT);
+        assert_eq!(buffer[(8, 2)].bg, IOS_BG_GLASS);
+        assert_eq!(buffer[(3, 2)].bg, IOS_TINT);
+        assert!(buffer_text(buffer).contains("LIVE"));
     }
 }
 
