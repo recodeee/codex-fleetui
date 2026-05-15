@@ -285,7 +285,7 @@ fn render_card_strip(frame: &mut Frame, area: Rect, sessions: &[SessionCard<'_>]
     let card_h = strip_h.saturating_sub(2).max(8);
     let card_y = strip_top + (strip_h.saturating_sub(card_h) / 2);
     let base_w = (area.width / 5).clamp(24, 56);
-    let active_w = (base_w + 8).min(area.width.saturating_sub(4));
+    let active_w = (base_w + 14).min(area.width.saturating_sub(4));
     let gap = 2;
     let mut x = area.x + 2;
 
@@ -514,7 +514,14 @@ fn render_card_actions(frame: &mut Frame, inner: Rect, selected: bool) {
         CARD_FOOTER,
     );
 
-    let focus_w = if inner.width > 34 { 13 } else { 9 };
+    let spacious_actions = inner.width >= 40;
+    let focus_w = if spacious_actions {
+        10
+    } else if inner.width > 34 {
+        13
+    } else {
+        9
+    };
     let button_y = footer_y;
     render_action_chip(
         frame,
@@ -529,32 +536,36 @@ fn render_card_actions(frame: &mut Frame, inner: Rect, selected: bool) {
         IOS_FG,
     );
     let mut x = inner.x + 2 + focus_w + 2;
-    for (label, bg, fg) in [
-        ("☰", IOS_CHIP_BG, IOS_FG),
-        ("Ⅱ", IOS_CHIP_BG, IOS_FG),
-        ("⌫", RED_SOFT, IOS_DESTRUCTIVE),
-    ] {
-        if x + 4 >= inner.x + inner.width {
+    let actions: [(&str, u16, Color, Color); 3] = if spacious_actions {
+        [
+            ("Queue", 7, IOS_CHIP_BG, IOS_FG),
+            ("Pause", 7, IOS_CHIP_BG, IOS_FG),
+            ("Kill", 6, RED_SOFT, IOS_DESTRUCTIVE),
+        ]
+    } else {
+        [
+            ("☰", 4, IOS_CHIP_BG, IOS_FG),
+            ("Ⅱ", 4, IOS_CHIP_BG, IOS_FG),
+            ("⌫", 4, RED_SOFT, IOS_DESTRUCTIVE),
+        ]
+    };
+    for (label, width, bg, fg) in actions {
+        if x + width > inner.x + inner.width.saturating_sub(1) {
             break;
         }
-        let chip_x = if label == "⌫" {
-            inner.x + inner.width.saturating_sub(6)
-        } else {
-            x
-        };
         render_action_chip(
             frame,
             Rect {
-                x: chip_x,
+                x,
                 y: button_y,
-                width: 4,
+                width,
                 height: 1,
             },
             label,
             bg,
             fg,
         );
-        x = x.saturating_add(6);
+        x = x.saturating_add(width + 2);
     }
 }
 
@@ -797,6 +808,9 @@ mod tests {
             "RUNTIME",
             "10m 28s",
             "▣ Focus",
+            "Queue",
+            "Pause",
+            "Kill",
             "dismiss worker",
             "new worker",
         ] {
