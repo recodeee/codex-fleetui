@@ -466,6 +466,14 @@ fn render_row_divider(frame: &mut Frame, area: Rect) {
     );
 }
 
+fn render_glass_row(frame: &mut Frame, area: Rect, line: Line<'static>) {
+    render_row_surface(frame, area);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(IOS_BG_GLASS)),
+        area,
+    );
+}
+
 /// ACTIVE NOW card — one row per `status=claimed` sub-task.
 /// Format: ` ● <agent-name>  sub-<N>  <truncated title>`
 /// When nothing is claimed, show a placeholder so the layout stays stable.
@@ -483,14 +491,13 @@ fn render_active_now(frame: &mut Frame, area: Rect, claimed: &[&Subtask]) {
             width: inner.width,
             height: 1,
         };
-        render_row_surface(frame, row);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "  no active claims — workers polling for work",
-                Style::default().fg(IOS_FG_MUTED),
-            )))
-            .style(Style::default().bg(IOS_BG_GLASS)),
+        render_glass_row(
+            frame,
             row,
+            Line::from(Span::styled(
+                "  no active claims — workers polling for work",
+                Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+            )),
         );
         if inner.height > 1 {
             render_row_divider(
@@ -550,10 +557,7 @@ fn render_active_now(frame: &mut Frame, area: Rect, claimed: &[&Subtask]) {
             Span::raw("  "),
             Span::styled(title, Style::default().fg(IOS_FG)),
         ];
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)).style(Style::default().bg(IOS_BG_GLASS)),
-            row,
-        );
+        render_glass_row(frame, row, Line::from(spans));
         if row_step == 2 && y + 1 < inner.y + inner.height {
             render_row_divider(
                 frame,
@@ -639,11 +643,7 @@ fn render_waves(frame: &mut Frame, area: Rect, plan: &Plan) {
                 width: inner.width,
                 height: 1,
             };
-            render_row_surface(frame, row);
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)).style(Style::default().bg(IOS_BG_GLASS)),
-                row,
-            );
+            render_glass_row(frame, row, Line::from(spans));
             if use_dividers && y + 1 < inner.y + inner.height {
                 render_row_divider(
                     frame,
@@ -660,6 +660,15 @@ fn render_waves(frame: &mut Frame, area: Rect, plan: &Plan) {
             }
         }
         if y < inner.y + inner.height {
+            render_row_divider(
+                frame,
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
             y += 1;
         }
     }
@@ -685,10 +694,19 @@ fn render_agent_assignment_map(frame: &mut Frame, area: Rect, plan: &Plan) {
     }
 
     let divider_width = area.width.saturating_sub(4) as usize;
+    render_row_surface(
+        frame,
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 2.min(area.height),
+        },
+    );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("  {}", "─".repeat(divider_width)),
-            Style::default().fg(IOS_HAIRLINE),
+            Style::default().fg(IOS_HAIRLINE).bg(IOS_BG_GLASS),
         ))),
         Rect {
             x: area.x,
@@ -710,7 +728,7 @@ fn render_agent_assignment_map(frame: &mut Frame, area: Rect, plan: &Plan) {
             ),
             Span::styled(
                 " grouped by claimed agent · live plan.json",
-                Style::default().fg(IOS_FG_MUTED),
+                Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
             ),
         ])),
         Rect {
@@ -1119,6 +1137,27 @@ mod claim_map_tests {
         assert_eq!(buffer[(1, 1)].bg, IOS_BG_GLASS);
         assert_eq!(buffer[(2, 2)].fg, IOS_HAIRLINE);
         assert_eq!(buffer[(2, 2)].bg, IOS_BG_GLASS);
+    }
+
+    #[test]
+    fn wave_level_spacing_uses_glass_hairline_not_dead_air() {
+        let mut dependent = subtask(
+            1,
+            "dependent implementation",
+            "claimed",
+            Some("codex-alpha"),
+        );
+        dependent.depends_on = vec![0];
+        let plan = test_plan(vec![subtask(0, "bootstrap", "completed", None), dependent]);
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+
+        terminal
+            .draw(|frame| render_waves(frame, frame.area(), &plan))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(2, 3)].fg, IOS_HAIRLINE);
+        assert_eq!(buffer[(2, 3)].bg, IOS_BG_GLASS);
     }
 }
 
