@@ -1,0 +1,4 @@
+> gh pr create --title "feat: classifier replay" --body-file /tmp/pr-body.md
+  gh: Bad credentials. The GH_TOKEN env var is set but is expired.
+  remote: Permission to user/codex-fleet.git denied to claude-bot.
+  BLOCKED: branch=agent/claude/tui-lane-1; reason=gh auth: bad credentials; next=operator must refresh GH_TOKEN

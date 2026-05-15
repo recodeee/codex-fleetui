@@ -1,0 +1,6 @@
+  Working (2m 14s • ↑ 8.1k tokens • esc to interrupt)
+  ... earlier scrollback ...
+  build completed
+  shellcheck passed
+  ready to open PR. The base branch protection rule blocks force-push.
+  Do you want to retry with a regular push? [Y/n]

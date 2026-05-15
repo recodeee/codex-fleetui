@@ -1,0 +1,5 @@
+> mcp__colony__task_ready_for_agent agent=claude-fleet-2
+  MCP server colony not found in the registered MCP namespace
+  fallback: tried mcp__colony__task_list — also unavailable
+  Colony MCP server missing; cannot continue task selection.
+  Worked for 38s

@@ -1,0 +1,7 @@
+  Two possible directions for handling the migration:
+  1) drop the legacy table and re-derive from events (recommended)
+  2) keep the legacy table and dual-write for one release
+  3) abort and ask the operator to decide
+
+  Which option would you like me to take?
+2) drop the legacy table and re-derive from events (recommended)

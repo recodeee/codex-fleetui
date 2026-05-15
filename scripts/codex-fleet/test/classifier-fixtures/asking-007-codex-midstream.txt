@@ -1,0 +1,4 @@
+  codex needs approval to write outside the writable-root.
+  target: /home/deadpool/Documents/codex-fleet/openspec/changes/spec.md
+  this is outside the current sandbox writable-root.
+  Apply? [Y/n]
