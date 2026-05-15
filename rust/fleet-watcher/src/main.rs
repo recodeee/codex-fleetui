@@ -33,6 +33,7 @@ use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 pub enum Msg {
     Tick,
     Quit,
+    Resize,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
@@ -1074,6 +1075,12 @@ impl<F: PrFeed + 'static> AppComponent<Msg, NoUserEvent> for WatcherView<F> {
                 self.tick = self.tick.wrapping_add(1);
                 Some(Msg::Tick)
             }
+            // Terminal/tmux pane resized — emit a Msg so the Model loop sets
+            // redraw=true on the same iteration instead of waiting up to 2s
+            // for the next Tick. ratatui's `Terminal::draw` autoresizes the
+            // back buffer, so the next draw immediately picks up the new
+            // width/height and the dashboard reflows to fill the surface.
+            Event::WindowResize(_, _) => Some(Msg::Resize),
             _ => None,
         }
     }
@@ -1108,7 +1115,10 @@ impl Model<CrosstermTerminalAdapter> {
         app.mount(
             Id::Watcher,
             Box::new(WatcherView::default()),
-            vec![Sub::new(EventClause::Tick, SubClause::Always)],
+            vec![
+                Sub::new(EventClause::Tick, SubClause::Always),
+                Sub::new(EventClause::WindowResize, SubClause::Always),
+            ],
         )?;
         app.active(&Id::Watcher)?;
         Ok(app)
@@ -1134,7 +1144,7 @@ impl<T: TerminalAdapter> Model<T> {
         self.redraw = true;
         match msg {
             Msg::Quit => self.quit = true,
-            Msg::Tick => {}
+            Msg::Tick | Msg::Resize => {}
         }
     }
 }
@@ -1291,6 +1301,21 @@ mod tests {
         assert!(frame.contains("queue clear · auto-reviewer caught up"));
         assert!(frame.contains("DIFF SPARKLINE"));
         assert!(frame.contains("no merged diff activity yet"));
+    }
+
+    #[test]
+    fn window_resize_event_triggers_redraw_message() {
+        // Regression for the "not full width / not dynamic" complaint:
+        // WatcherView only subscribed to Tick events, so terminal resize
+        // events (Event::WindowResize) were swallowed by the catch-all
+        // `_ => None` arm. The model never set `redraw = true` and the
+        // dashboard stayed at its previous layout until the next 2s tick.
+        let mut view = WatcherView::with_feed(StubPrFeed::fixture());
+        let msg = view.on(&Event::WindowResize(200, 60));
+        assert!(
+            msg.is_some(),
+            "WindowResize must produce a Msg so Model::update sets redraw=true"
+        );
     }
 
     #[test]
