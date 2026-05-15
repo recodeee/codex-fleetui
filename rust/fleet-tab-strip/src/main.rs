@@ -38,8 +38,8 @@ use tuirealm::subscription::{EventClause, Sub, SubClause};
 use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 
 use fleet_ui::palette::{
-    IOS_BG_GLASS as PALETTE_IOS_BG_GLASS, IOS_FG as PALETTE_IOS_FG,
-    IOS_FG_MUTED as PALETTE_IOS_FG_MUTED, IOS_TINT as PALETTE_IOS_TINT,
+    IOS_BG_GLASS as PALETTE_IOS_BG_GLASS, IOS_BG_SOLID as PALETTE_IOS_BG_SOLID,
+    IOS_FG as PALETTE_IOS_FG, IOS_FG_MUTED as PALETTE_IOS_FG_MUTED, IOS_TINT as PALETTE_IOS_TINT,
 };
 use fleet_ui::tab_strip::{Tab, TabHit};
 
@@ -394,6 +394,16 @@ fn render_dock_shadow(frame: &mut Frame, dock: Rect, area: Rect) {
     if y >= bottom {
         return;
     }
+    fill_rect(
+        frame,
+        Rect {
+            x: dock.x,
+            y,
+            width: dock.width,
+            height: 1,
+        },
+        PALETTE_IOS_BG_SOLID,
+    );
     let shadow = Rect {
         x: dock.x + 3,
         y,
@@ -736,7 +746,7 @@ fn render_pill_middle(
     frame: &mut Frame,
     rect: Rect,
     fill: Color,
-    edge: Color,
+    _edge: Color,
     content: Vec<Span<'static>>,
 ) {
     if rect.width < 2 {
@@ -746,7 +756,8 @@ fn render_pill_middle(
     let content_width: usize = content.iter().map(span_width).sum();
     let left_pad = inner.saturating_sub(content_width) / 2;
     let right_pad = inner.saturating_sub(content_width + left_pad);
-    let mut spans = vec![Span::styled("│", Style::default().fg(edge).bg(BG))];
+    let cap_style = Style::default().fg(fill).bg(BG);
+    let mut spans = vec![Span::styled("◖", cap_style)];
     if left_pad > 0 {
         spans.push(Span::styled(
             " ".repeat(left_pad),
@@ -760,7 +771,7 @@ fn render_pill_middle(
             Style::default().bg(fill),
         ));
     }
-    spans.push(Span::styled("│", Style::default().fg(edge).bg(BG)));
+    spans.push(Span::styled("◗", cap_style));
     frame.render_widget(Paragraph::new(Line::from(spans)), rect);
 }
 
@@ -1170,6 +1181,99 @@ mod tests {
         assert_eq!(hits[0].window_idx, 0);
         assert_eq!(hits[4].window_idx, 4);
         assert!(hits[0].rect.width > hits[1].rect.width);
+    }
+
+    #[test]
+    fn design_e_pills_use_ios_half_circle_caps() {
+        let mut terminal = Terminal::new(TestBackend::new(274, 6)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let _ = render_design_e_dock(
+                    frame,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: 274,
+                        height: 6,
+                    },
+                    Tab::Fleet,
+                    1,
+                );
+            })
+            .unwrap();
+
+        let rendered = format!("{}", terminal.backend());
+        assert!(rendered.contains("◖"));
+        assert!(rendered.contains("◗"));
+    }
+
+    #[test]
+    fn dock_shadow_adds_full_width_dark_band() {
+        let mut terminal = Terminal::new(TestBackend::new(24, 5)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_dock_shadow(
+                    frame,
+                    Rect {
+                        x: 2,
+                        y: 1,
+                        width: 20,
+                        height: 3,
+                    },
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: 24,
+                        height: 5,
+                    },
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(2, 4)].bg, PALETTE_IOS_BG_SOLID);
+        assert_eq!(buffer[(5, 4)].bg, GLASS_SHADOW);
+        assert_eq!(buffer[(21, 4)].bg, PALETTE_IOS_BG_SOLID);
+    }
+
+    #[test]
+    fn live_pill_fill_pulses_by_tick() {
+        let mut pulse_on = Terminal::new(TestBackend::new(16, 3)).unwrap();
+        pulse_on
+            .draw(|frame| {
+                render_live_pill(
+                    frame,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: 14,
+                        height: 3,
+                    },
+                    1,
+                );
+            })
+            .unwrap();
+
+        let mut pulse_off = Terminal::new(TestBackend::new(16, 3)).unwrap();
+        pulse_off
+            .draw(|frame| {
+                render_live_pill(
+                    frame,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: 14,
+                        height: 3,
+                    },
+                    2,
+                );
+            })
+            .unwrap();
+
+        assert_eq!(pulse_on.backend().buffer()[(4, 1)].bg, GREEN_GLASS_PULSE);
+        assert_eq!(pulse_off.backend().buffer()[(4, 1)].bg, GREEN_GLASS);
     }
 
     #[test]
