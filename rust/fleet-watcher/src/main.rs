@@ -444,13 +444,19 @@ fn card_block(title: Option<&str>) -> Block<'static> {
 }
 
 fn render_line(frame: &mut Frame, area: Rect, line: Line<'static>) {
+    render_surface_line(frame, area, IOS_CARD_BG, line);
+}
+
+fn render_surface_line(
+    frame: &mut Frame,
+    area: Rect,
+    bg: tuirealm::ratatui::style::Color,
+    line: Line<'static>,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(IOS_CARD_BG)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), area);
 }
 
 fn clip(input: &str, width: u16) -> String {
@@ -483,6 +489,65 @@ fn shimmer(tick: u64) -> &'static str {
         2 => "∙",
         _ => " ",
     }
+}
+
+fn review_card_block() -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(IOS_HAIRLINE))
+        .style(Style::default().bg(IOS_BG_GLASS).fg(IOS_FG))
+}
+
+fn action_button(
+    label: &'static str,
+    fg: tuirealm::ratatui::style::Color,
+    bg: tuirealm::ratatui::style::Color,
+) -> Span<'static> {
+    Span::styled(
+        format!(" {label} "),
+        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+    )
+}
+
+fn outcome_fg(outcome: ReviewOutcome) -> tuirealm::ratatui::style::Color {
+    match outcome {
+        ReviewOutcome::Approved | ReviewOutcome::Merged => IOS_GREEN,
+        ReviewOutcome::ChangesRequested => IOS_DESTRUCTIVE,
+        ReviewOutcome::Pending => IOS_TINT,
+    }
+}
+
+fn event_quality_score(event: &ReviewEvent, index: usize) -> u8 {
+    let base = match event.outcome {
+        ReviewOutcome::Approved => 92,
+        ReviewOutcome::Merged => 96,
+        ReviewOutcome::Pending => 82,
+        ReviewOutcome::ChangesRequested => 61,
+    };
+    let jitter = ((event.title.len() + event.reviewer.len() + index * 7) % 6) as i32 - 2;
+    (base + jitter).clamp(42, 99) as u8
+}
+
+fn quality_color(score: u8) -> tuirealm::ratatui::style::Color {
+    match score {
+        90..=100 => IOS_GREEN,
+        75..=89 => IOS_TINT,
+        60..=74 => IOS_ORANGE,
+        _ => IOS_DESTRUCTIVE,
+    }
+}
+
+fn quality_rail(score: u8, width: u16) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let fill = ((score as u16 * width) / 100).clamp(1, width);
+    let mut rail = String::new();
+    for idx in 0..width {
+        rail.push(if idx < fill { '█' } else { '░' });
+    }
+    rail
 }
 
 fn render_header(frame: &mut Frame, area: Rect, data: &ReviewData) {
@@ -678,7 +743,7 @@ fn render_feed(frame: &mut Frame, area: Rect, data: &ReviewData, tick: u64) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let block = card_block(Some("RECENT DECISIONS · last 30m"));
+    let block = card_block(Some("REVIEW QUEUE · approval cards · design J"));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -706,43 +771,149 @@ fn render_feed(frame: &mut Frame, area: Rect, data: &ReviewData, tick: u64) {
         return;
     }
 
-    let max_rows = inner.height.saturating_sub(1) as usize;
-    for (idx, event) in data.events.iter().take(max_rows).enumerate() {
-        let y = inner.y + idx as u16;
-        let title_budget = inner.width.saturating_sub(38);
-        let mut spans = vec![
-            Span::styled(
-                format!("{} · ", event.hhmm),
-                Style::default().fg(IOS_FG_MUTED).bg(IOS_CARD_BG),
-            ),
-            Span::styled(
-                format!(" @{} ", clip(&event.reviewer, 14)),
-                Style::default()
-                    .fg(IOS_FG)
-                    .bg(IOS_CHIP_BG)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" ", Style::default().bg(IOS_CARD_BG)),
-            Span::styled(
-                clip(&event.title, title_budget),
-                Style::default().fg(IOS_FG).bg(IOS_CARD_BG),
-            ),
-            Span::styled(" ", Style::default().bg(IOS_CARD_BG)),
-        ];
-        spans.extend(status_chip(event.outcome.chip_kind()));
-        spans.push(Span::styled(
-            format!(" {}", event.outcome.label()),
-            Style::default().fg(IOS_FG_MUTED).bg(IOS_CARD_BG),
-        ));
-        render_line(
+    let card_height = if inner.height >= 18 { 6 } else { 5 };
+    let step = card_height + 1;
+    let max_cards = ((inner.height + 1) / step).max(1) as usize;
+    for (idx, event) in data.events.iter().take(max_cards).enumerate() {
+        let y = inner.y + idx as u16 * step;
+        if y >= inner.y + inner.height {
+            break;
+        }
+        let height = card_height.min(inner.y + inner.height - y);
+        render_review_card(
             frame,
             Rect {
                 x: inner.x + 1,
                 y,
                 width: inner.width.saturating_sub(2),
+                height,
+            },
+            event,
+            idx,
+            tick,
+        );
+    }
+}
+
+fn render_review_card(frame: &mut Frame, area: Rect, event: &ReviewEvent, index: usize, tick: u64) {
+    if area.width < 24 || area.height < 4 {
+        return;
+    }
+    let block = review_card_block();
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let title_budget = inner.width.saturating_sub(17);
+    let mut header = status_chip(event.outcome.chip_kind());
+    header.push(Span::styled(
+        " ",
+        Style::default().fg(IOS_FG).bg(IOS_BG_GLASS),
+    ));
+    header.push(Span::styled(
+        clip(&event.title, title_budget),
+        Style::default()
+            .fg(IOS_FG)
+            .bg(IOS_BG_GLASS)
+            .add_modifier(Modifier::BOLD),
+    ));
+    render_surface_line(
+        frame,
+        Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        },
+        IOS_BG_GLASS,
+        Line::from(header),
+    );
+
+    if inner.height > 1 {
+        let score = event_quality_score(event, index);
+        let rail_width = inner.width.saturating_sub(34).clamp(6, 24);
+        render_surface_line(
+            frame,
+            Rect {
+                x: inner.x + 1,
+                y: inner.y + 1,
+                width: inner.width.saturating_sub(2),
                 height: 1,
             },
-            Line::from(spans),
+            IOS_BG_GLASS,
+            Line::from(vec![
+                Span::styled(
+                    format!("{} · @{} · ", event.hhmm, clip(&event.reviewer, 12)),
+                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                ),
+                Span::styled(
+                    "QUALITY ",
+                    Style::default()
+                        .fg(IOS_FG)
+                        .bg(IOS_BG_GLASS)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    quality_rail(score, rail_width),
+                    Style::default()
+                        .fg(quality_color(score))
+                        .bg(IOS_BG_GLASS)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {score:02}%"),
+                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                ),
+                Span::styled(
+                    format!(" {}", shimmer(tick)),
+                    Style::default()
+                        .fg(outcome_fg(event.outcome))
+                        .bg(IOS_BG_GLASS),
+                ),
+            ]),
+        );
+    }
+
+    if inner.height > 2 {
+        render_surface_line(
+            frame,
+            Rect {
+                x: inner.x + 1,
+                y: inner.y + 2,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            },
+            IOS_BG_GLASS,
+            Line::from(vec![
+                action_button("A Approve", IOS_FG, IOS_GREEN),
+                Span::styled("  ", Style::default().bg(IOS_BG_GLASS)),
+                action_button("R Request Changes", IOS_FG, IOS_DESTRUCTIVE),
+                Span::styled("  ", Style::default().bg(IOS_BG_GLASS)),
+                action_button("S Skip", IOS_FG, IOS_CHIP_BG),
+            ]),
+        );
+    }
+
+    if inner.height > 3 {
+        let hint = format!(
+            "state={} · approve/request/skip · ↵ inspect diff",
+            event.outcome.label()
+        );
+        render_surface_line(
+            frame,
+            Rect {
+                x: inner.x + 1,
+                y: inner.y + 3,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            },
+            IOS_BG_GLASS,
+            Line::from(Span::styled(
+                clip(&hint, inner.width.saturating_sub(2)),
+                Style::default().fg(IOS_FG_FAINT).bg(IOS_BG_GLASS),
+            )),
         );
     }
 }
@@ -1074,10 +1245,35 @@ mod tests {
             "APPROVED-TODAY",
             "CHANGES-REQUESTED",
             "MERGED-LAST-1H",
-            "RECENT DECISIONS · last 30m",
+            "REVIEW QUEUE · approval cards · design J",
             "#91 Replace watcher placeholder",
+            "QUALITY",
+            "A Approve",
+            "R Request Changes",
+            "S Skip",
             "DIFF SPARKLINE · merged PRs · last 60m",
             "source: stub snapshot feed",
+        ] {
+            assert!(frame.contains(needle), "missing {needle:?}\n{frame}");
+        }
+    }
+
+    #[test]
+    fn review_queue_cards_include_design_j_controls() {
+        let mut view = WatcherView::with_feed(StubPrFeed::fixture());
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        terminal
+            .draw(|frame| view.view(frame, frame.area()))
+            .unwrap();
+        let frame = format!("{}", terminal.backend());
+
+        for needle in [
+            "REVIEW QUEUE · approval cards · design J",
+            "QUALITY",
+            "A Approve",
+            "R Request Changes",
+            "S Skip",
+            "state=approved · approve/request/skip · ↵ inspect diff",
         ] {
             assert!(frame.contains(needle), "missing {needle:?}\n{frame}");
         }
