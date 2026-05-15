@@ -1,0 +1,4 @@
+  About to run: rm -rf /tmp/codex-fleet/sandboxes/agent-claude-old-2026-05-13
+  This is irreversible.
+
+Proceed? [y/N]

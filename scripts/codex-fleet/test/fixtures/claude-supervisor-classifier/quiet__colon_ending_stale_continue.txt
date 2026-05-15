@@ -1,0 +1,10 @@
+  long-running task started
+  > Continue? yes — answered earlier
+  > running tests
+  Compiling fleet-data
+  Compiling fleet-state
+  Compiling fleet-launcher
+  cargo test -p fleet-launcher: 12 passed
+  ran scripts/codex-fleet/lib/sandboxed-cargo-test.sh: ok
+  next:
+Reading file: rust/fleet-launcher/src/heartbeat.rs:

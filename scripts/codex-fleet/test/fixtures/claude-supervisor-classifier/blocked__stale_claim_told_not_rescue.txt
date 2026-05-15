@@ -1,0 +1,5 @@
+> task_ready_for_agent: nothing ready
+  found stale-claim blocker on sub-task 2 of codex-fleet-ios-pages-design-pass-2026-05-15
+  operator-policy: told me not to rescue stale claims unsupervised
+  posted BLOCKED handoff, exiting
+Worked for 14m 02s • ↑ 18.3k tokens

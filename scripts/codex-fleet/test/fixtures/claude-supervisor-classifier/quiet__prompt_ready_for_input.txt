@@ -1,0 +1,3 @@
+  plan-watcher: idle since 5m 02s, waiting for next available sub-task
+  no plan currently pinned in .codex-fleet/active-plan
+  >

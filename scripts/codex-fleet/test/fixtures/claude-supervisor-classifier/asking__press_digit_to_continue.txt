@@ -1,0 +1,6 @@
+  Detected multiple matching accounts:
+    1) acc-claude-pro-1@example.com
+    2) acc-claude-pro-2@example.com
+    3) acc-claude-team-1@example.com
+
+press 1 to pick acc-claude-pro-1, 2 for pro-2, 3 for team-1

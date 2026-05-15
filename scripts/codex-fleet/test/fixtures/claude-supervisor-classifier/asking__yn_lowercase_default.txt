@@ -1,0 +1,4 @@
+  Running `gx branch finish --branch agent/claude/x --via-pr --wait-for-merge`.
+  This will push the branch and open a PR.
+
+Continue? [Y/n]

@@ -1,0 +1,4 @@
+> mcp__colony__task_ready_for_agent
+Error: MCP server colony not found in the registered servers
+  available: claude-mem, gbrain
+  cannot continue — Colony required by plan
