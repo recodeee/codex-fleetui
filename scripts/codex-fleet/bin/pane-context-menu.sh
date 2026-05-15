@@ -172,9 +172,10 @@ render_menu() {
   draw_header
   draw_hairline
 
-  draw_item '▣'  "Copy whole session"  'C' normal "$focus_key"
-  draw_item '▢'  "Copy visible"        'c' normal "$focus_key"
-  draw_item '─'  "Copy this line"      'l' normal "$focus_key"
+  draw_item '▣'  "Copy whole session"     'C' normal "$focus_key"
+  draw_item '▢'  "Copy visible"           'c' normal "$focus_key"
+  draw_item '─'  "Copy this line"         'l' normal "$focus_key"
+  draw_item '⤓'  "Paste from clipboard"   'p' normal "$focus_key"
   draw_hairline
   draw_item '↟'  "Scroll to top"       '<' normal "$focus_key"
   draw_item '↡'  "Scroll to bottom"    '>' normal "$focus_key"
@@ -194,7 +195,7 @@ render_menu() {
   draw_item '?'  "Keyboard help…"      '?' normal "$focus_key"
   draw_bottom
 
-  menu_fg "$IOS_GRAY"; printf '\n   press a hotkey  ·  ? for help  ·  esc cancels'
+  menu_fg "$IOS_GRAY"; printf '\n   ↑/↓ move  ·  ⏎ select  ·  hotkey jumps  ·  esc cancels'
   _ios_reset
 }
 
@@ -210,16 +211,90 @@ swap_marked_style=normal
 mark_label="Mark pane"
 (( PANE_MARKED == 1 )) && mark_label="Unmark pane"
 
-# ── render ─────────────────────────────────────────────────────────────────
-render_menu
+# ── selectable item table (must stay in sync with render_menu rows) ────────
+# Order matches the visual order rendered in render_menu so arrow-nav walks
+# the menu top-to-bottom. Disabled rows keep their hotkey wired (parity with
+# the prior single-keystroke behavior) but are skipped during arrow walks.
+ITEM_KEYS=(C c l p '<' '>' h v z u d s m R X '?')
+ITEM_STYLES=(normal normal normal normal \
+             normal normal \
+             normal normal "$zoom_style" \
+             "$multi" "$multi" "$swap_marked_style" normal \
+             normal danger \
+             normal)
 
-# ── input + dispatch ───────────────────────────────────────────────────────
+# Walk the ITEM_STYLES table, skipping 'disabled' entries, wrapping around.
+next_enabled_idx() {
+  local cur="$1" total="${#ITEM_KEYS[@]}" step i idx
+  for (( step=1; step<=total; step++ )); do
+    idx=$(( (cur + step) % total ))
+    if [[ "${ITEM_STYLES[$idx]}" != "disabled" ]]; then
+      printf '%d' "$idx"; return 0
+    fi
+  done
+  printf '%d' "$cur"
+}
+prev_enabled_idx() {
+  local cur="$1" total="${#ITEM_KEYS[@]}" step i idx
+  for (( step=1; step<=total; step++ )); do
+    idx=$(( (cur - step + total) % total ))
+    if [[ "${ITEM_STYLES[$idx]}" != "disabled" ]]; then
+      printf '%d' "$idx"; return 0
+    fi
+  done
+  printf '%d' "$cur"
+}
+
+# Seed focus on the first enabled row.
+focused_idx=0
+while (( focused_idx < ${#ITEM_KEYS[@]} )) \
+   && [[ "${ITEM_STYLES[$focused_idx]}" == "disabled" ]]; do
+  focused_idx=$(( focused_idx + 1 ))
+done
+(( focused_idx >= ${#ITEM_KEYS[@]} )) && focused_idx=0
+
+# ── input loop: arrow-nav + hotkey jumps + enter selects ───────────────────
 choice=''
-read -rsn1 -t 30 choice || choice=''
+while true; do
+  render_menu "${ITEM_KEYS[$focused_idx]}"
+
+  ch=''
+  if ! read -rsn1 -t 60 ch; then
+    # Timeout or EOF (e.g. stdin closed) — cancel without dispatch.
+    choice=''
+    break
+  fi
+
+  if [[ -z "$ch" ]]; then
+    # Enter sometimes arrives as an empty read on some terminals.
+    choice="${ITEM_KEYS[$focused_idx]}"
+    break
+  fi
+
+  if [[ "$ch" == $'\x1b' ]]; then
+    # Possible CSI sequence (arrow keys) — peek the next two bytes briefly.
+    esc2=''
+    read -rsn2 -t 0.05 esc2 || esc2=''
+    case "$esc2" in
+      '[A') focused_idx="$(prev_enabled_idx "$focused_idx")"; continue ;;
+      '[B') focused_idx="$(next_enabled_idx "$focused_idx")"; continue ;;
+      *)    choice=''; break ;;   # bare ESC cancels
+    esac
+  fi
+
+  if [[ "$ch" == $'\r' || "$ch" == $'\n' ]]; then
+    choice="${ITEM_KEYS[$focused_idx]}"
+    break
+  fi
+
+  # Any other byte is treated as a hotkey jump (existing behavior).
+  choice="$ch"
+  break
+done
 
 feedback_key=''
 case "$choice" in
-  C|c|l|'<'|'>'|h|v|z|u|d|s|m|R|X|'?') feedback_key="$choice" ;;
+  C|c|l|p|'<'|'>'|h|v|z|u|d|s|m|R|X|'?') feedback_key="$choice" ;;
   $'\b'|$'\x08') feedback_key='?' ;;
 esac
 if [[ -n "$feedback_key" ]]; then
