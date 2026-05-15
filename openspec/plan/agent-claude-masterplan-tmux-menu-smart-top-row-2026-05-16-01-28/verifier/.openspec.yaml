@@ -1,0 +1,9 @@
+schema: 1
+plan: agent-claude-masterplan-tmux-menu-smart-top-row-2026-05-16-01-28
+role: verifier
+status: draft
+artifacts:
+  prompt: prompt.md
+  proposal: proposal.md
+  tasks: tasks.md
+  spec: specs/verifier/spec.md
