@@ -212,16 +212,22 @@ const BG_DIM: Color = Color::Rgb(13, 17, 23);
 const GLASS: Color = PALETTE_IOS_BG_GLASS;
 const GLASS_EDGE: Color = Color::Rgb(72, 72, 74);
 const GLASS_SHADOW: Color = Color::Rgb(8, 20, 34);
+const GLASS_SHADOW_SOFT: Color = Color::Rgb(10, 14, 19);
 const FG: Color = PALETTE_IOS_FG;
 const FG_MUTED: Color = PALETTE_IOS_FG_MUTED;
 const FG_DIM: Color = Color::Rgb(99, 99, 108);
 const BLUE: Color = PALETTE_IOS_TINT;
 const BLUE_EDGE: Color = Color::Rgb(64, 156, 255);
 const BLUE_CHIP: Color = Color::Rgb(93, 173, 255);
+const BLUE_GLOW: Color = Color::Rgb(15, 58, 114);
+const BLUE_GLOW_DIM: Color = Color::Rgb(10, 33, 67);
 const GREEN: Color = Color::Rgb(48, 209, 88);
 const GREEN_DIM: Color = Color::Rgb(30, 115, 54);
 const GREEN_GLASS: Color = Color::Rgb(28, 69, 42);
+const GREEN_GLASS_PULSE: Color = Color::Rgb(26, 86, 45);
 const ORANGE: Color = Color::Rgb(255, 127, 39);
+const DOCK_MAX_WIDTH: u16 = 242;
+const PILL_GAP: u16 = 1;
 const COUNTERS_PATH: &str = "/tmp/claude-viz/fleet-tab-counters.json";
 const COUNTER_STALE_SECS: u64 = 30;
 
@@ -252,24 +258,18 @@ fn render_design_e_dock(frame: &mut Frame, area: Rect, active: Tab, tick: u64) -
 
     let full_height = area.height >= 3;
     let dock_height = if full_height { 3 } else { 1 };
-    let desired_width = 250_u16;
-    let dock_width = desired_width.min(area.width);
+    let dock_width = DOCK_MAX_WIDTH.min(area.width);
     let dock_x = area.x + area.width.saturating_sub(dock_width) / 2;
     let dock_y = if area.height >= 5 { area.y + 2 } else { area.y };
     let dock_end = dock_x.saturating_add(dock_width);
 
-    if full_height && dock_y + dock_height < area.y + area.height {
-        fill_rect(
-            frame,
-            Rect {
-                x: dock_x + 2,
-                y: dock_y + dock_height,
-                width: dock_width.saturating_sub(4),
-                height: 1,
-            },
-            GLASS_SHADOW,
-        );
-    }
+    let dock_rect = Rect {
+        x: dock_x,
+        y: dock_y,
+        width: dock_width,
+        height: dock_height,
+    };
+    render_dock_shadow(frame, dock_rect, area);
 
     let mut x = dock_x;
     render_logo_pill(
@@ -281,9 +281,9 @@ fn render_design_e_dock(frame: &mut Frame, area: Rect, active: Tab, tick: u64) -
             height: dock_height,
         },
     );
-    x += 36;
+    x += 35;
     render_separator(frame, x, dock_y, dock_height);
-    x += 3;
+    x += 2;
 
     let specs = [
         PillSpec {
@@ -309,6 +309,7 @@ fn render_design_e_dock(frame: &mut Frame, area: Rect, active: Tab, tick: u64) -
     ];
 
     let mut hits = Vec::with_capacity(specs.len());
+    let mut active_rect = None;
     for (idx, spec) in specs.iter().enumerate() {
         let w = spec.width.min(dock_end.saturating_sub(x));
         if w < 10 {
@@ -321,6 +322,9 @@ fn render_design_e_dock(frame: &mut Frame, area: Rect, active: Tab, tick: u64) -
             height: dock_height,
         };
         render_tab_pill(frame, rect, spec.tab, spec.tab == active);
+        if spec.tab == active {
+            active_rect = Some(rect);
+        }
         hits.push(TabHit {
             rect,
             tab: spec.tab,
@@ -328,17 +332,21 @@ fn render_design_e_dock(frame: &mut Frame, area: Rect, active: Tab, tick: u64) -
         });
         x += w;
         if idx + 1 < specs.len() {
-            x += 2;
+            x += PILL_GAP;
         }
         if x >= dock_end {
             break;
         }
     }
 
-    let live_w = 14_u16.min(dock_end.saturating_sub(x).saturating_sub(3));
+    if let Some(rect) = active_rect {
+        render_active_underlight(frame, rect, dock_y + dock_height, area, tick);
+    }
+
+    let live_w = 14_u16.min(dock_end.saturating_sub(x).saturating_sub(2));
     if live_w >= 10 {
-        x += 3;
-        render_separator(frame, x - 2, dock_y, dock_height);
+        x += 2;
+        render_separator(frame, x - 1, dock_y, dock_height);
         render_live_pill(
             frame,
             Rect {
@@ -351,7 +359,9 @@ fn render_design_e_dock(frame: &mut Frame, area: Rect, active: Tab, tick: u64) -
         );
     }
 
-    let focus_y = dock_y.saturating_add(dock_height);
+    let focus_y = dock_y
+        .saturating_add(dock_height)
+        .saturating_add(u16::from(area.height >= 7));
     let focus_h = area
         .y
         .saturating_add(area.height)
@@ -373,6 +383,57 @@ fn render_design_e_dock(frame: &mut Frame, area: Rect, active: Tab, tick: u64) -
     }
 
     hits
+}
+
+fn render_dock_shadow(frame: &mut Frame, dock: Rect, area: Rect) {
+    if dock.height == 0 || dock.width < 10 {
+        return;
+    }
+    let y = dock.y.saturating_add(dock.height);
+    let bottom = area.y.saturating_add(area.height);
+    if y >= bottom {
+        return;
+    }
+    let shadow = Rect {
+        x: dock.x + 3,
+        y,
+        width: dock.width.saturating_sub(6),
+        height: 1,
+    };
+    fill_rect(frame, shadow, GLASS_SHADOW);
+    if y + 1 < bottom && area.height >= 8 {
+        fill_rect(
+            frame,
+            Rect {
+                x: dock.x + 8,
+                y: y + 1,
+                width: dock.width.saturating_sub(16),
+                height: 1,
+            },
+            GLASS_SHADOW_SOFT,
+        );
+    }
+}
+
+fn render_active_underlight(frame: &mut Frame, rect: Rect, y: u16, area: Rect, tick: u64) {
+    if rect.width < 8 || y >= area.y.saturating_add(area.height) {
+        return;
+    }
+    let glow = if tick % 4 < 2 {
+        BLUE_GLOW
+    } else {
+        BLUE_GLOW_DIM
+    };
+    fill_rect(
+        frame,
+        Rect {
+            x: rect.x + 3,
+            y,
+            width: rect.width.saturating_sub(6),
+            height: 1,
+        },
+        glow,
+    );
 }
 
 fn render_ghost_strip(frame: &mut Frame, rect: Rect) {
@@ -460,6 +521,11 @@ fn render_tab_pill(frame: &mut Frame, rect: Rect, tab: Tab, active: bool) {
 fn render_live_pill(frame: &mut Frame, rect: Rect, tick: u64) {
     let pulse_on = tick % 4 < 2;
     let dot = if pulse_on { GREEN } else { GREEN_DIM };
+    let fill = if pulse_on {
+        GREEN_GLASS_PULSE
+    } else {
+        GREEN_GLASS
+    };
     let edge = if pulse_on {
         Color::Rgb(61, 220, 104)
     } else {
@@ -470,18 +536,18 @@ fn render_live_pill(frame: &mut Frame, rect: Rect, tick: u64) {
             " ● ",
             Style::default()
                 .fg(dot)
-                .bg(GREEN_GLASS)
+                .bg(fill)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "live ",
             Style::default()
                 .fg(GREEN)
-                .bg(GREEN_GLASS)
+                .bg(fill)
                 .add_modifier(Modifier::BOLD),
         ),
     ];
-    render_glass_pill(frame, rect, GREEN_GLASS, edge, content);
+    render_glass_pill(frame, rect, fill, edge, content);
 }
 
 fn render_current_focus_card(frame: &mut Frame, rect: Rect, tick: u64) {
