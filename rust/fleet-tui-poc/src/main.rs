@@ -44,6 +44,7 @@ const IOS_CHIP_BG: Color = Color::Rgb(54, 54, 58);
 // Nested group cards inside a palette — slightly lighter than the palette bg,
 // approximates the JSX `rgba(255,255,255,0.04)` block under each group.
 const IOS_CARD_BG: Color = Color::Rgb(44, 44, 48);
+const IOS_GRID_BG: Color = Color::Rgb(32, 32, 35);
 // Icon chip inside the top-hit / group rows — sits on top of cards.
 const IOS_ICON_CHIP: Color = Color::Rgb(70, 70, 76);
 // Tint helpers for the systemBlue top-hit pill so subtitle + badge contrast
@@ -54,8 +55,10 @@ const IOS_FG: Color = Color::Rgb(242, 242, 247);
 const IOS_FG_MUTED: Color = Color::Rgb(160, 160, 170);
 const IOS_FG_FAINT: Color = Color::Rgb(110, 110, 120);
 const IOS_TINT: Color = Color::Rgb(10, 132, 255);
+const IOS_TINT_GLOW: Color = Color::Rgb(15, 58, 114);
 const IOS_DESTRUCTIVE: Color = Color::Rgb(255, 69, 58);
 const IOS_GREEN: Color = Color::Rgb(48, 209, 88);
+const IOS_GREEN_BG: Color = Color::Rgb(10, 36, 21);
 const IOS_ORANGE: Color = Color::Rgb(255, 159, 10);
 const IOS_PURPLE: Color = Color::Rgb(191, 90, 242);
 
@@ -102,15 +105,69 @@ struct SpotlightItem {
 }
 
 const SPOTLIGHT_ITEMS: &[SpotlightItem] = &[
-    SpotlightItem { group: "PANE", icon: "⊟", title: "Horizontal split",   sub: "Split active pane top/bottom",       kbd: "h" },
-    SpotlightItem { group: "PANE", icon: "⊞", title: "Vertical split",     sub: "Split active pane left/right",       kbd: "v" },
-    SpotlightItem { group: "PANE", icon: "⤢", title: "Zoom pane",          sub: "Toggle full-screen for this pane",   kbd: "z" },
-    SpotlightItem { group: "PANE", icon: "⇄", title: "Swap with marked pane", sub: "codex-ricsi-zazrifka ⇄ marked",   kbd: "s" },
-    SpotlightItem { group: "SESSION · codex-admin-kollarrobert", icon: "⧉", title: "Copy whole session", sub: "180 lines · transcript",      kbd: "⇧C" },
-    SpotlightItem { group: "SESSION · codex-admin-kollarrobert", icon: "☰", title: "Queue message",      sub: "Send to agent on next idle",  kbd: "↹" },
-    SpotlightItem { group: "SESSION · codex-admin-kollarrobert", icon: "⌚", title: "Search history…",    sub: "Across all 7 panes",          kbd: "/" },
-    SpotlightItem { group: "FLEET", icon: "+",  title: "Spawn new codex worker", sub: "codex-fleet · new agent",        kbd: "Ctrl N" },
-    SpotlightItem { group: "FLEET", icon: "⎇", title: "Switch worktree…",       sub: "codex-fleet-extract-p1…",         kbd: "Ctrl B" },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⊟",
+        title: "Horizontal split",
+        sub: "Split active pane top/bottom",
+        kbd: "h",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⊞",
+        title: "Vertical split",
+        sub: "Split active pane left/right",
+        kbd: "v",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⤢",
+        title: "Zoom pane",
+        sub: "Toggle full-screen for this pane",
+        kbd: "z",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⇄",
+        title: "Swap with marked pane",
+        sub: "codex-ricsi-zazrifka ⇄ marked",
+        kbd: "s",
+    },
+    SpotlightItem {
+        group: "SESSION · codex-admin-kollarrobert",
+        icon: "⧉",
+        title: "Copy whole session",
+        sub: "180 lines · transcript",
+        kbd: "⇧C",
+    },
+    SpotlightItem {
+        group: "SESSION · codex-admin-kollarrobert",
+        icon: "☰",
+        title: "Queue message",
+        sub: "Send to agent on next idle",
+        kbd: "↹",
+    },
+    SpotlightItem {
+        group: "SESSION · codex-admin-kollarrobert",
+        icon: "⌚",
+        title: "Search history…",
+        sub: "Across all 7 panes",
+        kbd: "/",
+    },
+    SpotlightItem {
+        group: "FLEET",
+        icon: "+",
+        title: "Spawn new codex worker",
+        sub: "codex-fleet · new agent",
+        kbd: "Ctrl N",
+    },
+    SpotlightItem {
+        group: "FLEET",
+        icon: "⎇",
+        title: "Switch worktree…",
+        sub: "codex-fleet-extract-p1…",
+        kbd: "Ctrl B",
+    },
 ];
 
 fn spotlight_filter(query: &str) -> Vec<&'static SpotlightItem> {
@@ -220,11 +277,25 @@ impl App {
         for (r, action) in self.card_buttons.iter().rev() {
             if col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height {
                 let line = match action {
-                    CardAction::Focus(i) => format!("✓ Focus → pane {} (would: tmux select-pane -t codex-fleet:overview.{})", i, i),
-                    CardAction::Queue(i) => format!("✓ Queue → pane {} (would: tmux send-keys after next idle)", i),
-                    CardAction::Pause(i) => format!("✓ Pause → pane {} (would: SIGSTOP codex; SIGCONT on next click)", i),
-                    CardAction::Kill(i)  => format!("✕ Kill  → pane {} (would: tmux kill-pane -t codex-fleet:overview.{})", i, i),
-                    CardAction::NewWorker => "+ New worker (would: spawn a new pane via full-bringup --n+1)".to_string(),
+                    CardAction::Focus(i) => format!(
+                        "✓ Focus → pane {} (would: tmux select-pane -t codex-fleet:overview.{})",
+                        i, i
+                    ),
+                    CardAction::Queue(i) => format!(
+                        "✓ Queue → pane {} (would: tmux send-keys after next idle)",
+                        i
+                    ),
+                    CardAction::Pause(i) => format!(
+                        "✓ Pause → pane {} (would: SIGSTOP codex; SIGCONT on next click)",
+                        i
+                    ),
+                    CardAction::Kill(i) => format!(
+                        "✕ Kill  → pane {} (would: tmux kill-pane -t codex-fleet:overview.{})",
+                        i, i
+                    ),
+                    CardAction::NewWorker => {
+                        "+ New worker (would: spawn a new pane via full-bringup --n+1)".to_string()
+                    }
                 };
                 self.last_action = Some(line);
                 return true;
@@ -313,7 +384,12 @@ fn center_rect(area: Rect, w: u16, h: u16) -> Rect {
     let h = h.min(area.height);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect { x, y, width: w, height: h }
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }
 
 // ───────────────────── codex terminal backdrop (dim) ───────────────────────
@@ -332,7 +408,12 @@ fn render_term_topbar(frame: &mut Frame, area: Rect) {
 
     let tabs: &[(&str, &str, Color, Color)] = &[
         ("◆", "codex-fleet", TERM_ORANGE, Color::Rgb(58, 42, 24)),
-        ("0", "overview", Color::Rgb(157, 199, 255), Color::Rgb(15, 58, 114)),
+        (
+            "0",
+            "overview",
+            Color::Rgb(157, 199, 255),
+            Color::Rgb(15, 58, 114),
+        ),
         ("1", "fleet", TERM_FG_DIM, Color::Rgb(22, 27, 34)),
         ("2", "plan", TERM_FG_DIM, Color::Rgb(22, 27, 34)),
         ("3", "waves", TERM_FG_DIM, Color::Rgb(22, 27, 34)),
@@ -344,7 +425,10 @@ fn render_term_topbar(frame: &mut Frame, area: Rect) {
     for (idx, label, fg, bg) in tabs {
         spans.push(Span::styled(
             format!(" {idx} {label} "),
-            Style::default().fg(*fg).bg(*bg).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(*fg)
+                .bg(*bg)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
     }
@@ -368,10 +452,7 @@ fn render_term_topbar(frame: &mut Frame, area: Rect) {
             width: clock_w,
             height: 1,
         };
-        let clock = Paragraph::new(Span::styled(
-            "14:56:26",
-            Style::default().fg(TERM_FG),
-        ));
+        let clock = Paragraph::new(Span::styled("14:56:26", Style::default().fg(TERM_FG)));
         frame.render_widget(clock, clock_rect);
     }
 }
@@ -380,7 +461,11 @@ fn render_term_pane(frame: &mut Frame, area: Rect, pane: &PaneMock) {
     if area.width < 6 || area.height < 3 {
         return;
     }
-    let border_color = if pane.active { pane.accent } else { TERM_BORDER };
+    let border_color = if pane.active {
+        pane.accent
+    } else {
+        TERM_BORDER
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
@@ -422,7 +507,12 @@ fn render_term_pane(frame: &mut Frame, area: Rect, pane: &PaneMock) {
             let fy = inner.y + inner.height - 1;
             let fw = inner.width;
             let left_w = (fw / 2).min(left.chars().count() as u16);
-            let left_rect = Rect { x: inner.x, y: fy, width: left_w, height: 1 };
+            let left_rect = Rect {
+                x: inner.x,
+                y: fy,
+                width: left_w,
+                height: 1,
+            };
             frame.render_widget(
                 Paragraph::new(Span::styled(left, Style::default().fg(TERM_FG_MUTED))),
                 left_rect,
@@ -446,14 +536,16 @@ fn render_term_pane(frame: &mut Frame, area: Rect, pane: &PaneMock) {
 
 fn render_terminal_backdrop(frame: &mut Frame, area: Rect) {
     // Solid wash
-    frame.render_widget(
-        Block::default().style(Style::default().bg(TERM_BG)),
-        area,
-    );
+    frame.render_widget(Block::default().style(Style::default().bg(TERM_BG)), area);
 
     // Top bar
     let topbar_h = 1u16;
-    let topbar = Rect { x: area.x, y: area.y, width: area.width, height: topbar_h };
+    let topbar = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: topbar_h,
+    };
     render_term_topbar(frame, topbar);
 
     let body = Rect {
@@ -614,13 +706,22 @@ static PANE_RECODEE: PaneMock = PaneMock {
     accent: TERM_BORDER_ACTIVE,
     active: false,
     lines: &[
-        (TERM_FG_MUTED, "83  +printf '%s\\n' \"$*\" >\"$CAP_PROBE_MARKER\""),
+        (
+            TERM_FG_MUTED,
+            "83  +printf '%s\\n' \"$*\" >\"$CAP_PROBE_MARKER\"",
+        ),
         (TERM_FG_MUTED, "84  +shift"),
         (TERM_FG_MUTED, "85  +printf '%s\\n' \"$1\""),
         (TERM_FG_MUTED, "86  +EOF"),
-        (TERM_FG_MUTED, "87  +chmod +x \"$REPO/scripts/codex-fleet/cap-probe.sh\""),
+        (
+            TERM_FG_MUTED,
+            "87  +chmod +x \"$REPO/scripts/codex-fleet/cap-probe.sh\"",
+        ),
         (TERM_FG_MUTED, "89  +rank_candidates() {"),
-        (TERM_FG_MUTED, "90  +  printf '%s\\n' pool-a@example.com probe-a@example.com"),
+        (
+            TERM_FG_MUTED,
+            "90  +  printf '%s\\n' pool-a@example.com probe-a@example.com",
+        ),
         (TERM_FG_MUTED, "91  +}"),
         (TERM_FG, "cap-swap daemon warm-pool tests passed"),
     ],
@@ -652,7 +753,12 @@ fn card_shadow(frame: &mut Frame, card_rect: Rect, area: Rect) {
             let bw = card_rect.width.min(aw_end - bx);
             frame.render_widget(
                 Block::default().style(Style::default().bg(shadow)),
-                Rect { x: bx, y: by, width: bw, height: 1 },
+                Rect {
+                    x: bx,
+                    y: by,
+                    width: bw,
+                    height: 1,
+                },
             );
         }
     }
@@ -666,7 +772,12 @@ fn card_shadow(frame: &mut Frame, card_rect: Rect, area: Rect) {
             let rh = card_rect.height.saturating_sub(1).min(ah_end - ry);
             frame.render_widget(
                 Block::default().style(Style::default().bg(shadow)),
-                Rect { x: rx, y: ry, width: rw, height: rh },
+                Rect {
+                    x: rx,
+                    y: ry,
+                    width: rw,
+                    height: rh,
+                },
             );
         }
     }
@@ -728,16 +839,19 @@ fn render_context_menu(frame: &mut Frame, area: Rect) {
         Span::raw("  "),
         Span::styled(
             "pane 1",
-            Style::default()
-                .fg(IOS_FG)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled("%47", Style::default().fg(IOS_FG_MUTED)),
     ];
     frame.render_widget(
         Paragraph::new(Line::from(title_spans)),
-        Rect { x: inner.x, y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        },
     );
     let live = " ● LIVE ";
     let live_w = live.chars().count() as u16;
@@ -767,7 +881,12 @@ fn render_context_menu(frame: &mut Frame, area: Rect) {
             hairline.clone(),
             Style::default().fg(IOS_HAIRLINE),
         )),
-        Rect { x: inner.x, y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        },
     );
     y += 1;
 
@@ -780,26 +899,29 @@ fn render_context_menu(frame: &mut Frame, area: Rect) {
                     hairline.clone(),
                     Style::default().fg(IOS_HAIRLINE),
                 )),
-                Rect { x: inner.x, y, width: inner.width, height: 1 },
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
             );
             y += 1;
         }
         for (icon, label, sub, destructive) in sec.iter() {
-            let fg = if *destructive { IOS_DESTRUCTIVE } else { IOS_FG };
+            let fg = if *destructive {
+                IOS_DESTRUCTIVE
+            } else {
+                IOS_FG
+            };
             let icon_bg = if *destructive {
                 Color::Rgb(58, 24, 24)
             } else {
                 IOS_ICON_CHIP
             };
             let spans = vec![
-                Span::styled(
-                    format!(" {} ", icon),
-                    Style::default().fg(fg).bg(icon_bg),
-                ),
-                Span::styled(
-                    format!("  {}", label),
-                    Style::default().fg(fg),
-                ),
+                Span::styled(format!(" {} ", icon), Style::default().fg(fg).bg(icon_bg)),
+                Span::styled(format!("  {}", label), Style::default().fg(fg)),
             ];
             let chip_w = 5u16;
             frame.render_widget(
@@ -832,7 +954,11 @@ fn render_context_menu(frame: &mut Frame, area: Rect) {
 fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
     let filtered = spotlight_filter(&app.spotlight_query);
     let total = filtered.len();
-    let selected = if total == 0 { 0 } else { app.spotlight_selected.min(total - 1) };
+    let selected = if total == 0 {
+        0
+    } else {
+        app.spotlight_selected.min(total - 1)
+    };
 
     let w: u16 = 78;
     let h: u16 = 42;
@@ -869,7 +995,10 @@ fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
     let q_spans: Vec<Span> = vec![
         Span::styled("⌕  ", Style::default().fg(IOS_FG_MUTED)),
         Span::styled(query_display.to_string(), query_style),
-        Span::styled(caret_char, Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            caret_char,
+            Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD),
+        ),
     ];
     // Linux-friendly key hint. The Spotlight palette is bound to Ctrl+K
     // (was rendered as ⌘K before this PR). Single ASCII space on each side
@@ -890,7 +1019,12 @@ fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
             cmdk,
             Style::default().fg(IOS_FG_FAINT).bg(IOS_CHIP_BG),
         ))),
-        Rect { x: inner.x + inner.width - cmdk_w, y, width: cmdk_w, height: 1 },
+        Rect {
+            x: inner.x + inner.width - cmdk_w,
+            y,
+            width: cmdk_w,
+            height: 1,
+        },
     );
     y += 1;
 
@@ -901,7 +1035,12 @@ fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
             hairline.clone(),
             Style::default().fg(IOS_HAIRLINE),
         )),
-        Rect { x: inner.x, y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        },
     );
     y += 2; // blank breathing row
 
@@ -934,15 +1073,29 @@ fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
                 .fg(IOS_FG_MUTED)
                 .add_modifier(Modifier::BOLD),
         ))),
-        Rect { x: inner.x, y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        },
     );
     y += 1;
 
     // ── Top-hit pill (3 rows of systemBlue) — always filtered[0] ──────────
     let top = filtered[0];
     let hit_active = selected == 0;
-    let hit_bg = if hit_active { IOS_TINT } else { Color::Rgb(8, 80, 180) };
-    let hit_rect = Rect { x: inner.x, y, width: inner.width, height: 3 };
+    let hit_bg = if hit_active {
+        IOS_TINT
+    } else {
+        Color::Rgb(8, 80, 180)
+    };
+    let hit_rect = Rect {
+        x: inner.x,
+        y,
+        width: inner.width,
+        height: 3,
+    };
     frame.render_widget(
         Block::default().style(Style::default().bg(hit_bg)),
         hit_rect,
@@ -966,7 +1119,12 @@ fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
         ])),
-        Rect { x: hit_rect.x, y: hit_rect.y + 1, width: hit_rect.width, height: 1 },
+        Rect {
+            x: hit_rect.x,
+            y: hit_rect.y + 1,
+            width: hit_rect.width,
+            height: 1,
+        },
     );
     let badge = format!(" tmux · {} ", top.kbd);
     let chev = "  › ";
@@ -1009,14 +1167,23 @@ fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
             format!("      {}", top.sub),
             Style::default().fg(IOS_TINT_SUB).bg(hit_bg),
         ))),
-        Rect { x: hit_rect.x, y: hit_rect.y + 2, width: hit_rect.width, height: 1 },
+        Rect {
+            x: hit_rect.x,
+            y: hit_rect.y + 2,
+            width: hit_rect.width,
+            height: 1,
+        },
     );
     y += 4;
 
     // ── Remaining items (filtered[1..]), grouped, 2 rows each ────────────
     let bottom_guard = inner.y + inner.height - 2;
-    let remaining: Vec<(usize, &SpotlightItem)> =
-        filtered.iter().enumerate().skip(1).map(|(i, it)| (i, *it)).collect();
+    let remaining: Vec<(usize, &SpotlightItem)> = filtered
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(i, it)| (i, *it))
+        .collect();
 
     let mut last_group: Option<&str> = None;
     for (gi, item) in remaining.iter() {
@@ -1026,7 +1193,9 @@ fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
         if last_group != Some(item.group) {
             if last_group.is_some() {
                 y += 1;
-                if y + 3 > bottom_guard { break; }
+                if y + 3 > bottom_guard {
+                    break;
+                }
             }
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
@@ -1035,22 +1204,40 @@ fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
                         .fg(IOS_FG_MUTED)
                         .add_modifier(Modifier::BOLD),
                 ))),
-                Rect { x: inner.x, y, width: inner.width, height: 1 },
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
             );
             y += 1;
             last_group = Some(item.group);
         }
 
         let selected_here = *gi == selected;
-        let row_bg = if selected_here { IOS_TINT_DARK } else { IOS_CARD_BG };
+        let row_bg = if selected_here {
+            IOS_TINT_DARK
+        } else {
+            IOS_CARD_BG
+        };
         let title_fg = if selected_here {
             Color::Rgb(255, 255, 255)
         } else {
             IOS_FG
         };
-        let sub_fg = if selected_here { IOS_TINT_SUB } else { IOS_FG_MUTED };
+        let sub_fg = if selected_here {
+            IOS_TINT_SUB
+        } else {
+            IOS_FG_MUTED
+        };
 
-        let item_rect = Rect { x: inner.x, y, width: inner.width, height: 2 };
+        let item_rect = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 2,
+        };
         frame.render_widget(
             Block::default().style(Style::default().bg(row_bg)),
             item_rect,
@@ -1106,7 +1293,12 @@ fn render_spotlight(frame: &mut Frame, area: Rect, app: &App) {
                 format!("       {}", item.sub),
                 Style::default().fg(sub_fg).bg(row_bg),
             ))),
-            Rect { x: inner.x, y: y + 1, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y: y + 1,
+                width: inner.width,
+                height: 1,
+            },
         );
 
         y += 2;
@@ -1129,14 +1321,25 @@ fn render_spotlight_footer(frame: &mut Frame, inner: Rect) {
     ]);
     frame.render_widget(
         Paragraph::new(footer),
-        Rect { x: inner.x, y: fy, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: fy,
+            width: inner.width,
+            height: 1,
+        },
     );
 }
 
 // ────────────────────────── 3 · iOS action sheet ───────────────────────────
 
 fn render_action_sheet(frame: &mut Frame, area: Rect) {
-    struct Item(&'static str, &'static str, &'static str, Option<Color>, bool);
+    struct Item(
+        &'static str,
+        &'static str,
+        &'static str,
+        Option<Color>,
+        bool,
+    );
     let groups: &[(&str, Option<&str>, &[Item])] = &[
         (
             "Active pane · codex-admin-kollarrobert",
@@ -1209,40 +1412,56 @@ fn render_action_sheet(frame: &mut Frame, area: Rect) {
         if gi > 0 && y < inner.y + inner.height {
             let hairline = "─".repeat(inner.width as usize);
             frame.render_widget(
-                Paragraph::new(Span::styled(
-                    hairline,
-                    Style::default().fg(IOS_HAIRLINE),
-                )),
-                Rect { x: inner.x, y, width: inner.width, height: 1 },
+                Paragraph::new(Span::styled(hairline, Style::default().fg(IOS_HAIRLINE))),
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
             );
             y += 1;
         }
-        if y >= inner.y + inner.height { break; }
+        if y >= inner.y + inner.height {
+            break;
+        }
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!(" {title}"),
-                Style::default()
-                    .fg(IOS_FG)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
             ))),
-            Rect { x: inner.x, y, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            },
         );
         y += 1;
 
         if let Some(cap) = caption {
-            if y >= inner.y + inner.height { break; }
+            if y >= inner.y + inner.height {
+                break;
+            }
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     format!(" {cap}"),
                     Style::default().fg(IOS_FG_MUTED),
                 ))),
-                Rect { x: inner.x, y, width: inner.width, height: 1 },
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
             );
             y += 1;
         }
 
         for it in *items {
-            if y + 1 >= inner.y + inner.height { break; }
+            if y + 1 >= inner.y + inner.height {
+                break;
+            }
             let fg = if it.4 {
                 IOS_DESTRUCTIVE
             } else {
@@ -1260,23 +1479,34 @@ fn render_action_sheet(frame: &mut Frame, area: Rect) {
             // render the glyph centered on row 1.
             frame.render_widget(
                 Block::default().style(Style::default().bg(icon_bg)),
-                Rect { x: inner.x + 1, y, width: 3, height: 2 },
+                Rect {
+                    x: inner.x + 1,
+                    y,
+                    width: 3,
+                    height: 2,
+                },
             );
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     format!(" {} ", it.0),
-                    Style::default().fg(fg).bg(icon_bg).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(fg)
+                        .bg(icon_bg)
+                        .add_modifier(Modifier::BOLD),
                 )),
-                Rect { x: inner.x + 1, y, width: 3, height: 1 },
+                Rect {
+                    x: inner.x + 1,
+                    y,
+                    width: 3,
+                    height: 1,
+                },
             );
 
             // Title on row 1, right of icon chip.
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     it.1,
-                    Style::default()
-                        .fg(fg)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(fg).add_modifier(Modifier::BOLD),
                 ))),
                 Rect {
                     x: inner.x + 6,
@@ -1335,7 +1565,12 @@ fn render_action_sheet(frame: &mut Frame, area: Rect) {
                     label,
                     Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD),
                 )),
-                Rect { x: lx, y: cancel_inner.y, width: lw, height: 1 },
+                Rect {
+                    x: lx,
+                    y: cancel_inner.y,
+                    width: lw,
+                    height: 1,
+                },
             );
         }
     }
@@ -1449,7 +1684,12 @@ fn render_session_switcher(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Header
     let header_h: u16 = 4;
-    let header_rect = Rect { x: area.x, y: area.y, width: area.width, height: header_h };
+    let header_rect = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: header_h,
+    };
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
@@ -1461,14 +1701,9 @@ fn render_session_switcher(frame: &mut Frame, area: Rect, app: &mut App) {
             Line::from(vec![
                 Span::styled(
                     " 6 workers ",
-                    Style::default()
-                        .fg(IOS_FG)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    "· 1 awaiting review",
-                    Style::default().fg(IOS_FG_MUTED),
-                ),
+                Span::styled("· 1 awaiting review", Style::default().fg(IOS_FG_MUTED)),
             ]),
         ]),
         header_rect,
@@ -1501,7 +1736,10 @@ fn render_session_switcher(frame: &mut Frame, area: Rect, app: &mut App) {
     let footer_h: u16 = 2;
     let footer_y = area.y + area.height - footer_h;
     if let Some(msg) = &app.last_action {
-        let truncated: String = msg.chars().take(area.width.saturating_sub(4) as usize).collect();
+        let truncated: String = msg
+            .chars()
+            .take(area.width.saturating_sub(4) as usize)
+            .collect();
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("  ", Style::default()),
@@ -1510,7 +1748,12 @@ fn render_session_switcher(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(IOS_GREEN).add_modifier(Modifier::BOLD),
                 ),
             ])),
-            Rect { x: area.x, y: footer_y, width: area.width, height: 1 },
+            Rect {
+                x: area.x,
+                y: footer_y,
+                width: area.width,
+                height: 1,
+            },
         );
     }
     let footer = Line::from(vec![
@@ -1528,7 +1771,12 @@ fn render_session_switcher(frame: &mut Frame, area: Rect, app: &mut App) {
     ]);
     frame.render_widget(
         Paragraph::new(footer),
-        Rect { x: area.x, y: footer_y + 1, width: area.width, height: 1 },
+        Rect {
+            x: area.x,
+            y: footer_y + 1,
+            width: area.width,
+            height: 1,
+        },
     );
 
     // Card strip — cap height at ~70% of available vertical so cards read
@@ -1553,7 +1801,12 @@ fn render_session_switcher(frame: &mut Frame, area: Rect, app: &mut App) {
         if x + card_w > area.x + area.width {
             break;
         }
-        let rect = Rect { x, y: strip_y, width: card_w, height: strip_h };
+        let rect = Rect {
+            x,
+            y: strip_y,
+            width: card_w,
+            height: strip_h,
+        };
         render_session_card(frame, rect, s, i, app);
     }
 }
@@ -1565,15 +1818,19 @@ fn render_session_card(
     card_index: usize,
     app: &mut App,
 ) {
-    let border = if s.active { IOS_TINT } else { IOS_HAIRLINE_STRONG };
+    let border = if s.active {
+        IOS_TINT
+    } else {
+        IOS_HAIRLINE_STRONG
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(
-            Style::default()
-                .fg(border)
-                .add_modifier(if s.active { Modifier::BOLD } else { Modifier::empty() }),
-        )
+        .border_style(Style::default().fg(border).add_modifier(if s.active {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        }))
         .style(Style::default().bg(s.tint));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
@@ -1591,7 +1848,12 @@ fn render_session_card(
     ]);
     frame.render_widget(
         Paragraph::new(header),
-        Rect { x: inner.x, y: inner.y, width: inner.width.saturating_sub(11), height: 1 },
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width.saturating_sub(11),
+            height: 1,
+        },
     );
     if let Some(badge) = s.badge {
         let bw = badge.chars().count() as u16 + 2;
@@ -1621,22 +1883,39 @@ fn render_session_card(
     }
 
     // Name
-    if inner.height < 3 { return; }
+    if inner.height < 3 {
+        return;
+    }
     let name = Line::from(Span::styled(
         s.name,
         Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
     ));
     frame.render_widget(
         Paragraph::new(name),
-        Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: inner.y + 1,
+            width: inner.width,
+            height: 1,
+        },
     );
 
     // Hairline
-    if inner.height < 5 { return; }
+    if inner.height < 5 {
+        return;
+    }
     let hairline = "─".repeat(inner.width as usize);
     frame.render_widget(
-        Paragraph::new(Span::styled(hairline.clone(), Style::default().fg(IOS_HAIRLINE))),
-        Rect { x: inner.x, y: inner.y + 2, width: inner.width, height: 1 },
+        Paragraph::new(Span::styled(
+            hairline.clone(),
+            Style::default().fg(IOS_HAIRLINE),
+        )),
+        Rect {
+            x: inner.x,
+            y: inner.y + 2,
+            width: inner.width,
+            height: 1,
+        },
     );
 
     // Task (wrapped, up to 3 lines)
@@ -1646,8 +1925,8 @@ fn render_session_card(
         width: inner.width,
         height: inner.height.saturating_sub(8).min(3),
     };
-    let task = Paragraph::new(Span::styled(s.task, Style::default().fg(IOS_FG)))
-        .wrap(Wrap { trim: true });
+    let task =
+        Paragraph::new(Span::styled(s.task, Style::default().fg(IOS_FG))).wrap(Wrap { trim: true });
     frame.render_widget(task, task_rect);
 
     // Footer rows: model / context / runtime
@@ -1690,7 +1969,12 @@ fn render_session_card(
             ]);
             frame.render_widget(
                 Paragraph::new(row),
-                Rect { x: inner.x, y: yy, width: inner.width, height: 1 },
+                Rect {
+                    x: inner.x,
+                    y: yy,
+                    width: inner.width,
+                    height: 1,
+                },
             );
         }
     }
@@ -1706,32 +1990,60 @@ fn render_session_card(
         let focus_w: u16 = 9;
         let icon_w: u16 = 3;
 
-        let focus_rect = Rect { x: inner.x, y: action_y, width: focus_w, height: 1 };
+        let focus_rect = Rect {
+            x: inner.x,
+            y: action_y,
+            width: focus_w,
+            height: 1,
+        };
         frame.render_widget(
             Paragraph::new(Span::styled(
                 " ❯ Focus ",
                 Style::default()
-                    .fg(if s.active { Color::Rgb(255, 255, 255) } else { IOS_FG })
+                    .fg(if s.active {
+                        Color::Rgb(255, 255, 255)
+                    } else {
+                        IOS_FG
+                    })
                     .bg(if s.active { IOS_TINT } else { IOS_CHIP_BG })
                     .add_modifier(Modifier::BOLD),
             )),
             focus_rect,
         );
-        app.card_buttons.push((focus_rect, CardAction::Focus(card_index)));
+        app.card_buttons
+            .push((focus_rect, CardAction::Focus(card_index)));
 
-        let queue_rect = Rect { x: inner.x + focus_w + 1, y: action_y, width: icon_w, height: 1 };
+        let queue_rect = Rect {
+            x: inner.x + focus_w + 1,
+            y: action_y,
+            width: icon_w,
+            height: 1,
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(" ☰ ", Style::default().fg(IOS_FG).bg(IOS_CHIP_BG))),
+            Paragraph::new(Span::styled(
+                " ☰ ",
+                Style::default().fg(IOS_FG).bg(IOS_CHIP_BG),
+            )),
             queue_rect,
         );
-        app.card_buttons.push((queue_rect, CardAction::Queue(card_index)));
+        app.card_buttons
+            .push((queue_rect, CardAction::Queue(card_index)));
 
-        let pause_rect = Rect { x: inner.x + focus_w + 1 + icon_w + 1, y: action_y, width: icon_w, height: 1 };
+        let pause_rect = Rect {
+            x: inner.x + focus_w + 1 + icon_w + 1,
+            y: action_y,
+            width: icon_w,
+            height: 1,
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(" ‖ ", Style::default().fg(IOS_FG).bg(IOS_CHIP_BG))),
+            Paragraph::new(Span::styled(
+                " ‖ ",
+                Style::default().fg(IOS_FG).bg(IOS_CHIP_BG),
+            )),
             pause_rect,
         );
-        app.card_buttons.push((pause_rect, CardAction::Pause(card_index)));
+        app.card_buttons
+            .push((pause_rect, CardAction::Pause(card_index)));
 
         let kill_rect = Rect {
             x: inner.x + inner.width.saturating_sub(icon_w),
@@ -1742,11 +2054,14 @@ fn render_session_card(
         frame.render_widget(
             Paragraph::new(Span::styled(
                 " ✕ ",
-                Style::default().fg(IOS_DESTRUCTIVE).bg(Color::Rgb(58, 24, 24)),
+                Style::default()
+                    .fg(IOS_DESTRUCTIVE)
+                    .bg(Color::Rgb(58, 24, 24)),
             )),
             kill_rect,
         );
-        app.card_buttons.push((kill_rect, CardAction::Kill(card_index)));
+        app.card_buttons
+            .push((kill_rect, CardAction::Kill(card_index)));
     }
 }
 
@@ -1829,8 +2144,8 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
     // 3 columns x 2 rows grid; the 6th cell sits empty. The geometry mirrors
     // design F's compact command-K section picker: tight cards, visible row
     // hairlines, a dense footer, and a bright active-card border.
-    let card_w: u16 = 22;
-    let card_h: u16 = 8;
+    let card_w: u16 = 24;
+    let card_h: u16 = 9;
     let gap: u16 = 1;
     let cols: u16 = 3;
     let rows: u16 = 2;
@@ -1894,7 +2209,7 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
             height: 1,
         },
     );
-    let close_x = inner.x + inner.width.saturating_sub(6);
+    let close_x = inner.x + inner.width.saturating_sub(8);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             " × ",
@@ -1909,13 +2224,13 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            " K ",
+            " ⌘ K ",
             Style::default().fg(IOS_FG_FAINT).bg(IOS_CHIP_BG),
         ))),
         Rect {
             x: close_x,
             y: inner.y + 1,
-            width: 3,
+            width: 5,
             height: 1,
         },
     );
@@ -1937,6 +2252,16 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
 
     // ── Card grid ─────────────────────────────────────────────────────────
     let grid_y0 = inner.y + title_block_h + 1; // +1 breathing row under hairline
+    let grid_rect = Rect {
+        x: inner.x,
+        y: grid_y0.saturating_sub(1),
+        width: card_w * cols + gap * (cols - 1),
+        height: grid_h + 2,
+    };
+    frame.render_widget(
+        Block::default().style(Style::default().bg(IOS_GRID_BG)),
+        grid_rect,
+    );
     for (idx, sec) in SECTIONS.iter().enumerate() {
         let col = (idx as u16) % cols;
         let row = (idx as u16) / cols;
@@ -1949,20 +2274,12 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
             height: card_h,
         };
         let is_active = active_window.map(|w| w == sec.window).unwrap_or(idx == 0);
+        if is_active {
+            render_jump_card_glow(frame, cr, area);
+        }
         render_jump_card(frame, cr, sec, is_active);
     }
-    let row_hairline_y = grid_y0 + card_h;
-    if row_hairline_y < inner.y + inner.height {
-        frame.render_widget(
-            Paragraph::new(Span::styled(hairline, Style::default().fg(IOS_HAIRLINE))),
-            Rect {
-                x: inner.x,
-                y: row_hairline_y,
-                width: inner.width,
-                height: 1,
-            },
-        );
-    }
+    render_jump_grid_lines(frame, grid_rect, card_w, card_h, gap, cols);
 
     let shortcuts_y = grid_y0 + grid_h + 1;
     render_shortcuts_panel(
@@ -2013,7 +2330,7 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
                 live,
                 Style::default()
                     .fg(IOS_GREEN)
-                    .bg(Color::Rgb(10, 36, 21))
+                    .bg(IOS_GREEN_BG)
                     .add_modifier(Modifier::BOLD),
             ))),
             Rect {
@@ -2024,6 +2341,70 @@ fn render_section_jump(frame: &mut Frame, area: Rect, active_window: Option<&str
             },
         );
     }
+}
+
+fn render_jump_grid_lines(
+    frame: &mut Frame,
+    grid: Rect,
+    card_w: u16,
+    card_h: u16,
+    gap: u16,
+    cols: u16,
+) {
+    if grid.width == 0 || grid.height == 0 {
+        return;
+    }
+
+    let line_style = Style::default().fg(IOS_HAIRLINE).bg(IOS_GRID_BG);
+    let y = grid.y + card_h + 1;
+    if y < grid.y + grid.height {
+        frame.render_widget(
+            Paragraph::new(Span::styled("─".repeat(grid.width as usize), line_style)),
+            Rect {
+                x: grid.x,
+                y,
+                width: grid.width,
+                height: 1,
+            },
+        );
+    }
+
+    for col in 1..cols {
+        let x = grid.x + col * card_w + (col - 1) * gap;
+        if x >= grid.x + grid.width {
+            break;
+        }
+        let rule = Rect {
+            x,
+            y: grid.y,
+            width: gap.max(1),
+            height: grid.height,
+        };
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled("│", line_style));
+                rule.height as usize
+            ]),
+            rule,
+        );
+    }
+}
+
+fn render_jump_card_glow(frame: &mut Frame, rect: Rect, area: Rect) {
+    let bottom = area.y + area.height;
+    let glow_y = rect.y + rect.height;
+    if glow_y >= bottom || rect.width < 8 {
+        return;
+    }
+    frame.render_widget(
+        Block::default().style(Style::default().bg(IOS_TINT_GLOW)),
+        Rect {
+            x: rect.x + 2,
+            y: glow_y,
+            width: rect.width.saturating_sub(4),
+            height: 1,
+        },
+    );
 }
 
 fn render_shortcuts_panel(
@@ -2068,7 +2449,9 @@ fn render_shortcuts_panel(
 
         let mut spans: Vec<Span> = Vec::new();
         for sec in chunk {
-            let selected = active_window.map(|w| w == sec.window).unwrap_or(sec.key == '1');
+            let selected = active_window
+                .map(|w| w == sec.window)
+                .unwrap_or(sec.key == '1');
             let target = format!("{session}:{}", sec.window);
             let (key_fg, key_bg, target_fg) = if selected {
                 (IOS_FG, IOS_TINT, IOS_FG)
@@ -2077,7 +2460,10 @@ fn render_shortcuts_panel(
             };
             spans.push(Span::styled(
                 format!(" {} ", sec.key),
-                Style::default().fg(key_fg).bg(key_bg).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(key_fg)
+                    .bg(key_bg)
+                    .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(
                 format!(" {target:<20}"),
@@ -2158,7 +2544,7 @@ fn render_jump_card(frame: &mut Frame, rect: Rect, sec: &Section, active: bool) 
                     live,
                     Style::default()
                         .fg(IOS_GREEN)
-                        .bg(Color::Rgb(10, 36, 21))
+                        .bg(IOS_GREEN_BG)
                         .add_modifier(Modifier::BOLD),
                 ))),
                 Rect {
@@ -2251,7 +2637,11 @@ fn render_validation_harness(frame: &mut Frame, area: Rect, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints([Constraint::Length(2), Constraint::Length(1), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
         .split(inner);
 
     let chip_spans = ios_chip("working", IOS_TINT);
@@ -2445,7 +2835,9 @@ impl App {
                     self.spotlight_selected = self.spotlight_selected.saturating_sub(1);
                 }
                 Key::Down => {
-                    let max = spotlight_filter(&self.spotlight_query).len().saturating_sub(1);
+                    let max = spotlight_filter(&self.spotlight_query)
+                        .len()
+                        .saturating_sub(1);
                     self.spotlight_selected = (self.spotlight_selected + 1).min(max);
                 }
                 Key::Enter => {}
@@ -2526,7 +2918,11 @@ impl Model<CrosstermTerminalAdapter> {
             .map_err(|e| io::Error::other(format!("init app: {e:?}")))?;
         let terminal =
             Self::init_adapter().map_err(|e| io::Error::other(format!("init adapter: {e:?}")))?;
-        Ok(Self { app, terminal, redraw: true })
+        Ok(Self {
+            app,
+            terminal,
+            redraw: true,
+        })
     }
 
     fn init_app(
@@ -2672,6 +3068,7 @@ mod tests {
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("codex-fleet"));
         assert!(rendered.contains("Jump to section"));
+        assert!(rendered.contains("⌘ K"));
         assert!(rendered.contains("Overview"));
         assert!(rendered.contains("LIVE"));
         assert!(rendered.contains("ACTIVE SHORTCUTS"));
@@ -2686,8 +3083,8 @@ fn main() -> io::Result<()> {
     let mut overlay = Overlay::None;
     let mut single_shot = false;
     let mut pane_id: Option<String> = None;
-    let mut session: String = std::env::var("CODEX_FLEET_TMUX_SESSION")
-        .unwrap_or_else(|_| "codex-fleet".to_string());
+    let mut session: String =
+        std::env::var("CODEX_FLEET_TMUX_SESSION").unwrap_or_else(|_| "codex-fleet".to_string());
     let mut active_section: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
