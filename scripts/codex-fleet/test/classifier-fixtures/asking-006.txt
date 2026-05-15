@@ -1,0 +1,4 @@
+  Plan mode active. Paste the resolved branching decision below.
+  When ready, type your answer and press enter.
+  Need clarification on which sub-task to claim next.
+❯

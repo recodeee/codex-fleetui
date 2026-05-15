@@ -1,0 +1,7 @@
+> POST https://api.openai.com/v1/responses
+< 429 Too Many Requests
+< x-ratelimit-remaining-requests: 0
+< retry-after: 3600
+  cap-swap-daemon did not yet promote a replacement account
+  retrying in 60s
+Worked for 4m 18s

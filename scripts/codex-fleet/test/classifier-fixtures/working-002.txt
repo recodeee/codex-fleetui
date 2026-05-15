@@ -1,0 +1,5 @@
+  running cargo build -p fleet-tab-strip
+   Compiling fleet-tab-strip v0.1.0 (/home/deadpool/Documents/codex-fleet/rust/fleet-tab-strip)
+   Compiling fleet-ui v0.1.0 (/home/deadpool/Documents/codex-fleet/rust/fleet-ui)
+   Compiling fleet-waves v0.1.0 (/home/deadpool/Documents/codex-fleet/rust/fleet-waves)
+Working (1m 18s • ↑ 12.4k tokens • esc to interrupt)

@@ -1,0 +1,3 @@
+  About to delete /tmp/codex-fleet/agent-claude-tui-lane-1 sandbox (8.4 MB).
+  This action cannot be undone.
+  Proceed? [y/N]

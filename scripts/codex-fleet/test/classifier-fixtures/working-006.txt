@@ -1,0 +1,4 @@
+[2m[38;5;240m  generating diff[0m
+[2m[38;5;240m  applying patch[0m
+[2m[38;5;240m  staging files[0m
+[1;36mWorking[0m (8s • ↑ 1.4k tokens • esc to interrupt)

@@ -1,0 +1,6 @@
+  applying patch to rust/fleet-ui/src/rail.rs
+  applying patch to rust/fleet-ui/src/glass.rs
+  applying patch to rust/fleet-ui/src/menu.rs
+  staged 3 files
+  running shellcheck on scripts/codex-fleet/lib/ios-menu.sh
+Working (15s • ↑ 2.8k tokens • esc to interrupt)

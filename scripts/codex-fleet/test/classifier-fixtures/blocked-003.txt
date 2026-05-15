@@ -1,0 +1,5 @@
+  attempting to claim sub-task in plan codex-fleet-tui-improvements-2026-05-15
+  PLAN_SUBTASK_NOT_FOUND: no claimable sub-task matches agent claude-fleet-3
+  see openspec/plans/codex-fleet-tui-improvements-2026-05-15/plan.json
+  BLOCKED preflight: cannot claim sub-task without a valid plan entry
+  next: operator must add a claimable sub-task for this agent
