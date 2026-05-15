@@ -10,8 +10,8 @@
 //!  cap   label    cap
 //! ```
 //!
-//! - Caps (`◖` / `◗`) render with `bg = IOS_BG` and `fg = <kind colour>`
-//!   so they punch a coloured half-circle out of the black background.
+//! - Caps (`◖` / `◗`) render with `bg = IOS_BG_SOLID` and `fg = <kind colour>`
+//!   so they punch a coloured half-circle out of the base surface.
 //! - Label (` ● <text> `) gets `bg = <kind colour>`, `fg = IOS_FG`, bold.
 //!
 //! The dot glyph and width-padding match the bash regression in
@@ -24,7 +24,7 @@ use ratatui::text::Span;
 const CAP_LEFT: &str = "◖";
 const CAP_RIGHT: &str = "◗";
 
-const BG: Color = Color::Rgb(0, 0, 0);
+const BG: Color = IOS_BG_SOLID;
 
 /// The status of a fleet pane (worker), as classified by `fleet-data::panes`.
 /// Each kind gets a fixed colour + glyph so the bash regression suite's
@@ -35,6 +35,7 @@ pub enum ChipKind {
     Idle,
     Polling,
     Done,
+    Live,
     Blocked,
     Capped,
     Approval,
@@ -50,6 +51,7 @@ impl ChipKind {
             ChipKind::Idle => IOS_CHIP_BG,
             ChipKind::Polling => IOS_ORANGE,
             ChipKind::Done => IOS_GREEN,
+            ChipKind::Live => IOS_GREEN,
             ChipKind::Blocked | ChipKind::Capped => IOS_DESTRUCTIVE,
             ChipKind::Approval => IOS_YELLOW,
             ChipKind::Boot => IOS_PURPLE,
@@ -77,6 +79,7 @@ impl ChipKind {
             ChipKind::Idle => "idle   ",
             ChipKind::Polling => "polling",
             ChipKind::Done => "done   ",
+            ChipKind::Live => "live   ",
             ChipKind::Blocked => "blocked",
             ChipKind::Capped => "capped ",
             ChipKind::Approval => "review ",
@@ -128,6 +131,7 @@ mod tests {
             ChipKind::Idle,
             ChipKind::Polling,
             ChipKind::Done,
+            ChipKind::Live,
             ChipKind::Blocked,
             ChipKind::Capped,
             ChipKind::Approval,
@@ -141,6 +145,11 @@ mod tests {
     #[test]
     fn working_chip_uses_systemblue() {
         assert_eq!(ChipKind::Working.bg(), IOS_TINT);
+    }
+
+    #[test]
+    fn live_chip_uses_systemgreen() {
+        assert_eq!(ChipKind::Live.bg(), IOS_GREEN);
     }
 
     #[test]
