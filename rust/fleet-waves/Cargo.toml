@@ -9,6 +9,9 @@ publish = false
 name = "fleet-waves"
 path = "src/main.rs"
 
+[lib]
+path = "src/ios_page_design.rs"
+
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
@@ -17,3 +20,6 @@ fleet-data = { path = "../fleet-data" }
 # tuirealm — fourth binary ported (fleet-tab-strip #50, fleet-state #52,
 # fleet-plan-tree #53, fleet-waves this PR).
 tuirealm = "4.1"
+
+[dev-dependencies]
+insta = "1"
