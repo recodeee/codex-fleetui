@@ -123,15 +123,15 @@ list_plans_with_available_work() {
 }
 
 # ── idle-worker detection ───────────────────────────────────────────────────
-# Returns one pane_id per line for panes that look idle. Skips:
-#   - the fleet-tab-strip header pane (panel == [codex-fleet-tab-strip])
-#   - panes without an @panel option (uninitialised / shell)
-#   - panes whose tail does not match any IDLE_PATTERN
+# Returns one pane_id per line for panes that look idle. Skips panes without an
+# @panel option (uninitialised / shell) and panes whose tail does not match any
+# IDLE_PATTERN. The fleet-tab-strip header pane was removed in
+# codex-fleet-glass-menu-drop-tabstrip-2026-05-15, so every labelled pane is now
+# eligible for idle-worker detection.
 list_idle_workers() {
   tmux list-panes -t "$SESSION:$WINDOW" -F '#{pane_id}|#{@panel}' 2>/dev/null \
     | while IFS='|' read -r pid panel; do
         [ -z "$panel" ] && continue
-        [ "$panel" = "[codex-fleet-tab-strip]" ] && continue
         # Capture the last ~25 lines of the pane and grep for idle markers.
         # `tail -25` keeps the check cheap — workers print the same idle
         # status repeatedly so the signal stays in the recent window.
