@@ -306,7 +306,7 @@ bind-key   -T root MouseDown3Pane \
       select-pane -t = ; \
       display-menu -O -x M -y M \
         -T "#[align=centre,bold,fg=#FFFFFF,bg=#1C1C1E]  pane #{pane_index} · #{pane_id}  " \
-        "#{?#{!=:#{buffer_size},0},#[fg=#34C759]✓  #[fg=#FFFFFF,bold]Copy selection #[fg=#8E8E93,italics]\"#{=/22/...:buffer_sample}\",-}" "" "run-shell \"tmux save-buffer - | bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-clip-dual.sh && tmux display-message -d 1200 '✓  selection copied'\"" \
+        "#{?#{!=:#{buffer_size},0},#[fg=#34C759]✓  #[fg=#FFFFFF,bold]Copy selection #[fg=#8E8E93,italics]\"#{=/22/...:buffer_sample}\",-}" "" "run-shell \"tmux save-buffer - | bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-clip-dual.sh && tmux send-keys -X -t '#{pane_id}' cancel 2>/dev/null ; tmux display-message -d 1200 '✓  selection copied'\"" \
         "#[fg=#34C759]↳  #[fg=#FFFFFF]Paste clipboard"    p  "run-shell \"wl-paste --no-newline | tmux load-buffer - && tmux paste-buffer -d -p -t '#{pane_id}'\"" \
         "" "" "" \
         "#[fg=#AEAEB2]▣  #[fg=#FFFFFF]Copy whole pane"    C  "run-shell \"tmux capture-pane -t '#{pane_id}' -p -S - -E - | bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-clip-dual.sh && tmux display-message -d 1200 '▣  pane history copied'\"" \
@@ -428,7 +428,14 @@ if [[ -n "$_clip_cmd" ]]; then
   # Drag-end fires inside copy-mode-vi (MouseDrag1Pane enters copy-mode -M
   # for non-mouse-grabbing panes). Pipe the selection through the clipboard
   # tool then cancel copy-mode so the user is back at the prompt.
-  tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$_clip_cmd" 2>/dev/null || true
+  # MouseDragEnd1Pane uses `copy-pipe-no-clear` (not -and-cancel) so the
+  # visual highlight persists after the user releases the mouse — they
+  # can right-click → "Copy selection" without losing what they selected.
+  # Esc / new drag dismisses the highlight; the right-click "Copy selection"
+  # row also runs `send-keys -X cancel` after copying for a clean exit.
+  # Explicit commit gestures (Enter, y, double-click, triple-click) stay on
+  # `copy-pipe-and-cancel` because the user has already signaled "I'm done".
+  tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-no-clear "$_clip_cmd" 2>/dev/null || true
   # `Enter` and `y` (vi yank) — also pipe through clipboard.
   tmux bind-key -T copy-mode-vi Enter             send-keys -X copy-pipe-and-cancel "$_clip_cmd" 2>/dev/null || true
   tmux bind-key -T copy-mode-vi y                 send-keys -X copy-pipe-and-cancel "$_clip_cmd" 2>/dev/null || true
