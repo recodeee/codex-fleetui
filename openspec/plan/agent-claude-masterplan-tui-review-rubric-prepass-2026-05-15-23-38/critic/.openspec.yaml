@@ -1,0 +1,9 @@
+schema: 1
+plan: agent-claude-masterplan-tui-review-rubric-prepass-2026-05-15-23-38
+role: critic
+status: draft
+artifacts:
+  prompt: prompt.md
+  proposal: proposal.md
+  tasks: tasks.md
+  spec: specs/critic/spec.md
