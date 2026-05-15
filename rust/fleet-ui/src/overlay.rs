@@ -163,24 +163,18 @@ impl<'a> ContextMenu<'a> {
             },
         );
 
-        let Some((text, _fg, bg)) = self.badge else {
+        let Some((text, fg, bg)) = self.badge else {
             return;
         };
         let badge = format!(" {} ", text.trim());
         let badge_w = visible_width(&badge);
         if inner.width > badge_w {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    badge,
-                    Style::default().fg(bg),
-                ))),
-                Rect {
-                    x: inner.x + inner.width - badge_w,
-                    y,
-                    width: badge_w,
-                    height: 1,
-                },
-            );
+            frame.render_widget(Paragraph::new(Line::from(badge_chip(text, fg, bg))), Rect {
+                x: inner.x + inner.width - badge_w,
+                y,
+                width: badge_w,
+                height: 1,
+            });
         }
     }
 
@@ -322,6 +316,16 @@ fn status_dot(color: Color) -> Span<'static> {
     Span::styled("●", Style::default().fg(color))
 }
 
+fn badge_chip(text: &str, fg: Color, bg: Color) -> Span<'static> {
+    Span::styled(
+        format!(" {} ", text.trim()),
+        Style::default()
+            .fg(fg)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
 fn render_hairline(frame: &mut Frame, inner: Rect, y: u16) {
     let hairline = "─".repeat(inner.width as usize);
     frame.render_widget(
@@ -364,5 +368,13 @@ mod tests {
         let r = centered_overlay(area, 20, 20);
         // 80-20 = 60; 60/2 = 30; 10+30 = 40
         assert_eq!(r, Rect::new(40, 40, 20, 20));
+    }
+
+    #[test]
+    fn badge_chip_uses_requested_colors() {
+        let span = badge_chip("● LIVE", Color::Rgb(10, 36, 21), IOS_GREEN);
+        assert_eq!(span.content, " ● LIVE ");
+        assert_eq!(span.style.fg, Some(Color::Rgb(10, 36, 21)));
+        assert_eq!(span.style.bg, Some(IOS_GREEN));
     }
 }
