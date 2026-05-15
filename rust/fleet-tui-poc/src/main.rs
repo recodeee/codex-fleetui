@@ -208,6 +208,12 @@ struct App {
     // menu is opened. Zoom/swap rows are disabled when these don't hold.
     ctx_panes_in_win: u32,
     ctx_marked_anywhere: bool,
+    // Captured `tmux show-buffer` preview (~30 chars + ellipsis) when the
+    // context menu is opened. When `Some(_)`, a smart "Copy selection ·
+    // <preview>…" row is prepended to the menu and the cursor lands on it.
+    // Mirrors the BUFFER_SIZE/BUFFER_SAMPLE probe in
+    // scripts/codex-fleet/bin/pane-context-menu.sh.
+    ctx_buffer_preview: Option<String>,
     spotlight_query: String,
     spotlight_selected: usize,
     spotlight_tick: u64,
@@ -243,6 +249,7 @@ impl App {
             // ladder is conservative when the tmux probe fails / is skipped.
             ctx_panes_in_win: 1,
             ctx_marked_anywhere: false,
+            ctx_buffer_preview: None,
             spotlight_query: String::new(),
             spotlight_selected: 0,
             spotlight_tick: 0,
@@ -332,8 +339,34 @@ impl App {
         };
         self.ctx_panes_in_win = panes;
         self.ctx_marked_anywhere = marked;
+        // Probe `tmux show-buffer` for a recent selection. When non-empty, a
+        // smart "Copy selection · <preview>…" row is prepended to the menu
+        // and the focus seeker below lands on it (idx 0). Mirrors the bash
+        // sister's BUFFER_SIZE / BUFFER_SAMPLE probe.
+        self.ctx_buffer_preview = std::process::Command::new("tmux")
+            .args(["show-buffer"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if !o.status.success() {
+                    return None;
+                }
+                let raw = String::from_utf8_lossy(&o.stdout);
+                let trimmed: String = raw.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                // Cap preview at ~30 chars + ellipsis so the row stays inside
+                // the 48-cell menu width.
+                let preview: String = trimmed.chars().take(30).collect();
+                Some(preview)
+            });
         // Drop focus on the first non-disabled item.
-        let items = context_menu_items(self.ctx_panes_in_win, self.ctx_marked_anywhere);
+        let items = context_menu_items(
+            self.ctx_panes_in_win,
+            self.ctx_marked_anywhere,
+            self.ctx_buffer_preview.as_deref(),
+        );
         self.ctx_selected_idx = items
             .iter()
             .position(|it| !it.disabled)
@@ -857,10 +890,12 @@ fn card_shadow(frame: &mut Frame, card_rect: Rect, area: Rect) {
 /// One row in the iOS context menu, flattened to a flat list so the renderer
 /// and the arrow-nav handler can both iterate the same sequence without
 /// reproducing the section structure twice.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct CtxItem {
     icon: &'static str,
-    label: &'static str,
+    /// Owned so the smart top row can carry a runtime "Copy selection ·
+    /// <preview>…" string built from `tmux show-buffer`.
+    label: String,
     sub: &'static str,
     destructive: bool,
     /// Bash sister disables zoom/swap when single-pane / nothing marked; the
@@ -877,33 +912,62 @@ struct CtxItem {
 /// menu in scripts/codex-fleet/bin/pane-context-menu.sh:
 ///   - zoom/swap-up/swap-down: panes_in_window > 1
 ///   - swap-with-marked:       marked_anywhere
-fn context_menu_items(panes_in_win: u32, marked_anywhere: bool) -> Vec<CtxItem> {
+///
+/// When `buffer_preview` is `Some(_)`, a smart "Copy selection · <preview>…"
+/// row is prepended at index 0 in its own section so the cursor lands on it
+/// and the operator can copy the existing tmux selection with a single Enter.
+/// The hotkey is `S` (capital — the lowercase `s` stays bound to swap-with-
+/// marked, matching the bash sister).
+fn context_menu_items(
+    panes_in_win: u32,
+    marked_anywhere: bool,
+    buffer_preview: Option<&str>,
+) -> Vec<CtxItem> {
     let multi = panes_in_win > 1;
     let swap_marked = marked_anywhere;
-    vec![
-        CtxItem { icon: "⧉", label: "Copy whole session", sub: "C", destructive: false, disabled: false, section: 0 },
-        CtxItem { icon: "▤", label: "Copy visible",       sub: "c", destructive: false, disabled: false, section: 0 },
-        CtxItem { icon: "≡", label: "Copy this line",     sub: "l", destructive: false, disabled: false, section: 0 },
+    let mut out: Vec<CtxItem> = Vec::new();
+    if let Some(preview) = buffer_preview {
+        out.push(CtxItem {
+            icon: "✓",
+            label: format!("Copy selection · {}…", preview),
+            sub: "S",
+            destructive: false,
+            disabled: false,
+            // Section -1 conceptually — use a distinct u8 so the renderer
+            // draws a hairline between this smart row and the existing copy
+            // block below.
+            section: 9,
+        });
+    }
+    out.extend(vec![
+        CtxItem { icon: "⧉", label: "Copy whole session".into(), sub: "C", destructive: false, disabled: false, section: 0 },
+        CtxItem { icon: "▤", label: "Copy visible".into(),       sub: "c", destructive: false, disabled: false, section: 0 },
+        CtxItem { icon: "≡", label: "Copy this line".into(),     sub: "l", destructive: false, disabled: false, section: 0 },
         // Paste row sits as its own one-row section between copy and scroll
         // so it visually pairs with the copy block (matches the bash menu).
-        CtxItem { icon: "⤓", label: "Paste from clipboard", sub: "p", destructive: false, disabled: false, section: 1 },
-        CtxItem { icon: "⌕", label: "Search history…",   sub: "/", destructive: false, disabled: false, section: 2 },
-        CtxItem { icon: "↑", label: "Scroll to top",     sub: "<", destructive: false, disabled: false, section: 2 },
-        CtxItem { icon: "↓", label: "Scroll to bottom",  sub: ">", destructive: false, disabled: false, section: 2 },
-        CtxItem { icon: "⊟", label: "Horizontal split",  sub: "h", destructive: false, disabled: false, section: 3 },
-        CtxItem { icon: "⊞", label: "Vertical split",    sub: "v", destructive: false, disabled: false, section: 3 },
-        CtxItem { icon: "⤢", label: "Zoom pane",         sub: "z", destructive: false, disabled: !multi, section: 3 },
-        CtxItem { icon: "↥", label: "Swap up",           sub: "u", destructive: false, disabled: !multi, section: 4 },
-        CtxItem { icon: "↧", label: "Swap down",         sub: "d", destructive: false, disabled: !multi, section: 4 },
-        CtxItem { icon: "⇄", label: "Swap with marked",  sub: "s", destructive: false, disabled: !swap_marked, section: 4 },
-        CtxItem { icon: "◆", label: "Mark pane",         sub: "m", destructive: false, disabled: false, section: 4 },
-        CtxItem { icon: "↻", label: "Respawn pane",      sub: "R", destructive: false, disabled: false, section: 5 },
-        CtxItem { icon: "✕", label: "Kill pane",         sub: "X", destructive: true,  disabled: false, section: 5 },
-    ]
+        CtxItem { icon: "⤓", label: "Paste from clipboard".into(), sub: "p", destructive: false, disabled: false, section: 1 },
+        CtxItem { icon: "⌕", label: "Search history…".into(),   sub: "/", destructive: false, disabled: false, section: 2 },
+        CtxItem { icon: "↑", label: "Scroll to top".into(),     sub: "<", destructive: false, disabled: false, section: 2 },
+        CtxItem { icon: "↓", label: "Scroll to bottom".into(),  sub: ">", destructive: false, disabled: false, section: 2 },
+        CtxItem { icon: "⊟", label: "Horizontal split".into(),  sub: "h", destructive: false, disabled: false, section: 3 },
+        CtxItem { icon: "⊞", label: "Vertical split".into(),    sub: "v", destructive: false, disabled: false, section: 3 },
+        CtxItem { icon: "⤢", label: "Zoom pane".into(),         sub: "z", destructive: false, disabled: !multi, section: 3 },
+        CtxItem { icon: "↥", label: "Swap up".into(),           sub: "u", destructive: false, disabled: !multi, section: 4 },
+        CtxItem { icon: "↧", label: "Swap down".into(),         sub: "d", destructive: false, disabled: !multi, section: 4 },
+        CtxItem { icon: "⇄", label: "Swap with marked".into(),  sub: "s", destructive: false, disabled: !swap_marked, section: 4 },
+        CtxItem { icon: "◆", label: "Mark pane".into(),         sub: "m", destructive: false, disabled: false, section: 4 },
+        CtxItem { icon: "↻", label: "Respawn pane".into(),      sub: "R", destructive: false, disabled: false, section: 5 },
+        CtxItem { icon: "✕", label: "Kill pane".into(),         sub: "X", destructive: true,  disabled: false, section: 5 },
+    ]);
+    out
 }
 
 fn render_context_menu(frame: &mut Frame, area: Rect, app: &App) {
-    let items = context_menu_items(app.ctx_panes_in_win, app.ctx_marked_anywhere);
+    let items = context_menu_items(
+        app.ctx_panes_in_win,
+        app.ctx_marked_anywhere,
+        app.ctx_buffer_preview.as_deref(),
+    );
     // Count distinct sections for hairline-padding math.
     let section_count = items
         .iter()
@@ -3010,7 +3074,11 @@ impl App {
             // working — they still short-circuit through
             // `context_menu_tmux_args` so the bash menu's muscle memory
             // carries over.
-            let items = context_menu_items(self.ctx_panes_in_win, self.ctx_marked_anywhere);
+            let items = context_menu_items(
+                self.ctx_panes_in_win,
+                self.ctx_marked_anywhere,
+                self.ctx_buffer_preview.as_deref(),
+            );
             let len = items.len();
             match code {
                 Key::Esc | Key::Char('q') => {
@@ -3203,6 +3271,24 @@ fn context_menu_tmux_args(c: char, pane: Option<&str>) -> Option<Vec<String>> {
             args.push(p.into());
         }
     };
+    // Special-case `S` — smart top-row "Copy selection". Pipe the existing
+    // tmux paste buffer into wl-copy so the operator's recent selection lands
+    // on the system clipboard without retyping. Mirrors the `S)` branch in
+    // scripts/codex-fleet/bin/pane-context-menu.sh (which delegates to
+    // pane-menu-clip-dual.sh for dual-clipboard parity); the rust path keeps
+    // the call inline + text-only and points future readers at the bash impl.
+    if c == 'S' {
+        let shell_cmd =
+            "tmux save-buffer - | wl-copy && tmux display-message -d 1200 '\u{2713}  selection copied'"
+                .to_string();
+        let mut v: Vec<String> = vec!["run-shell".into(), "-b".into()];
+        if !p.is_empty() {
+            v.push("-t".into());
+            v.push(p.into());
+        }
+        v.push(shell_cmd);
+        return Some(v);
+    }
     // Special-case `p` — paste from the wl-paste system clipboard via a
     // tmux run-shell. The bash sister (pane-context-menu.sh) has a richer
     // image-aware fallback; the rust path stays text-only for now and
