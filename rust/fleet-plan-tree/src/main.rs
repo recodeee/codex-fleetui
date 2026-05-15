@@ -38,7 +38,7 @@ use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
 use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
 use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::Paragraph;
+use tuirealm::ratatui::widgets::{Block, Paragraph};
 use tuirealm::ratatui::Frame;
 use tuirealm::state::State;
 use tuirealm::subscription::{EventClause, Sub, SubClause};
@@ -316,9 +316,9 @@ impl Component for PlanView {
                 .iter()
                 .filter(|t| t.status == "claimed")
                 .collect();
-            // 2 rows of chrome (top + bottom of card) + 1 per claimed worker;
-            // collapsed to 3 rows when nothing is claimed (placeholder row).
-            let active_h: u16 = (claimed.len() as u16 + 2).clamp(3, 12);
+            // 2 rows of chrome plus content strips and hairline separators.
+            let active_rows = claimed.len().max(1) as u16;
+            let active_h: u16 = (active_rows.saturating_mul(2) + 2).clamp(4, 14);
             let body = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(active_h), Constraint::Min(0)])
@@ -437,6 +437,35 @@ impl AppComponent<Msg, NoUserEvent> for PlanView {
 
 // ---------- Section renderers ----------
 
+fn render_row_surface(frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Block::default().style(Style::default().bg(IOS_BG_GLASS)),
+        area,
+    );
+}
+
+fn render_row_divider(frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let divider = if area.width > 2 {
+        format!(" {}", "─".repeat(area.width.saturating_sub(2) as usize))
+    } else {
+        "─".repeat(area.width as usize)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            divider,
+            Style::default().fg(IOS_HAIRLINE).bg(IOS_BG_GLASS),
+        )))
+        .style(Style::default().bg(IOS_BG_GLASS)),
+        area,
+    );
+}
+
 /// ACTIVE NOW card — one row per `status=claimed` sub-task.
 /// Format: ` ● <agent-name>  sub-<N>  <truncated title>`
 /// When nothing is claimed, show a placeholder so the layout stays stable.
@@ -448,25 +477,51 @@ fn render_active_now(frame: &mut Frame, area: Rect, claimed: &[&Subtask]) {
         return;
     }
     if claimed.is_empty() {
+        let row = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 1,
+        };
+        render_row_surface(frame, row);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  no active claims — workers polling for work",
                 Style::default().fg(IOS_FG_MUTED),
-            ))),
-            Rect {
-                x: inner.x,
-                y: inner.y,
-                width: inner.width,
-                height: 1,
-            },
+            )))
+            .style(Style::default().bg(IOS_BG_GLASS)),
+            row,
         );
+        if inner.height > 1 {
+            render_row_divider(
+                frame,
+                Rect {
+                    x: inner.x,
+                    y: inner.y + 1,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+        }
         return;
     }
+    let row_step = if inner.height >= claimed.len() as u16 * 2 {
+        2
+    } else {
+        1
+    };
     for (i, s) in claimed.iter().enumerate() {
-        let y = inner.y + i as u16;
+        let y = inner.y + i as u16 * row_step;
         if y >= inner.y + inner.height {
             break;
         }
+        let row = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        };
+        render_row_surface(frame, row);
         let agent = s
             .claimed_by_agent
             .as_deref()
@@ -496,14 +551,20 @@ fn render_active_now(frame: &mut Frame, area: Rect, claimed: &[&Subtask]) {
             Span::styled(title, Style::default().fg(IOS_FG)),
         ];
         frame.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect {
-                x: inner.x,
-                y,
-                width: inner.width,
-                height: 1,
-            },
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(IOS_BG_GLASS)),
+            row,
         );
+        if row_step == 2 && y + 1 < inner.y + inner.height {
+            render_row_divider(
+                frame,
+                Rect {
+                    x: inner.x,
+                    y: y + 1,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+        }
     }
 }
 
@@ -519,8 +580,20 @@ fn render_waves(frame: &mut Frame, area: Rect, plan: &Plan) {
     }
     let label_width: u16 = 8;
     let pills_per_row: u16 = ((inner.width.saturating_sub(label_width)) / PILL_WIDTH).max(1);
+    let wave_levels = waves(&plan.tasks);
+    let content_rows: u16 = wave_levels
+        .iter()
+        .map(|indices| {
+            if indices.is_empty() {
+                0
+            } else {
+                indices.len().div_ceil(pills_per_row as usize) as u16
+            }
+        })
+        .sum();
+    let use_dividers = content_rows.saturating_mul(2) <= inner.height;
     let mut y = inner.y;
-    for (w, indices) in waves(&plan.tasks).into_iter().enumerate() {
+    for (w, indices) in wave_levels.into_iter().enumerate() {
         if indices.is_empty() {
             continue;
         }
@@ -560,16 +633,31 @@ fn render_waves(frame: &mut Frame, area: Rect, plan: &Plan) {
                     Style::default().fg(IOS_FG),
                 ));
             }
+            let row = Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            };
+            render_row_surface(frame, row);
             frame.render_widget(
-                Paragraph::new(Line::from(spans)),
-                Rect {
-                    x: inner.x,
-                    y,
-                    width: inner.width,
-                    height: 1,
-                },
+                Paragraph::new(Line::from(spans)).style(Style::default().bg(IOS_BG_GLASS)),
+                row,
             );
-            y += 1;
+            if use_dividers && y + 1 < inner.y + inner.height {
+                render_row_divider(
+                    frame,
+                    Rect {
+                        x: inner.x,
+                        y: y + 1,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
+                y += 2;
+            } else {
+                y += 1;
+            }
         }
         if y < inner.y + inner.height {
             y += 1;
@@ -977,6 +1065,27 @@ mod claim_map_tests {
     }
 
     #[test]
+    fn active_now_rows_use_glass_surface_and_hairline() {
+        let tasks = [subtask(
+            7,
+            "owned implementation",
+            "claimed",
+            Some("codex-alpha"),
+        )];
+        let claimed = tasks.iter().collect::<Vec<_>>();
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+
+        terminal
+            .draw(|frame| render_active_now(frame, frame.area(), &claimed))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(1, 1)].bg, IOS_BG_GLASS);
+        assert_eq!(buffer[(2, 2)].fg, IOS_HAIRLINE);
+        assert_eq!(buffer[(2, 2)].bg, IOS_BG_GLASS);
+    }
+
+    #[test]
     fn waves_render_includes_claim_map_section() {
         let plan = test_plan(vec![
             subtask(0, "bootstrap", "completed", None),
@@ -992,6 +1101,24 @@ mod claim_map_tests {
         assert!(rendered.contains("CLAIM MAP"));
         assert!(rendered.contains("alpha"));
         assert!(rendered.contains("owned implementation"));
+    }
+
+    #[test]
+    fn wave_rows_use_glass_surface_and_hairline() {
+        let plan = test_plan(vec![
+            subtask(0, "bootstrap", "completed", None),
+            subtask(1, "owned implementation", "claimed", Some("codex-alpha")),
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+
+        terminal
+            .draw(|frame| render_waves(frame, frame.area(), &plan))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(1, 1)].bg, IOS_BG_GLASS);
+        assert_eq!(buffer[(2, 2)].fg, IOS_HAIRLINE);
+        assert_eq!(buffer[(2, 2)].bg, IOS_BG_GLASS);
     }
 }
 
