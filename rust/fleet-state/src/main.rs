@@ -6,8 +6,9 @@
 // Pattern (mirrors fleet-tab-strip):
 //   - `FleetView` is the Component. It owns `rows: Option<Vec<WorkerRow>>`,
 //     a `load_error: Option<String>`, and refreshes on every Tick.
-//   - `Msg::Tick` drives a `refresh()` call; `Msg::Quit` terminates the
-//     loop. q / Esc → Msg::Quit handled inline (drops fleet-input).
+//   - `Msg::Tick` drives a `refresh()` call and keeps the Spotlight
+//     caret animated; `Msg::Quit` terminates the loop. q / Esc quit when
+//     Spotlight is closed, and dismiss it when Spotlight is open.
 //   - The existing render functions (`render`, `render_worker_row`,
 //     `chip_kind`) are unchanged — the tuirealm wrapper only owns the
 //     event loop, not the rendering.
@@ -27,6 +28,7 @@ use fleet_ui::{
     chip::{status_chip, ChipKind},
     palette::*,
     rail::{progress_rail, RailAxis},
+    spotlight_overlay::{Spotlight, SpotlightItem, SpotlightState},
 };
 use tuirealm::application::{Application, PollStrategy};
 use tuirealm::command::{Cmd, CmdResult};
@@ -56,6 +58,95 @@ pub enum Id {
     Fleet,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Overlay {
+    #[default]
+    None,
+    Spotlight,
+}
+
+const SPOTLIGHT_ITEMS: &[SpotlightItem<'static>] = &[
+    SpotlightItem {
+        group: "PANE",
+        icon: "⊟",
+        title: "Horizontal split",
+        sub: "Split active pane top/bottom",
+        kbd: "h",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⊞",
+        title: "Vertical split",
+        sub: "Split active pane left/right",
+        kbd: "v",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⤢",
+        title: "Zoom pane",
+        sub: "Toggle full-screen for this pane",
+        kbd: "z",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⇄",
+        title: "Swap with marked pane",
+        sub: "Swap active and marked panes",
+        kbd: "s",
+    },
+    SpotlightItem {
+        group: "SESSION",
+        icon: "⧉",
+        title: "Copy whole session",
+        sub: "Copy the current transcript",
+        kbd: "⇧C",
+    },
+    SpotlightItem {
+        group: "SESSION",
+        icon: "☰",
+        title: "Queue message",
+        sub: "Send a message on next idle",
+        kbd: "↹",
+    },
+    SpotlightItem {
+        group: "SESSION",
+        icon: "⌚",
+        title: "Search history…",
+        sub: "Search the current session",
+        kbd: "/",
+    },
+    SpotlightItem {
+        group: "FLEET",
+        icon: "+",
+        title: "Spawn new codex worker",
+        sub: "Open another worker pane",
+        kbd: "Ctrl N",
+    },
+    SpotlightItem {
+        group: "FLEET",
+        icon: "⎇",
+        title: "Switch worktree…",
+        sub: "Choose another branch/worktree",
+        kbd: "Ctrl B",
+    },
+];
+
+fn spotlight_filter(query: &str) -> Vec<&'static SpotlightItem<'static>> {
+    if query.is_empty() {
+        return SPOTLIGHT_ITEMS.iter().collect();
+    }
+
+    let q = query.to_lowercase();
+    SPOTLIGHT_ITEMS
+        .iter()
+        .filter(|it| {
+            it.title.to_lowercase().contains(&q)
+                || it.sub.to_lowercase().contains(&q)
+                || it.group.to_lowercase().contains(&q)
+        })
+        .collect()
+}
+
 // ---------- The Fleet component ----------
 
 /// tmux session + window the fleet's worker panes live in. Matches the
@@ -71,6 +162,9 @@ fn fleet_target() -> (String, String) {
 struct FleetView {
     rows: Option<Vec<WorkerRow>>,
     load_error: Option<String>,
+    overlay: Overlay,
+    spotlight: Spotlight<'static>,
+    spotlight_state: SpotlightState,
     props: Props,
 }
 
@@ -79,6 +173,9 @@ impl Default for FleetView {
         let mut view = Self {
             rows: None,
             load_error: None,
+            overlay: Overlay::None,
+            spotlight: Spotlight::new(SPOTLIGHT_ITEMS.to_vec()),
+            spotlight_state: SpotlightState::default(),
             props: Props::default(),
         };
         view.refresh();
@@ -87,6 +184,18 @@ impl Default for FleetView {
 }
 
 impl FleetView {
+    fn open_spotlight(&mut self) {
+        self.overlay = Overlay::Spotlight;
+        self.spotlight_state.query.clear();
+        self.spotlight_state.selected = 0;
+    }
+
+    fn close_spotlight(&mut self) {
+        self.overlay = Overlay::None;
+        self.spotlight_state.query.clear();
+        self.spotlight_state.selected = 0;
+    }
+
     fn refresh(&mut self) {
         let (session, window) = fleet_target();
         match fleet::load_live(&session, Some(&window)) {
@@ -221,6 +330,10 @@ impl Component for FleetView {
                 },
             );
         }
+
+        if self.overlay == Overlay::Spotlight {
+            self.spotlight.render(frame, area, &self.spotlight_state);
+        }
     }
 
     fn query(&self, attr: Attribute) -> Option<QueryResult<'_>> {
@@ -244,13 +357,68 @@ impl AppComponent<Msg, NoUserEvent> for FleetView {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
             Event::Keyboard(KeyEvent {
+                code: Key::Char('/'),
+                ..
+            })
+            | Event::Keyboard(KeyEvent {
+                code: Key::Char('?'),
+                ..
+            }) => {
+                self.open_spotlight();
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent {
                 code: Key::Char('q'),
                 ..
             })
-            | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => Some(Msg::Quit),
+            | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => {
+                if self.overlay == Overlay::Spotlight {
+                    self.close_spotlight();
+                    Some(Msg::Tick)
+                } else {
+                    Some(Msg::Quit)
+                }
+            }
+            Event::Keyboard(KeyEvent {
+                code: Key::Enter, ..
+            }) if self.overlay == Overlay::Spotlight => {
+                self.close_spotlight();
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent {
+                code: Key::Backspace,
+                ..
+            }) if self.overlay == Overlay::Spotlight => {
+                self.spotlight_state.query.pop();
+                self.spotlight_state.selected = 0;
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent { code: Key::Up, .. })
+                if self.overlay == Overlay::Spotlight =>
+            {
+                self.spotlight_state.selected = self.spotlight_state.selected.saturating_sub(1);
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent {
+                code: Key::Down, ..
+            }) if self.overlay == Overlay::Spotlight => {
+                let max = spotlight_filter(&self.spotlight_state.query)
+                    .len()
+                    .saturating_sub(1);
+                self.spotlight_state.selected = (self.spotlight_state.selected + 1).min(max);
+                Some(Msg::Tick)
+            }
+            Event::Keyboard(KeyEvent {
+                code: Key::Char(c), ..
+            }) if self.overlay == Overlay::Spotlight && !c.is_control() => {
+                self.spotlight_state.query.push(*c);
+                self.spotlight_state.selected = 0;
+                Some(Msg::Tick)
+            }
             Event::Tick => {
                 // Refresh under the hood so the next frame sees fresh rows.
                 self.refresh();
+                self.spotlight_state.tick = self.spotlight_state.tick.wrapping_add(1);
                 Some(Msg::Tick)
             }
             _ => None,
@@ -447,7 +615,11 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow, row_index: 
     if area.height < 4 || area.width < 60 {
         return;
     }
-    let row_bg = if row_index % 2 == 0 { IOS_ROW_BG_LIGHT } else { IOS_ROW_BG_DARK };
+    let row_bg = if row_index % 2 == 0 {
+        IOS_ROW_BG_LIGHT
+    } else {
+        IOS_ROW_BG_DARK
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -591,7 +763,9 @@ fn render_worker_row(frame: &mut Frame, area: Rect, row: &WorkerRow, row_index: 
     x += COL_STATUS + COL_SEP;
 
     // ── WORKING ON (2-line) ──────────────────────────────────────────────
-    let working_w = inner.width.saturating_sub(x - inner.x + COL_PANE + COL_SEP + 1);
+    let working_w = inner
+        .width
+        .saturating_sub(x - inner.x + COL_PANE + COL_SEP + 1);
     if row.working_on.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
