@@ -199,6 +199,15 @@ struct App {
     chip_rect: Option<Rect>,
     overlay: Overlay,
     ctx_menu_items: Vec<(Rect, char)>,
+    // Live arrow-key focus for the iOS context menu. Mirrors the focused-row
+    // logic in scripts/codex-fleet/bin/pane-context-menu.sh — the bash menu
+    // skips disabled rows (zoom/swap when only one pane / no marked pane),
+    // wraps top-to-bottom, and the Enter key dispatches the focused row.
+    ctx_selected_idx: usize,
+    // tmux #{window_panes} / #{pane_marked_set} captured when the context
+    // menu is opened. Zoom/swap rows are disabled when these don't hold.
+    ctx_panes_in_win: u32,
+    ctx_marked_anywhere: bool,
     spotlight_query: String,
     spotlight_selected: usize,
     spotlight_tick: u64,
@@ -229,6 +238,11 @@ impl App {
             chip_rect: None,
             overlay: Overlay::None,
             ctx_menu_items: Vec::new(),
+            ctx_selected_idx: 0,
+            // Default to "single pane, nothing marked" so the disabled
+            // ladder is conservative when the tmux probe fails / is skipped.
+            ctx_panes_in_win: 1,
+            ctx_marked_anywhere: false,
             spotlight_query: String::new(),
             spotlight_selected: 0,
             spotlight_tick: 0,
@@ -255,13 +269,19 @@ impl App {
         active_section: Option<String>,
     ) -> Self {
         let mut app = Self::new();
-        if initial != Overlay::None {
-            app.overlay = initial;
-        }
         app.single_shot = single_shot;
         app.pane_id = pane_id;
         app.session = session;
         app.section_active = active_section;
+        if initial != Overlay::None {
+            // Use the dedicated opener for ContextMenu so the disabled-row
+            // probe + initial focus selection runs once on startup.
+            if initial == Overlay::ContextMenu {
+                app.open_context_menu();
+            } else {
+                app.overlay = initial;
+            }
+        }
         app
     }
 
@@ -269,6 +289,55 @@ impl App {
         self.overlay = Overlay::Spotlight;
         self.spotlight_query.clear();
         self.spotlight_selected = 0;
+    }
+
+    /// Probe tmux for the disabled-row inputs (panes-in-window, marked-set)
+    /// and reset the context-menu focus to the first non-disabled item.
+    /// Mirrors the head of scripts/codex-fleet/bin/pane-context-menu.sh.
+    fn open_context_menu(&mut self) {
+        self.overlay = Overlay::ContextMenu;
+        let pane = self.pane_id.clone().unwrap_or_default();
+        let (panes, marked) = if pane.is_empty() {
+            (1u32, false)
+        } else {
+            let raw = std::process::Command::new("tmux")
+                .args([
+                    "display",
+                    "-p",
+                    "-t",
+                    pane.as_str(),
+                    "#{window_panes}/#{pane_marked_set}",
+                ])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    if o.status.success() {
+                        Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            let mut parts = raw.split('/');
+            let panes = parts
+                .next()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .unwrap_or(1);
+            let marked = parts
+                .next()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .map(|n| n == 1)
+                .unwrap_or(false);
+            (panes, marked)
+        };
+        self.ctx_panes_in_win = panes;
+        self.ctx_marked_anywhere = marked;
+        // Drop focus on the first non-disabled item.
+        let items = context_menu_items(self.ctx_panes_in_win, self.ctx_marked_anywhere);
+        self.ctx_selected_idx = items
+            .iter()
+            .position(|it| !it.disabled)
+            .unwrap_or(0);
     }
 
     fn dispatch_card_click(&mut self, col: u16, row: u16) -> bool {
@@ -785,39 +854,70 @@ fn card_shadow(frame: &mut Frame, card_rect: Rect, area: Rect) {
 
 // ───────────────────────── 1 · iOS context menu ────────────────────────────
 
-fn render_context_menu(frame: &mut Frame, area: Rect) {
-    let sections: &[&[(&str, &str, &str, bool)]] = &[
-        &[
-            ("⧉", "Copy whole session", "C", false),
-            ("▤", "Copy visible", "c", false),
-            ("≡", "Copy this line", "l", false),
-        ],
-        &[
-            ("⌕", "Search history…", "/", false),
-            ("↑", "Scroll to top", "<", false),
-            ("↓", "Scroll to bottom", ">", false),
-        ],
-        &[
-            ("⊟", "Horizontal split", "h", false),
-            ("⊞", "Vertical split", "v", false),
-            ("⤢", "Zoom pane", "z", false),
-        ],
-        &[
-            ("↥", "Swap up", "u", false),
-            ("↧", "Swap down", "d", false),
-            ("⇄", "Swap with marked", "s", false),
-            ("◆", "Mark pane", "m", false),
-        ],
-        &[
-            ("↻", "Respawn pane", "R", false),
-            ("✕", "Kill pane", "X", true),
-        ],
-    ];
+/// One row in the iOS context menu, flattened to a flat list so the renderer
+/// and the arrow-nav handler can both iterate the same sequence without
+/// reproducing the section structure twice.
+#[derive(Clone, Copy)]
+struct CtxItem {
+    icon: &'static str,
+    label: &'static str,
+    sub: &'static str,
+    destructive: bool,
+    /// Bash sister disables zoom/swap when single-pane / nothing marked; the
+    /// rust path mirrors that and skips them during arrow nav + ignores them
+    /// on Enter.
+    disabled: bool,
+    /// Items inside the same `section` integer render with a hairline above
+    /// the next section. Mirrors the slice-of-slices layout the renderer
+    /// used pre-arrow-nav.
+    section: u8,
+}
+
+/// Build the flat context-menu item list. Disabled flags follow the bash
+/// menu in scripts/codex-fleet/bin/pane-context-menu.sh:
+///   - zoom/swap-up/swap-down: panes_in_window > 1
+///   - swap-with-marked:       marked_anywhere
+fn context_menu_items(panes_in_win: u32, marked_anywhere: bool) -> Vec<CtxItem> {
+    let multi = panes_in_win > 1;
+    let swap_marked = marked_anywhere;
+    vec![
+        CtxItem { icon: "⧉", label: "Copy whole session", sub: "C", destructive: false, disabled: false, section: 0 },
+        CtxItem { icon: "▤", label: "Copy visible",       sub: "c", destructive: false, disabled: false, section: 0 },
+        CtxItem { icon: "≡", label: "Copy this line",     sub: "l", destructive: false, disabled: false, section: 0 },
+        // Paste row sits as its own one-row section between copy and scroll
+        // so it visually pairs with the copy block (matches the bash menu).
+        CtxItem { icon: "⤓", label: "Paste from clipboard", sub: "p", destructive: false, disabled: false, section: 1 },
+        CtxItem { icon: "⌕", label: "Search history…",   sub: "/", destructive: false, disabled: false, section: 2 },
+        CtxItem { icon: "↑", label: "Scroll to top",     sub: "<", destructive: false, disabled: false, section: 2 },
+        CtxItem { icon: "↓", label: "Scroll to bottom",  sub: ">", destructive: false, disabled: false, section: 2 },
+        CtxItem { icon: "⊟", label: "Horizontal split",  sub: "h", destructive: false, disabled: false, section: 3 },
+        CtxItem { icon: "⊞", label: "Vertical split",    sub: "v", destructive: false, disabled: false, section: 3 },
+        CtxItem { icon: "⤢", label: "Zoom pane",         sub: "z", destructive: false, disabled: !multi, section: 3 },
+        CtxItem { icon: "↥", label: "Swap up",           sub: "u", destructive: false, disabled: !multi, section: 4 },
+        CtxItem { icon: "↧", label: "Swap down",         sub: "d", destructive: false, disabled: !multi, section: 4 },
+        CtxItem { icon: "⇄", label: "Swap with marked",  sub: "s", destructive: false, disabled: !swap_marked, section: 4 },
+        CtxItem { icon: "◆", label: "Mark pane",         sub: "m", destructive: false, disabled: false, section: 4 },
+        CtxItem { icon: "↻", label: "Respawn pane",      sub: "R", destructive: false, disabled: false, section: 5 },
+        CtxItem { icon: "✕", label: "Kill pane",         sub: "X", destructive: true,  disabled: false, section: 5 },
+    ]
+}
+
+fn render_context_menu(frame: &mut Frame, area: Rect, app: &App) {
+    let items = context_menu_items(app.ctx_panes_in_win, app.ctx_marked_anywhere);
+    // Count distinct sections for hairline-padding math.
+    let section_count = items
+        .iter()
+        .map(|it| it.section)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        .max(1);
 
     let menu_w: u16 = 48;
-    let item_count: u16 = sections.iter().map(|s| s.len() as u16).sum();
-    // 1 pad + 1 title + 1 hairline + items + (sections-1) section padding rows + 1 pad + 2 border
-    let menu_h: u16 = 2 + 1 + item_count + (sections.len() as u16 - 1) + 1 + 2;
+    let item_count: u16 = items.len() as u16;
+    // 1 pad + 1 title + 1 hairline + items + (sections-1) section hairline rows
+    // + 1 pad + 1 hint + 2 border. The hint row mirrors the bash menu's
+    // "↑/↓ move  ·  ⏎ select  …" footer.
+    let menu_h: u16 = 2 + 1 + item_count + (section_count as u16 - 1) + 1 + 1 + 2;
 
     let rect = center_rect(area, menu_w, menu_h);
     card_shadow(frame, rect, area);
@@ -890,63 +990,96 @@ fn render_context_menu(frame: &mut Frame, area: Rect) {
     );
     y += 1;
 
-    // ── Sections ─────────────────────────────────────────────────────────
-    for (si, sec) in sections.iter().enumerate() {
-        if si > 0 {
-            // Hairline as section separator with a half-row of padding above
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    hairline.clone(),
-                    Style::default().fg(IOS_HAIRLINE),
-                )),
-                Rect {
-                    x: inner.x,
-                    y,
-                    width: inner.width,
-                    height: 1,
-                },
-            );
-            y += 1;
-        }
-        for (icon, label, sub, destructive) in sec.iter() {
-            let fg = if *destructive {
-                IOS_DESTRUCTIVE
-            } else {
-                IOS_FG
-            };
-            let icon_bg = if *destructive {
-                Color::Rgb(58, 24, 24)
-            } else {
-                IOS_ICON_CHIP
-            };
-            let spans = vec![
-                Span::styled(format!(" {} ", icon), Style::default().fg(fg).bg(icon_bg)),
-                Span::styled(format!("  {}", label), Style::default().fg(fg)),
-            ];
-            let chip_w = 5u16;
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)),
-                Rect {
-                    x: inner.x,
-                    y,
-                    width: inner.width.saturating_sub(chip_w + 1),
-                    height: 1,
-                },
-            );
-            if inner.width > chip_w + 1 {
+    // ── Items (flattened, with hairline between sections) ───────────────
+    let selected = app.ctx_selected_idx.min(items.len().saturating_sub(1));
+    let mut last_section: Option<u8> = None;
+    for (idx, it) in items.iter().enumerate() {
+        if let Some(prev) = last_section {
+            if prev != it.section {
                 frame.render_widget(
-                    Paragraph::new(Line::from(shortcut_chip(sub))),
+                    Paragraph::new(Span::styled(
+                        hairline.clone(),
+                        Style::default().fg(IOS_HAIRLINE),
+                    )),
                     Rect {
-                        x: inner.x + inner.width - chip_w,
+                        x: inner.x,
                         y,
-                        width: chip_w,
+                        width: inner.width,
                         height: 1,
                     },
                 );
+                y += 1;
             }
-            y += 1;
         }
+        last_section = Some(it.section);
+
+        let is_focused = idx == selected && !it.disabled;
+        let base_fg = if it.disabled {
+            IOS_FG_FAINT
+        } else if it.destructive {
+            IOS_DESTRUCTIVE
+        } else {
+            IOS_FG
+        };
+        let icon_bg = if it.destructive {
+            Color::Rgb(58, 24, 24)
+        } else {
+            IOS_ICON_CHIP
+        };
+        let label_style = if is_focused {
+            // iOS blue underline matches the bash menu's \033[4m focus glyph.
+            Style::default()
+                .fg(IOS_TINT)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(base_fg)
+        };
+        let spans = vec![
+            Span::styled(
+                format!(" {} ", it.icon),
+                Style::default().fg(base_fg).bg(icon_bg),
+            ),
+            Span::styled(format!("  {}", it.label), label_style),
+        ];
+        let chip_w = 5u16;
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width.saturating_sub(chip_w + 1),
+                height: 1,
+            },
+        );
+        if inner.width > chip_w + 1 {
+            frame.render_widget(
+                Paragraph::new(Line::from(shortcut_chip(it.sub))),
+                Rect {
+                    x: inner.x + inner.width - chip_w,
+                    y,
+                    width: chip_w,
+                    height: 1,
+                },
+            );
+        }
+        y += 1;
     }
+
+    // ── Hint row ─────────────────────────────────────────────────────────
+    // Mirrors the bash menu's footer text.
+    let hint = "  ↑/↓ move  ·  ⏎ select  ·  letter hotkey  ·  esc cancels";
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(IOS_FG_MUTED),
+        ))),
+        Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        },
+    );
 }
 
 // ─────────────────────────── 2 · iOS spotlight ─────────────────────────────
@@ -2698,7 +2831,7 @@ fn render(frame: &mut Frame, app: &mut App) {
             render_terminal_backdrop(frame, area);
             dim_backdrop(frame, area);
             match app.overlay {
-                Overlay::ContextMenu => render_context_menu(frame, area),
+                Overlay::ContextMenu => render_context_menu(frame, area, app),
                 Overlay::Spotlight => render_spotlight(frame, area, app),
                 Overlay::ActionSheet => render_action_sheet(frame, area),
                 Overlay::SectionJump => {
@@ -2871,13 +3004,73 @@ impl App {
                 }
                 _ => {}
             }
-        } else if self.single_shot && self.overlay == Overlay::ContextMenu {
+        } else if self.overlay == Overlay::ContextMenu {
+            // Arrow-key focus nav for both single-shot (used by the
+            // display-popup wrapper) and embedded use. Letter hotkeys keep
+            // working — they still short-circuit through
+            // `context_menu_tmux_args` so the bash menu's muscle memory
+            // carries over.
+            let items = context_menu_items(self.ctx_panes_in_win, self.ctx_marked_anywhere);
+            let len = items.len();
             match code {
-                Key::Esc | Key::Char('q') => self.quit = true,
+                Key::Esc | Key::Char('q') => {
+                    if self.single_shot {
+                        self.quit = true;
+                    } else {
+                        self.overlay = Overlay::None;
+                    }
+                }
+                Key::Up => {
+                    if len > 0 {
+                        let mut idx = self.ctx_selected_idx.min(len - 1);
+                        for _ in 0..len {
+                            idx = if idx == 0 { len - 1 } else { idx - 1 };
+                            if !items[idx].disabled {
+                                break;
+                            }
+                        }
+                        self.ctx_selected_idx = idx;
+                    }
+                }
+                Key::Down => {
+                    if len > 0 {
+                        let mut idx = self.ctx_selected_idx.min(len - 1);
+                        for _ in 0..len {
+                            idx = if idx + 1 >= len { 0 } else { idx + 1 };
+                            if !items[idx].disabled {
+                                break;
+                            }
+                        }
+                        self.ctx_selected_idx = idx;
+                    }
+                }
+                Key::Enter => {
+                    let idx = self.ctx_selected_idx.min(len.saturating_sub(1));
+                    if let Some(it) = items.get(idx) {
+                        if !it.disabled {
+                            if let Some(c) = it.sub.chars().next() {
+                                if let Some(cmd) =
+                                    context_menu_tmux_args(c, self.pane_id.as_deref())
+                                {
+                                    self.pending_tmux = Some(cmd);
+                                    if self.single_shot {
+                                        self.quit = true;
+                                    } else {
+                                        self.overlay = Overlay::None;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 Key::Char(c) => {
                     if let Some(cmd) = context_menu_tmux_args(*c, self.pane_id.as_deref()) {
                         self.pending_tmux = Some(cmd);
-                        self.quit = true;
+                        if self.single_shot {
+                            self.quit = true;
+                        } else {
+                            self.overlay = Overlay::None;
+                        }
                     }
                 }
                 _ => {}
@@ -2893,7 +3086,7 @@ impl App {
                     }
                 }
                 Key::Tab => self.overlay = Overlay::SectionJump,
-                Key::Char('1') => self.overlay = Overlay::ContextMenu,
+                Key::Char('1') => self.open_context_menu(),
                 Key::Char('2') => self.open_spotlight(),
                 Key::Char('3') => self.overlay = Overlay::ActionSheet,
                 Key::Char('4') => self.overlay = Overlay::SessionSwitcher,
@@ -3010,6 +3203,26 @@ fn context_menu_tmux_args(c: char, pane: Option<&str>) -> Option<Vec<String>> {
             args.push(p.into());
         }
     };
+    // Special-case `p` — paste from the wl-paste system clipboard via a
+    // tmux run-shell. The bash sister (pane-context-menu.sh) has a richer
+    // image-aware fallback; the rust path stays text-only for now and
+    // points future readers at the bash impl for the image branch.
+    if c == 'p' {
+        if p.is_empty() {
+            return None;
+        }
+        let shell_cmd = format!(
+            "wl-paste --no-newline | tmux load-buffer - && tmux paste-buffer -p -t {}",
+            p
+        );
+        return Some(vec![
+            "run-shell".into(),
+            "-b".into(),
+            "-t".into(),
+            p.into(),
+            shell_cmd,
+        ]);
+    }
     let mut v: Vec<String> = match c {
         'h' => vec!["split-window".into(), "-h".into()],
         'v' => vec!["split-window".into(), "-v".into()],
