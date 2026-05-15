@@ -476,6 +476,7 @@ dependencies = [
  "crossterm",
  "fleet-data",
  "fleet-ui",
+ "insta",
  "ratatui",
  "tuirealm",
 ]
