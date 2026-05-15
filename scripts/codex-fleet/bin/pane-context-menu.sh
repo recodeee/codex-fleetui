@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # pane-context-menu.sh — iOS-style right-click context menu for fleet panes.
 #
+# Transparency model: this fallback bash menu intentionally emits foreground-only
+# ANSI (`38;2;R;G;B`) so tmux popup `-B` leaves the underlying pane visible. Do
+# not use solid background SGR (`48;2;...`) in this script.
+#
+# Smoke test:
+#   printf 'hello-bg\nhello-bg\nhello-bg' && CODEX_FLEET_MENU_LINE=demo bash scripts/codex-fleet/bin/pane-context-menu.sh '%0' < /dev/null
+# Capture PR evidence with `script -qfec "<command above>" /tmp/pane-context-menu.typescript`
+# or an equivalent terminal recording.
+#
 # Bound to MouseDown3Pane via scripts/codex-fleet/style-tabs.sh through a
 # `display-popup -E -B` so we get a full pty and can draw the rounded card +
 # accent shortcut chips that tmux's built-in `display-menu` cannot render.
@@ -34,6 +43,8 @@ source "$SCRIPT_DIR/../lib/ios-menu.sh"
 
 CARD_W=54
 INNER_W=$(( CARD_W - 2 ))
+IOS_SEPARATOR="#3A3A3C"
+IOS_DISABLED="#48484A"
 
 INDEX="$(tmux display -p -t "$PANE_ID" '#{pane_index}' 2>/dev/null || echo '?')"
 PANES_IN_WIN="$(tmux display -p -t "$PANE_ID" '#{window_panes}' 2>/dev/null || echo 1)"
@@ -42,26 +53,51 @@ ZOOMED="$(tmux display -p -t "$PANE_ID" '#{window_zoomed_flag}' 2>/dev/null || e
 PANE_MARKED="$(tmux display -p -t "$PANE_ID" '#{pane_marked}' 2>/dev/null || echo 0)"
 
 # ── chrome helpers (operate inside the popup's pty) ────────────────────────
+menu_fg() {
+  local fg="$1"; shift || true
+  local hexfg="${fg#\#}"
+  local r g b out=""
+
+  r=$((16#${hexfg:0:2})); g=$((16#${hexfg:2:2})); b=$((16#${hexfg:4:2}))
+  out+="\033[38;2;${r};${g};${b}m"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      bold) out+="\033[1m" ;;
+      dim) out+="\033[2m" ;;
+      italic) out+="\033[3m" ;;
+      underline) out+="\033[4m" ;;
+    esac
+    shift
+  done
+  printf '%b' "$out"
+}
+
+menu_repeat() {
+  local char="$1" count="$2" i
+  for (( i=0; i<count; i++ )); do
+    printf '%s' "$char"
+  done
+}
+
 draw_top() {
-  _ios_sgr "$IOS_BG3" "$IOS_BG"
-  printf '╭'; _ios_repeat '─' "$INNER_W"; printf '╮'
+  menu_fg "$IOS_SEPARATOR"
+  printf '╭'; menu_repeat '─' "$INNER_W"; printf '╮'
   _ios_reset; printf '\n'
 }
 draw_bottom() {
-  _ios_sgr "$IOS_BG3" "$IOS_BG"
-  printf '╰'; _ios_repeat '─' "$INNER_W"; printf '╯'
+  menu_fg "$IOS_SEPARATOR"
+  printf '╰'; menu_repeat '─' "$INNER_W"; printf '╯'
   _ios_reset; printf '\n'
 }
 draw_hairline() {
-  _ios_sgr "$IOS_BG3" "$IOS_BG"; printf '│'
-  _ios_sgr "$IOS_BG3" "$IOS_BG2"; _ios_repeat '─' "$INNER_W"
-  _ios_sgr "$IOS_BG3" "$IOS_BG"; printf '│'
+  menu_fg "$IOS_SEPARATOR"
+  printf '├'; menu_repeat '─' "$INNER_W"; printf '┤'
   _ios_reset; printf '\n'
 }
 draw_blank() {
-  _ios_sgr "$IOS_BG3" "$IOS_BG"; printf '│'
-  _ios_sgr "$IOS_GRAY2" "$IOS_BG2"; printf '%*s' "$INNER_W" ''
-  _ios_sgr "$IOS_BG3" "$IOS_BG"; printf '│'
+  menu_fg "$IOS_SEPARATOR"; printf '│'
+  printf '%*s' "$INNER_W" ''
+  menu_fg "$IOS_SEPARATOR"; printf '│'
   _ios_reset; printf '\n'
 }
 
@@ -72,60 +108,94 @@ draw_header() {
   local title_len=${#title}
   # Layout inside INNER_W: ' ● <title>' + pad + '[ LIVE ]' + ' '
   # Widths:                 1 1 1 +len     P    1+1+4+1+1   1   = INNER_W
-  local chip_render_w=$(( ${#chip} + 4 ))
+  local chip_render_w=$(( ${#chip} + 2 ))
   local pad=$(( INNER_W - 3 - title_len - chip_render_w - 1 ))
   (( pad < 1 )) && pad=1
 
-  _ios_sgr "$IOS_BG3" "$IOS_BG"; printf '│'
-  _ios_sgr "$IOS_GREEN" "$IOS_BG2"; printf ' ● '
-  _ios_sgr "$IOS_WHITE" "$IOS_BG2" bold; printf '%s' "$title"
-  _ios_sgr "$IOS_GRAY2" "$IOS_BG2"; printf '%*s' "$pad" ''
-  _ios_sgr "$IOS_WHITE" "$IOS_GREEN" bold; printf ' %s ' "$chip"
-  _ios_sgr "$IOS_GRAY2" "$IOS_BG2"; printf ' '
-  _ios_sgr "$IOS_BG3" "$IOS_BG"; printf '│'
+  menu_fg "$IOS_SEPARATOR"; printf '│'
+  menu_fg "$IOS_GREEN"; printf ' ● '
+  menu_fg "$IOS_WHITE" bold; printf '%s' "$title"
+  printf '%*s' "$pad" ''
+  menu_fg "$IOS_GREEN" bold; printf ' %s ' "$chip"
+  printf ' '
+  menu_fg "$IOS_SEPARATOR"; printf '│'
   _ios_reset; printf '\n'
 }
 
 # Item row layout (INNER_W = 52):
-#   SP icon SP SP label PAD '[ ' key ' ]' SP
-#    1  1   1  1   L     P    2   1   2  1   = 9 + L + P  →  P = INNER_W - 9 - L
+#   SP icon SP SP label PAD '· ' key SP
+#    1  1   1  1   L     P    2   K   1       = 7 + K + L + P
 #
 # Args: icon label key [style: normal|danger|disabled]
 draw_item() {
-  local icon="$1" label="$2" key="$3" style="${4:-normal}"
-  local label_pad=$(( INNER_W - 9 - ${#label} ))
+  local icon="$1" label="$2" key="$3" style="${4:-normal}" focus_key="${5:-}"
+  local shortcut="· $key"
+  local label_pad=$(( INNER_W - 5 - ${#label} - ${#shortcut} ))
   (( label_pad < 1 )) && label_pad=1
 
-  _ios_sgr "$IOS_BG3" "$IOS_BG"; printf '│'
+  menu_fg "$IOS_SEPARATOR"; printf '│'
 
-  case "$style" in
-    danger)
-      _ios_sgr "$IOS_RED" "$IOS_BG2"; printf ' %s  ' "$icon"
-      _ios_sgr "$IOS_RED" "$IOS_BG2" bold; printf '%s' "$label"
-      ;;
-    disabled)
-      _ios_sgr "$IOS_GRAY" "$IOS_BG2"; printf ' %s  ' "$icon"
-      _ios_sgr "$IOS_GRAY" "$IOS_BG2"; printf '%s' "$label"
-      ;;
-    *)
-      _ios_sgr "$IOS_GRAY2" "$IOS_BG2"; printf ' %s  ' "$icon"
-      _ios_sgr "$IOS_WHITE" "$IOS_BG2"; printf '%s' "$label"
-      ;;
-  esac
-
-  _ios_sgr "$IOS_GRAY2" "$IOS_BG2"; printf '%*s' "$label_pad" ''
-  if [[ "$style" == "disabled" ]]; then
-    _ios_sgr "$IOS_GRAY" "$IOS_BG3"; printf '[ '
-    _ios_sgr "$IOS_GRAY" "$IOS_BG3" bold; printf '%s' "$key"
-    _ios_sgr "$IOS_GRAY" "$IOS_BG3"; printf ' ]'
+  if [[ "$focus_key" == "$key" ]]; then
+    menu_fg "$IOS_BLUE" underline
+    printf ' %s  %s%*s%s ' "$icon" "$label" "$label_pad" '' "$shortcut"
+    printf '\033[24m'
   else
-    _ios_sgr "$IOS_GRAY2" "$IOS_BG3"; printf '[ '
-    _ios_sgr "$IOS_WHITE" "$IOS_BG3" bold; printf '%s' "$key"
-    _ios_sgr "$IOS_GRAY2" "$IOS_BG3"; printf ' ]'
+    case "$style" in
+      danger)
+        menu_fg "$IOS_RED"; printf ' %s  ' "$icon"
+        menu_fg "$IOS_RED" bold; printf '%s' "$label"
+        printf '%*s' "$label_pad" ''
+        menu_fg "$IOS_RED"; printf '%s ' "$shortcut"
+        ;;
+      disabled)
+        menu_fg "$IOS_DISABLED"; printf ' %s  %s%*s%s ' "$icon" "$label" "$label_pad" '' "$shortcut"
+        ;;
+      *)
+        menu_fg "$IOS_GRAY"; printf ' %s  ' "$icon"
+        menu_fg "$IOS_WHITE"; printf '%s' "$label"
+        printf '%*s' "$label_pad" ''
+        menu_fg "$IOS_GRAY2"; printf '%s ' "$shortcut"
+        ;;
+    esac
   fi
-  _ios_sgr "$IOS_GRAY2" "$IOS_BG2"; printf ' '
-  _ios_sgr "$IOS_BG3" "$IOS_BG"; printf '│'
+  menu_fg "$IOS_SEPARATOR"; printf '│'
   _ios_reset; printf '\n'
+}
+
+render_menu() {
+  local focus_key="${1:-}"
+
+  clear
+  printf '\n'   # small top margin so the popup doesn't crowd row 0
+
+  draw_top
+  draw_header
+  draw_hairline
+
+  draw_item '▣'  "Copy whole session"  'C' normal "$focus_key"
+  draw_item '▢'  "Copy visible"        'c' normal "$focus_key"
+  draw_item '─'  "Copy this line"      'l' normal "$focus_key"
+  draw_hairline
+  draw_item '↟'  "Scroll to top"       '<' normal "$focus_key"
+  draw_item '↡'  "Scroll to bottom"    '>' normal "$focus_key"
+  draw_hairline
+  draw_item '⊟'  "Horizontal split"    'h' normal "$focus_key"
+  draw_item '⊞'  "Vertical split"      'v' normal "$focus_key"
+  draw_item '⤢'  "$zoom_label"         'z' "$zoom_style" "$focus_key"
+  draw_hairline
+  draw_item '↑'  "Swap up"             'u' "$multi" "$focus_key"
+  draw_item '↓'  "Swap down"           'd' "$multi" "$focus_key"
+  draw_item '⇄'  "Swap with marked"    's' "$swap_marked_style" "$focus_key"
+  draw_item '★'  "$mark_label"         'm' normal "$focus_key"
+  draw_hairline
+  draw_item '↻'  "Respawn pane"        'R' normal "$focus_key"
+  draw_item '✕'  "Kill pane"           'X' danger "$focus_key"
+  draw_hairline
+  draw_item '?'  "Keyboard help…"      '?' normal "$focus_key"
+  draw_bottom
+
+  menu_fg "$IOS_GRAY"; printf '\n   press a hotkey  ·  ? for help  ·  esc cancels'
+  _ios_reset
 }
 
 # ── conditional labels / styles ────────────────────────────────────────────
@@ -141,41 +211,21 @@ mark_label="Mark pane"
 (( PANE_MARKED == 1 )) && mark_label="Unmark pane"
 
 # ── render ─────────────────────────────────────────────────────────────────
-clear
-printf '\n'   # small top margin so the popup doesn't crowd row 0
-
-draw_top
-draw_header
-draw_hairline
-
-draw_item '▣'  "Copy whole session"  'C'
-draw_item '▢'  "Copy visible"        'c'
-draw_item '─'  "Copy this line"      'l'
-draw_hairline
-draw_item '↟'  "Scroll to top"       '<'
-draw_item '↡'  "Scroll to bottom"    '>'
-draw_hairline
-draw_item '⊟'  "Horizontal split"    'h'
-draw_item '⊞'  "Vertical split"      'v'
-draw_item '⤢'  "$zoom_label"         'z' "$zoom_style"
-draw_hairline
-draw_item '↑'  "Swap up"             'u' "$multi"
-draw_item '↓'  "Swap down"           'd' "$multi"
-draw_item '⇄'  "Swap with marked"    's' "$swap_marked_style"
-draw_item '★'  "$mark_label"         'm'
-draw_hairline
-draw_item '↻'  "Respawn pane"        'R'
-draw_item '✕'  "Kill pane"           'X' danger
-draw_hairline
-draw_item '?'  "Keyboard help…"      '?'
-draw_bottom
-
-_ios_sgr "$IOS_GRAY" "$IOS_BG"; printf '\n   press a hotkey · ? or ctrl+h for help · esc cancels'
-_ios_reset
+render_menu
 
 # ── input + dispatch ───────────────────────────────────────────────────────
 choice=''
 read -rsn1 -t 30 choice || choice=''
+
+feedback_key=''
+case "$choice" in
+  C|c|l|'<'|'>'|h|v|z|u|d|s|m|R|X|'?') feedback_key="$choice" ;;
+  $'\b'|$'\x08') feedback_key='?' ;;
+esac
+if [[ -n "$feedback_key" ]]; then
+  render_menu "$feedback_key"
+  sleep 0.08
+fi
 clear
 
 case "$choice" in
