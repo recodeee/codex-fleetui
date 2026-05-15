@@ -186,7 +186,7 @@ fn collect_snapshot() -> Snapshot {
 
     let note = if panes.is_empty() {
         Some(format!(
-            "no panes from tmux session '{session}' — set CODEX_FLEET_SESSION or start the fleet"
+            "no panes from tmux session '{session}' — set CODEX_FLEET_SESSION / CODEX_FLEET_TMUX_SOCKET or start the fleet"
         ))
     } else {
         None
@@ -251,10 +251,24 @@ fn collect_snapshot() -> Snapshot {
     }
 }
 
+/// Build a `tmux` command, honoring `CODEX_FLEET_TMUX_SOCKET` so the binary
+/// queries the same socket the fleet runs on (full-bringup.sh uses
+/// `-L codex-fleet`). When the env var is unset or empty, tmux's default
+/// socket is used — preserving prior behavior.
+fn tmux_command() -> Command {
+    let mut cmd = Command::new("tmux");
+    if let Ok(socket) = std::env::var("CODEX_FLEET_TMUX_SOCKET") {
+        if !socket.is_empty() {
+            cmd.args(["-L", &socket]);
+        }
+    }
+    cmd
+}
+
 /// `tmux list-panes -s -t <session> -F '#{pane_id}\t#{@panel}'` — returns
 /// (pane_id, panel) tuples. Empty list when tmux is absent or session missing.
 fn tmux_panes(session: &str) -> Vec<(String, String)> {
-    let output = Command::new("tmux")
+    let output = tmux_command()
         .args([
             "list-panes",
             "-s",
