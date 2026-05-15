@@ -37,17 +37,25 @@
 #       { "cmd": "sleep 60", "agent": "codex-admin-kollarrobert",
 #         "age_minutes": 3, "risk": "low", "outcome": "approved" },
 #       ...
-#     ]
+#     ],
+#     "today_merges": [
+#       { "agent": "codex-admin-kollarrobert", "prs": 8,
+#         "avg_latency_minutes": 6 }
+#     ],                 // optional; computed from decisions[] when absent
+#     "latency_buckets": [3,2,1,0,4,5,3,2,1,1,0,2]
+#                        // optional; 12 5-minute buckets, computed when absent
 #   }
 
 set -eo pipefail
 
 ONCE=0
 INTERVAL_MS=800
+SELF_TEST=0
 for a in "$@"; do
   case "$a" in
     --once) ONCE=1 ;;
     --interval=*) INTERVAL_MS="${a#--interval=}" ;;
+    --self-test) SELF_TEST=1 ;;
   esac
 done
 INTERVAL_S=$(awk -v ms="$INTERVAL_MS" 'BEGIN{printf "%.3f", ms/1000}')
@@ -204,6 +212,16 @@ declare -a DEMO_DECISIONS=(
 )
 DEMO_APPROVED_TODAY=124
 
+declare -a DEMO_TODAY_MERGES=(
+  '{"agent":"codex-admin-kollarrobert","prs":8,"avg_latency_minutes":6}'
+  '{"agent":"codex-admin-magnolia","prs":5,"avg_latency_minutes":9}'
+  '{"agent":"codex-matt-gg","prs":4,"avg_latency_minutes":12}'
+  '{"agent":"codex-fico-magnolia","prs":3,"avg_latency_minutes":18}'
+  '{"agent":"codex-recodee-mite","prs":2,"avg_latency_minutes":24}'
+)
+
+declare -a DEMO_LATENCY_BUCKETS=(1 3 5 2 4 7 6 3 2 4 1 2)
+
 QUEUE_RAW=""
 load_queue() {
   if [[ -r "$QUEUE_JSON" ]] && command -v jq >/dev/null 2>&1; then
@@ -244,6 +262,69 @@ decision_items() {
     queue_array '.decisions'
   else
     printf '%s\n' "${DEMO_DECISIONS[@]}"
+  fi
+}
+
+rollup_decision_items() {
+  local rows=""
+  if [[ -n "$QUEUE_RAW" ]] && command -v jq >/dev/null 2>&1; then
+    rows=$(jq -c '.decisions[]?' <<<"$QUEUE_RAW" 2>/dev/null || true)
+  fi
+  if [[ -n "$rows" ]]; then
+    printf '%s\n' "$rows"
+  else
+    printf '%s\n' "${DEMO_DECISIONS[@]}"
+  fi
+}
+
+today_merge_items() {
+  local rows=""
+  if [[ -n "$QUEUE_RAW" ]] && command -v jq >/dev/null 2>&1; then
+    rows=$(jq -c '
+      if (.today_merges | type == "array" and length > 0) then
+        .today_merges[]
+      else
+        empty
+      end' <<<"$QUEUE_RAW" 2>/dev/null || true)
+    if [[ -z "$rows" ]]; then
+      rows=$(rollup_decision_items | jq -sc '
+        group_by(.agent // "unknown")
+        | map({
+            agent: (.[0].agent // "unknown"),
+            prs: length,
+            avg_latency_minutes: ((map(.age_minutes // 0) | add) / length | round)
+          })
+        | sort_by(-.prs, .avg_latency_minutes, .agent)
+        | .[]' 2>/dev/null || true)
+    fi
+  fi
+  if [[ -n "$rows" ]]; then
+    printf '%s\n' "$rows"
+  else
+    printf '%s\n' "${DEMO_TODAY_MERGES[@]}"
+  fi
+}
+
+latency_bucket_items() {
+  local rows=""
+  if [[ -n "$QUEUE_RAW" ]] && command -v jq >/dev/null 2>&1; then
+    rows=$(jq -r '
+      if (.latency_buckets | type == "array" and length > 0) then
+        .latency_buckets[] | tonumber
+      else
+        empty
+      end' <<<"$QUEUE_RAW" 2>/dev/null || true)
+    if [[ -z "$rows" ]]; then
+      rows=$(rollup_decision_items | jq -sr '
+        [range(0;12) as $i
+          | map(select((.age_minutes // 0) >= ($i * 5) and (.age_minutes // 0) < (($i + 1) * 5))) | length]
+        | .[]' 2>/dev/null || true)
+    fi
+  fi
+  if [[ -n "$rows" ]] && awk '($1 > 0){found=1} END{exit found ? 0 : 1}' <<<"$rows"; then
+    printf '%s\n' "$rows"
+  else
+    printf '%s\n' "${DEMO_LATENCY_BUCKETS[@]}"
   fi
 }
 
@@ -357,10 +438,23 @@ render_pending_card() {
 
 # When there is no pending item, the card collapses to a calm empty state.
 render_empty_pending_card() {
+  local frame="${1:-0}"
   local card_color="$IOS_GRAY3"
+  local inner=$(( LEFT_WIDTH - 4 ))
+  local shimmer_pos=$(( frame % (inner - 1) ))
+  local shimmer=""
+  local i
+  for ((i=0; i<inner; i++)); do
+    if (( i == shimmer_pos )); then
+      shimmer+="${IOS_BLUE}·${R}"
+    else
+      shimmer+="${IOS_GRAY3}·${R}"
+    fi
+  done
   card_top "$LEFT_WIDTH" "$card_color"; printf '\n'
   card_blank "$LEFT_WIDTH" "$card_color"; printf '\n'
   card_line "$(printf '%s%s✓%s  %squeue clear · auto-reviewer caught up%s' "$B" "$IOS_GREEN" "$R" "$IOS_GRAY2" "$R")" "$LEFT_WIDTH" "$card_color"; printf '\n'
+  card_line "$shimmer" "$LEFT_WIDTH" "$card_color"; printf '\n'
   card_blank "$LEFT_WIDTH" "$card_color"; printf '\n'
   card_bottom "$LEFT_WIDTH" "$card_color"; printf '\n'
 }
@@ -427,6 +521,157 @@ render_decisions_card() {
   fi
 
   card_bottom "$RIGHT_WIDTH" "$card_color"; printf '\n'
+}
+
+# ── bottom rail: merges leaderboard + approval latency sparkline ──────────────
+sparkline_from_buckets() {
+  local -a values=()
+  local max=0 v
+  while IFS= read -r v; do
+    [[ -z "$v" ]] && continue
+    v="${v%.*}"
+    values+=("$v")
+    (( v > max )) && max="$v"
+  done < <(latency_bucket_items)
+  (( max < 1 )) && max=1
+
+  local -a blocks=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+  local out="" idx
+  for v in "${values[@]}"; do
+    idx=$(( (v * 7 + max - 1) / max ))
+    (( idx < 0 )) && idx=0
+    (( idx > 7 )) && idx=7
+    out+="${blocks[$idx]}"
+  done
+  printf '%s' "$out"
+}
+
+render_merges_card() {
+  local height="${1:-60}"
+  local frame="${2:-0}"
+  local card_color="$IOS_GRAY3"
+  local inner=$(( LEFT_WIDTH - 4 ))
+  local printed=0
+  card_top "$LEFT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+
+  local hdr_l hdr_r gap_n lhs_len rhs_len
+  hdr_l=$(printf '%s%sTODAY'"'"'S MERGES%s' "$B" "$WHITE" "$R")
+  hdr_r=$(printf '%slive rollup%s' "$DIM" "$R")
+  lhs_len=$(visible_len "$hdr_l")
+  rhs_len=$(visible_len "$hdr_r")
+  gap_n=$(( inner - lhs_len - rhs_len ))
+  (( gap_n < 1 )) && gap_n=1
+  card_line "$(printf '%s%*s%s' "$hdr_l" "$gap_n" "" "$hdr_r")" "$LEFT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+  card_blank "$LEFT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+
+  local rank=1
+  while IFS= read -r row; do
+    [[ -z "$row" ]] && continue
+    local agent prs avg color marker line
+    agent=$(jq -r '.agent // "unknown"' <<<"$row")
+    prs=$(jq -r '.prs // .count // 0' <<<"$row")
+    avg=$(jq -r '.avg_latency_minutes // .avg_latency // 0' <<<"$row")
+    color="$IOS_GRAY2"
+    marker="·"
+    case "$rank" in
+      1) color="$IOS_GREEN"; marker="●" ;;
+      2) color="$IOS_BLUE"; marker="●" ;;
+      3) color="$IOS_ORANGE"; marker="●" ;;
+    esac
+    local agent_disp="$agent"
+    if (( ${#agent_disp} > 14 )); then
+      agent_disp="${agent_disp:0:13}…"
+    fi
+    line=$(printf '%s%2d%s %s%s%s  %s%s%s %s·%s %s PRs %s·%s avg-latency %sm' \
+      "$DIM" "$rank" "$R" \
+      "$color" "$marker" "$R" \
+      "$WHITE" "$agent_disp" "$R" \
+      "$DIM" "$R" "$prs" "$DIM" "$R" "$avg")
+    card_line "$line" "$LEFT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+    rank=$((rank+1))
+    (( rank > 8 )) && break
+  done < <(today_merge_items)
+
+  card_blank "$LEFT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+  local shimmer_pos=$(( frame % inner ))
+  local rail=""
+  local i
+  for ((i=0; i<inner; i++)); do
+    if (( i == shimmer_pos )); then
+      rail+="${IOS_GREEN}·${R}"
+    else
+      rail+="${IOS_GRAY3}─${R}"
+    fi
+  done
+  card_line "$rail" "$LEFT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+
+  while (( printed < height - 1 )); do
+    card_blank "$LEFT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+  done
+  card_bottom "$LEFT_WIDTH" "$card_color"; printf '\n'
+}
+
+render_latency_card() {
+  local height="${1:-60}"
+  local frame="${2:-0}"
+  local card_color="$IOS_GRAY3"
+  local inner=$(( RIGHT_WIDTH - 4 ))
+  local printed=0
+  card_top "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+
+  local hdr_l hdr_r gap_n lhs_len rhs_len
+  hdr_l=$(printf '%s%sAPPROVAL LATENCY SPARKLINE%s' "$B" "$WHITE" "$R")
+  hdr_r=$(printf '%s60m / 5m%s' "$DIM" "$R")
+  lhs_len=$(visible_len "$hdr_l")
+  rhs_len=$(visible_len "$hdr_r")
+  gap_n=$(( inner - lhs_len - rhs_len ))
+  (( gap_n < 1 )) && gap_n=1
+  card_line "$(printf '%s%*s%s' "$hdr_l" "$gap_n" "" "$hdr_r")" "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+  card_blank "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+
+  local spark; spark=$(sparkline_from_buckets)
+  card_line "$(printf '%s%s%s' "$IOS_BLUE" "$spark" "$R")" "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+  card_line "$(printf '%snow  15m  30m  45m  60m ago%s' "$DIM" "$R")" "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+  card_blank "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+
+  local idx=0
+  while IFS= read -r count; do
+    [[ -z "$count" ]] && continue
+    local from=$(( idx * 5 ))
+    local to=$(( from + 4 ))
+    local block_color="$IOS_GRAY2"
+    (( count > 2 )) && block_color="$IOS_GREEN"
+    (( count > 5 )) && block_color="$IOS_ORANGE"
+    card_line "$(printf '%s%02d-%02dm%s  %s%2s approvals%s  %s%s%s' \
+      "$DIM" "$from" "$to" "$R" \
+      "$WHITE" "$count" "$R" \
+      "$block_color" "${spark:idx:1}" "$R")" "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+    idx=$((idx+1))
+    (( idx >= 12 )) && break
+  done < <(latency_bucket_items)
+
+  card_blank "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+  local pulse
+  if (( frame % 2 == 0 )); then
+    pulse=$(printf '%s●%s ingesting colony decisions' "$IOS_GREEN" "$DIM")
+  else
+    pulse=$(printf '%s●%s ingesting colony decisions' "$IOS_GRAY3" "$DIM")
+  fi
+  card_line "$(printf '%s%s' "$pulse" "$R")" "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+
+  while (( printed < height - 1 )); do
+    card_blank "$RIGHT_WIDTH" "$card_color"; printf '\n'; printed=$((printed+1))
+  done
+  card_bottom "$RIGHT_WIDTH" "$card_color"; printf '\n'
+}
+
+render_bottom_rail() {
+  local frame="${1:-0}"
+  local height="${2:-67}"
+  local left right
+  left=$(render_merges_card "$height" "$frame")
+  right=$(render_latency_card "$height" "$frame")
+  join_columns "$left" "$right"
 }
 
 # ── two-column join ───────────────────────────────────────────────────────────
@@ -513,19 +758,53 @@ render() {
   if [[ -n "$first_pending" ]]; then
     left_card=$(render_pending_card "$first_pending" "$f")
   else
-    left_card=$(render_empty_pending_card)
+    left_card=$(render_empty_pending_card "$f")
   fi
   right_card=$(render_decisions_card)
 
   join_columns "$left_card" "$right_card"
+  printf '\n'
+  render_bottom_rail "$f"
 
   printf '\n'
   render_footer
 }
 
+self_test() {
+  local script="${BASH_SOURCE[0]}"
+  local tmp out rows
+  tmp=$(mktemp)
+  printf '{"approved_today":0,"pending":[],"decisions":[]}\n' >"$tmp"
+  out=$(REVIEW_ANIM_QUEUE_JSON="$tmp" bash "$script" --once)
+  rm -f "$tmp"
+  rows=$(wc -l <<<"$out" | tr -d ' ')
+  if (( rows < 80 )); then
+    printf 'self-test failed: expected >=80 rows, got %s\n' "$rows" >&2
+    return 1
+  fi
+  grep -q "TODAY'S MERGES" <<<"$(strip_ansi "$out")" || {
+    printf 'self-test failed: missing today merges card\n' >&2
+    return 1
+  }
+  grep -q "APPROVAL LATENCY" <<<"$(strip_ansi "$out")" || {
+    printf 'self-test failed: missing latency card\n' >&2
+    return 1
+  }
+  grep -q "queue clear" <<<"$(strip_ansi "$out")" || {
+    printf 'self-test failed: missing queue-clear state\n' >&2
+    return 1
+  }
+  printf 'self-test ok: rows=%s bottom_rail=present pending_empty=rendered\n' "$rows"
+}
+
 if ! command -v jq >/dev/null 2>&1; then
   printf '%sreview-anim: jq is required%s\n' "$IOS_RED" "$R" >&2
   exit 2
+fi
+
+if (( SELF_TEST == 1 )); then
+  self_test
+  exit $?
 fi
 
 if (( ONCE == 1 )); then
