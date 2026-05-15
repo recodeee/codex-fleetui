@@ -38,10 +38,80 @@ const VIZ_ROOT: &str = "/tmp/claude-viz";
 const CAP_PROBE_DIR: &str = "/tmp/claude-viz/cap-probe-cache";
 const COLONY_CLAIMS: &str = "/tmp/claude-viz/colony-claims.json";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum AgentKind {
+    Codex,
+    Kiro,
+    Claude,
+    Unknown,
+}
+
+impl AgentKind {
+    fn classify(panel: &str, activity_source: &str) -> Self {
+        let p = panel.to_ascii_lowercase();
+        if p.contains("kiro") {
+            return Self::Kiro;
+        }
+        if p.contains("codex") {
+            return Self::Codex;
+        }
+        if p.contains("claude") {
+            return Self::Claude;
+        }
+        if activity_source.starts_with("kiro-worker-") {
+            return Self::Kiro;
+        }
+        if activity_source.starts_with("codex-worker-") {
+            return Self::Codex;
+        }
+        if activity_source.starts_with("claude-worker-") {
+            return Self::Claude;
+        }
+        Self::Unknown
+    }
+
+    fn badge(&self) -> &'static str {
+        match self {
+            Self::Codex => "CODX",
+            Self::Kiro => "KIRO",
+            Self::Claude => "CLAU",
+            Self::Unknown => "—",
+        }
+    }
+
+    fn color(&self) -> ratatui::style::Color {
+        match self {
+            Self::Codex => IOS_TINT,
+            Self::Kiro => IOS_PURPLE,
+            Self::Claude => IOS_ORANGE,
+            Self::Unknown => IOS_FG_FAINT,
+        }
+    }
+
+    fn sort_key(&self) -> u8 {
+        match self {
+            Self::Codex => 0,
+            Self::Kiro => 1,
+            Self::Claude => 2,
+            Self::Unknown => 3,
+        }
+    }
+
+    fn group_label(&self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Kiro => "kiro",
+            Self::Claude => "claude",
+            Self::Unknown => "other",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PaneRow {
     pane_id: String,            // e.g. "%337"
     panel: String,              // @panel label or "—"
+    kind: AgentKind,            // codex / kiro / claude / unknown
     last_activity: Option<u64>, // seconds since now (0 = just now)
     activity_source: String,    // file name for the freshest log
     colony_claim: String,       // "claimed:<task>" | "free" | "unknown"
@@ -56,6 +126,15 @@ struct Snapshot {
     captured_at: Option<SystemTime>,
 }
 
+/// View toggles. Driven by the keyboard loop, not from data sources, so it
+/// survives across snapshot refreshes.
+#[derive(Clone, Copy, Debug, Default)]
+struct View {
+    /// When true, rows are sorted by [`AgentKind`] and group-header rows are
+    /// injected between kinds.
+    grouped: bool,
+}
+
 fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
     let result = run(&mut terminal);
@@ -65,10 +144,11 @@ fn main() -> io::Result<()> {
 
 fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     let mut snapshot = collect_snapshot();
+    let mut view = View::default();
     let mut last_refresh = Instant::now();
 
     loop {
-        terminal.draw(|frame| render(frame, frame.area(), &snapshot))?;
+        terminal.draw(|frame| render(frame, frame.area(), &snapshot, &view))?;
 
         // Poll for keys with a short timeout so we can refresh at POLL_INTERVAL.
         let remaining = POLL_INTERVAL.saturating_sub(last_refresh.elapsed());
@@ -78,6 +158,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::Char('g') | KeyCode::Char('G') => view.grouped = !view.grouped,
                         _ => {}
                     }
                 }
@@ -147,9 +228,11 @@ fn collect_snapshot() -> Snapshot {
                 None => ("unknown".into(), None),
             };
 
+            let kind = AgentKind::classify(&panel, &activity_source);
             PaneRow {
                 pane_id,
                 panel,
+                kind,
                 last_activity,
                 activity_source,
                 colony_claim,
@@ -399,7 +482,7 @@ fn read_verdict(path: &Path) -> Option<String> {
 // Rendering
 // ---------------------------------------------------------------------------
 
-fn render(frame: &mut Frame, area: Rect, snap: &Snapshot) {
+fn render(frame: &mut Frame, area: Rect, snap: &Snapshot, view: &View) {
     // Solid background fill so the dashboard reads as a card on the page.
     frame.render_widget(
         Block::default().style(Style::default().bg(IOS_BG_SOLID)),
@@ -422,8 +505,8 @@ fn render(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     hairline(frame, chunks[1]);
     render_column_headings(frame, chunks[2]);
     hairline(frame, chunks[3]);
-    render_rows(frame, chunks[4], &snap.rows);
-    render_footer(frame, chunks[5], snap);
+    render_rows(frame, chunks[4], &snap.rows, view);
+    render_footer(frame, chunks[5], snap, view);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, snap: &Snapshot) {
@@ -495,7 +578,7 @@ fn render_column_headings(frame: &mut Frame, area: Rect) {
         .fg(IOS_FG_MUTED)
         .bg(IOS_BG_SOLID)
         .add_modifier(Modifier::BOLD);
-    let names = ["PANE", "PANEL", "ACTIVITY", "COLONY", "CAP-PROBE"];
+    let names = ["PANE", "KIND", "PANEL", "ACTIVITY", "COLONY", "CAP-PROBE"];
     for (rect, name) in cols.into_iter().zip(names.iter()) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -507,7 +590,35 @@ fn render_column_headings(frame: &mut Frame, area: Rect) {
     }
 }
 
-fn render_rows(frame: &mut Frame, area: Rect, rows: &[PaneRow]) {
+/// What occupies a visible row in the dashboard body: either an actual pane
+/// or a "── group: <kind> ──" header injected when grouping is on.
+enum BodyLine<'a> {
+    Pane(&'a PaneRow),
+    GroupHeader(AgentKind),
+}
+
+fn body_lines<'a>(rows: &'a [PaneRow], view: &View) -> Vec<BodyLine<'a>> {
+    if !view.grouped {
+        return rows.iter().map(BodyLine::Pane).collect();
+    }
+    // Group: stable sort by kind, then keep the per-kind order intact (already
+    // sorted by panel from `collect_snapshot`).
+    let mut indices: Vec<usize> = (0..rows.len()).collect();
+    indices.sort_by(|&a, &b| rows[a].kind.sort_key().cmp(&rows[b].kind.sort_key()));
+    let mut out: Vec<BodyLine<'a>> = Vec::with_capacity(rows.len() + 4);
+    let mut current: Option<AgentKind> = None;
+    for i in indices {
+        let row = &rows[i];
+        if current != Some(row.kind) {
+            out.push(BodyLine::GroupHeader(row.kind));
+            current = Some(row.kind);
+        }
+        out.push(BodyLine::Pane(row));
+    }
+    out
+}
+
+fn render_rows(frame: &mut Frame, area: Rect, rows: &[PaneRow], view: &View) {
     if area.height == 0 {
         return;
     }
@@ -527,8 +638,10 @@ fn render_rows(frame: &mut Frame, area: Rect, rows: &[PaneRow]) {
         );
         return;
     }
+    let lines = body_lines(rows, view);
     let limit = area.height as usize;
-    for (i, row) in rows.iter().take(limit).enumerate() {
+    let mut pane_zebra = 0usize;
+    for (i, line) in lines.iter().take(limit).enumerate() {
         let y = area.y + i as u16;
         let row_area = Rect {
             x: area.x,
@@ -536,88 +649,130 @@ fn render_rows(frame: &mut Frame, area: Rect, rows: &[PaneRow]) {
             width: area.width,
             height: 1,
         };
-        // Alternating row background mirrors the iOS grouped-list look.
-        let row_bg = if i % 2 == 0 {
-            IOS_ROW_BG_DARK
-        } else {
-            IOS_ROW_BG_LIGHT
-        };
-        frame.render_widget(
-            Block::default().style(Style::default().bg(row_bg)),
-            row_area,
-        );
 
-        let cols = column_layout(row_area);
-        // 1. pane id
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                clip(&row.pane_id, cols[0].width.saturating_sub(1)),
-                Style::default()
-                    .fg(IOS_TINT)
-                    .bg(row_bg)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            cols[0],
-        );
-        // 2. panel label
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                clip(&row.panel, cols[1].width.saturating_sub(1)),
-                Style::default().fg(IOS_FG).bg(row_bg),
-            )),
-            cols[1],
-        );
-        // 3. activity age + file
-        let (age_text, age_color) = activity_label(row.last_activity);
-        let activity_line = Line::from(vec![
-            Span::styled(age_text, Style::default().fg(age_color).bg(row_bg)),
-            Span::styled(" ", Style::default().bg(row_bg)),
-            Span::styled(
-                clip(
-                    &row.activity_source,
-                    cols[2].width.saturating_sub(12),
-                ),
-                Style::default().fg(IOS_FG_FAINT).bg(row_bg),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(activity_line), cols[2]);
-        // 4. colony claim
-        let claim_color = if row.colony_claim.starts_with("claimed") {
-            IOS_PURPLE
-        } else if row.colony_claim == "free" {
-            IOS_GREEN
-        } else {
-            IOS_FG_FAINT
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                clip(&row.colony_claim, cols[3].width.saturating_sub(1)),
-                Style::default().fg(claim_color).bg(row_bg),
-            )),
-            cols[3],
-        );
-        // 5. cap-probe + age
-        let cap_color = match row.cap_probe.as_str() {
-            "ok" => IOS_GREEN,
-            "429" => IOS_DESTRUCTIVE,
-            "unknown" => IOS_FG_FAINT,
-            _ => IOS_YELLOW,
-        };
-        let cap_text = match row.cap_probe_age {
-            Some(age) => format!("{} · {}", row.cap_probe, age_words(age)),
-            None => row.cap_probe.clone(),
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                clip(&cap_text, cols[4].width.saturating_sub(1)),
-                Style::default().fg(cap_color).bg(row_bg),
-            )),
-            cols[4],
-        );
+        match line {
+            BodyLine::GroupHeader(kind) => {
+                // Group headers render on the solid background, full-width.
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(IOS_BG_SOLID)),
+                    row_area,
+                );
+                let label = format!("── group: {} ──", kind.group_label());
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        clip(&label, row_area.width.saturating_sub(2)),
+                        Style::default()
+                            .fg(kind.color())
+                            .bg(IOS_BG_SOLID)
+                            .add_modifier(Modifier::BOLD),
+                    ))),
+                    Rect {
+                        x: row_area.x + 1,
+                        y: row_area.y,
+                        width: row_area.width.saturating_sub(2),
+                        height: 1,
+                    },
+                );
+                // Don't advance the zebra-stripe counter so the next pane row
+                // resumes the alternation pattern from where it left off.
+            }
+            BodyLine::Pane(row) => {
+                // Alternating row background mirrors the iOS grouped-list look.
+                let row_bg = if pane_zebra % 2 == 0 {
+                    IOS_ROW_BG_DARK
+                } else {
+                    IOS_ROW_BG_LIGHT
+                };
+                pane_zebra += 1;
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(row_bg)),
+                    row_area,
+                );
+
+                let cols = column_layout(row_area);
+                // 1. pane id
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        clip(&row.pane_id, cols[0].width.saturating_sub(1)),
+                        Style::default()
+                            .fg(IOS_TINT)
+                            .bg(row_bg)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    cols[0],
+                );
+                // 2. kind badge
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        clip(row.kind.badge(), cols[1].width.saturating_sub(1)),
+                        Style::default()
+                            .fg(row.kind.color())
+                            .bg(row_bg)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    cols[1],
+                );
+                // 3. panel label
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        clip(&row.panel, cols[2].width.saturating_sub(1)),
+                        Style::default().fg(IOS_FG).bg(row_bg),
+                    )),
+                    cols[2],
+                );
+                // 4. activity age + file
+                let (age_text, age_color) = activity_label(row.last_activity);
+                let activity_line = Line::from(vec![
+                    Span::styled(age_text, Style::default().fg(age_color).bg(row_bg)),
+                    Span::styled(" ", Style::default().bg(row_bg)),
+                    Span::styled(
+                        clip(
+                            &row.activity_source,
+                            cols[3].width.saturating_sub(12),
+                        ),
+                        Style::default().fg(IOS_FG_FAINT).bg(row_bg),
+                    ),
+                ]);
+                frame.render_widget(Paragraph::new(activity_line), cols[3]);
+                // 5. colony claim
+                let claim_color = if row.colony_claim.starts_with("claimed") {
+                    IOS_PURPLE
+                } else if row.colony_claim == "free" {
+                    IOS_GREEN
+                } else {
+                    IOS_FG_FAINT
+                };
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        clip(&row.colony_claim, cols[4].width.saturating_sub(1)),
+                        Style::default().fg(claim_color).bg(row_bg),
+                    )),
+                    cols[4],
+                );
+                // 6. cap-probe + age
+                let cap_color = match row.cap_probe.as_str() {
+                    "ok" => IOS_GREEN,
+                    "429" => IOS_DESTRUCTIVE,
+                    "unknown" => IOS_FG_FAINT,
+                    _ => IOS_YELLOW,
+                };
+                let cap_text = match row.cap_probe_age {
+                    Some(age) => format!("{} · {}", row.cap_probe, age_words(age)),
+                    None => row.cap_probe.clone(),
+                };
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        clip(&cap_text, cols[5].width.saturating_sub(1)),
+                        Style::default().fg(cap_color).bg(row_bg),
+                    )),
+                    cols[5],
+                );
+            }
+        }
     }
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, snap: &Snapshot) {
+fn render_footer(frame: &mut Frame, area: Rect, snap: &Snapshot, view: &View) {
     if area.height == 0 {
         return;
     }
@@ -626,14 +781,15 @@ fn render_footer(frame: &mut Frame, area: Rect, snap: &Snapshot) {
         .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
         .map(|d| format!("captured {}s ago", elapsed_label(d.as_secs())))
         .unwrap_or_else(|| "captured —".into());
-    let left = " q / Esc quit · 1s poll ";
+    let group_state = if view.grouped { "on" } else { "off" };
+    let left = format!(" q / Esc quit · g group: {group_state} · 1s poll ");
     let right = format!("{captured} ");
     let right_w = right.chars().count() as u16;
     let left_w = area.width.saturating_sub(right_w);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                clip(left, left_w),
+                clip(&left, left_w),
                 Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_SOLID),
             ),
             Span::styled(
@@ -659,6 +815,7 @@ fn column_layout(area: Rect) -> Vec<Rect> {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(8),       // pane id
+            Constraint::Length(6),       // kind badge
             Constraint::Min(14),         // panel label (flex)
             Constraint::Length(28),      // activity
             Constraint::Length(22),      // colony claim
@@ -751,5 +908,170 @@ mod tests {
         assert_eq!(activity_label(Some(45)).0, "45s ago");
         assert_eq!(activity_label(Some(120)).0, "2m ago");
         assert_eq!(activity_label(Some(7200)).0, "2h ago");
+    }
+
+    #[test]
+    fn agent_kind_classifies_from_panel() {
+        assert_eq!(
+            AgentKind::classify("codex-admin-mite", "—"),
+            AgentKind::Codex
+        );
+        assert_eq!(AgentKind::classify("kiro-foo", "—"), AgentKind::Kiro);
+        assert_eq!(
+            AgentKind::classify("idle-claude-pane-3", "—"),
+            AgentKind::Claude
+        );
+        assert_eq!(AgentKind::classify("—", "—"), AgentKind::Unknown);
+    }
+
+    #[test]
+    fn agent_kind_classifies_from_log_when_panel_blank() {
+        assert_eq!(
+            AgentKind::classify("—", "claude-worker-claude-fleet-1.log"),
+            AgentKind::Claude
+        );
+        assert_eq!(
+            AgentKind::classify("—", "codex-worker-acct-3.log"),
+            AgentKind::Codex
+        );
+        assert_eq!(
+            AgentKind::classify("—", "kiro-worker-x.log"),
+            AgentKind::Kiro
+        );
+    }
+
+    #[test]
+    fn agent_kind_panel_wins_over_log() {
+        // codex panel paired with a stale claude-* log key still classifies as
+        // codex — panel label is the authoritative signal.
+        assert_eq!(
+            AgentKind::classify("codex-admin-mite", "claude-worker-claude-fleet-1.log"),
+            AgentKind::Codex
+        );
+    }
+
+    #[test]
+    fn grouped_body_lines_inject_headers_per_kind() {
+        let rows = vec![
+            row("%1", "idle-claude-pane-1", AgentKind::Claude),
+            row("%2", "codex-admin-mite", AgentKind::Codex),
+            row("%3", "kiro-foo", AgentKind::Kiro),
+            row("%4", "codex-bia-zazrifka", AgentKind::Codex),
+        ];
+        let lines = body_lines(&rows, &View { grouped: true });
+        let kinds: Vec<&str> = lines
+            .iter()
+            .map(|l| match l {
+                BodyLine::GroupHeader(k) => k.group_label(),
+                BodyLine::Pane(r) => match r.pane_id.as_str() {
+                    "%1" => "pane:claude",
+                    "%2" => "pane:codex1",
+                    "%3" => "pane:kiro",
+                    "%4" => "pane:codex2",
+                    _ => "pane:?",
+                },
+            })
+            .collect();
+        // Sort key is Codex(0) < Kiro(1) < Claude(2); the two codex panes
+        // share one header.
+        assert_eq!(
+            kinds,
+            vec![
+                "codex",
+                "pane:codex1",
+                "pane:codex2",
+                "kiro",
+                "pane:kiro",
+                "claude",
+                "pane:claude",
+            ]
+        );
+    }
+
+    #[test]
+    fn ungrouped_body_lines_have_no_headers() {
+        let rows = vec![
+            row("%1", "idle-claude-pane-1", AgentKind::Claude),
+            row("%2", "codex-admin-mite", AgentKind::Codex),
+        ];
+        let lines = body_lines(&rows, &View { grouped: false });
+        assert_eq!(lines.len(), 2);
+        assert!(matches!(lines[0], BodyLine::Pane(_)));
+        assert!(matches!(lines[1], BodyLine::Pane(_)));
+    }
+
+    fn row(pane_id: &str, panel: &str, kind: AgentKind) -> PaneRow {
+        PaneRow {
+            pane_id: pane_id.into(),
+            panel: panel.into(),
+            kind,
+            last_activity: None,
+            activity_source: "—".into(),
+            colony_claim: "unknown".into(),
+            cap_probe: "unknown".into(),
+            cap_probe_age: None,
+        }
+    }
+
+    fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area();
+        let mut out = String::with_capacity((area.width as usize + 1) * area.height as usize);
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn render_to_string(snap: &Snapshot, view: &View, w: u16, h: u16) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, frame.area(), snap, view))
+            .expect("draw");
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    fn three_kind_snapshot() -> Snapshot {
+        Snapshot {
+            rows: vec![
+                row("%1", "codex-admin-mite", AgentKind::Codex),
+                row("%2", "kiro-foo", AgentKind::Kiro),
+                row("%3", "idle-claude-pane-3", AgentKind::Claude),
+            ],
+            note: None,
+            captured_at: None,
+        }
+    }
+
+    #[test]
+    fn render_ungrouped_shows_kind_column_for_each_agent() {
+        let out = render_to_string(&three_kind_snapshot(), &View::default(), 120, 10);
+        // KIND column heading present.
+        assert!(out.contains("KIND"), "missing KIND header in:\n{out}");
+        // One badge per agent kind, on its row.
+        assert!(out.contains("CODX"), "missing CODX badge in:\n{out}");
+        assert!(out.contains("KIRO"), "missing KIRO badge in:\n{out}");
+        assert!(out.contains("CLAU"), "missing CLAU badge in:\n{out}");
+        // No group headers when grouping is off.
+        assert!(
+            !out.contains("group: codex"),
+            "unexpected group header in ungrouped view:\n{out}"
+        );
+        // Footer reports group state.
+        assert!(out.contains("group: off"), "missing footer state:\n{out}");
+    }
+
+    #[test]
+    fn render_grouped_shows_one_header_per_kind() {
+        let out = render_to_string(&three_kind_snapshot(), &View { grouped: true }, 120, 12);
+        assert!(out.contains("── group: codex ──"), "no codex header:\n{out}");
+        assert!(out.contains("── group: kiro ──"), "no kiro header:\n{out}");
+        assert!(out.contains("── group: claude ──"), "no claude header:\n{out}");
+        assert!(out.contains("group: on"), "missing footer state:\n{out}");
     }
 }
