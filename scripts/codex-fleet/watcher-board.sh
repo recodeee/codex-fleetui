@@ -144,7 +144,7 @@ for line in sh("tmux", "list-panes", "-t", f"{SESSION}:overview", "-F",
 
 # ── 4. Quotas ─────────────────────────────────────────────────────────
 quotas = {}
-for line in sh("codex-auth", "list").splitlines():
+for line in sh("agent-auth", "list").splitlines():
     em = re.search(r"([\w.+-]+@[\w.-]+\.[a-z]+)", line)
     if not em: continue
     h5 = re.search(r"5h=(\d+)%", line); wk = re.search(r"weekly=(\d+)%", line)
@@ -153,7 +153,7 @@ for line in sh("codex-auth", "list").splitlines():
 
 # ── 5. Cap pool + healthy pool + per-email probe map ─────────────────
 # probe_map: {email -> (verdict, eta_str_or_None)} — used by FLEET PANES card
-# below as the live "5h" signal, since codex-auth list's 5h column reports the
+# below as the live "5h" signal, since agent-auth list's 5h column reports the
 # API meter (often 100% used while the rolling cap is still fine) and is
 # misleading. cap-probe's verdict comes from an actual `codex exec` round-trip.
 cap_pool = []
@@ -330,7 +330,7 @@ hdr = (f"{D}PANE  AGENT                          STATE          "
        f"5h-LIVE   WK-USED   ACCOUNT{R}")
 out.append(card_row(hdr))
 # 5h column shows the live cap-probe verdict (healthy/capped/unknown) instead
-# of codex-auth's API-meter percentage. WK-USED matches the value `codex-auth
+# of agent-auth's API-meter percentage. WK-USED matches the value `agent-auth
 # list` prints for `weekly=`, so the watcher reads identically to the shell.
 for p in panes:
     bg, icon, label = state_meta.get(p["state"], (BG_GRAY, "◇", p["state"]))

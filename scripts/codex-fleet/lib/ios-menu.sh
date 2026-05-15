@@ -69,6 +69,17 @@ _ios_sgr() {
 }
 _ios_reset() { printf '\033[0m'; }
 
+# Internal: print $2 copies of glyph $1 with no newline. Used by the
+# context menu to draw the rounded card's top/bottom/hairline rules
+# inside the active SGR. Implemented via printf so it stays cheap and
+# avoids forking $(seq …) per call. `printf '%s' "$g$g$g..."` is
+# faster than a bash for-loop for the tiny widths we hand it (~52).
+_ios_repeat() {
+  local glyph="$1" count="${2:-0}" out=""
+  while (( count-- > 0 )); do out+="$glyph"; done
+  printf '%s' "$out"
+}
+
 # ── ios_segmented_control "A|B|C" active_idx ────────────────────────────────
 # Renders one line: rounded outer ends, inactive=gray on bg2, active=white on
 # blue with bold weight. Each segment padded with one space on each side.

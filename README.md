@@ -17,7 +17,7 @@ Ships with:
   while still holding a Colony claim; releases the claim so force-claim
   can re-route the work.
 - **`cap-swap-daemon.sh`** — replaces capped panes with healthy accounts
-  using a live `codex exec` probe (not the codex-auth meter — those are
+  using a live `codex exec` probe (not the agent-auth meter — those are
   different things).
 - **iOS-style tmux chrome** (`style-tabs.sh`, `watcher-board.sh`, etc.) —
   rounded pill tabs, clickable status row, six animated dashboards.
@@ -43,11 +43,11 @@ Standard:
 
 Account / task layer:
 
-- `codex` CLI + `codex-auth` (Anthropic Codex)
+- `codex` CLI + `agent-auth` (Anthropic Codex)
 - `colony` CLI ([colonyq](https://github.com/colonyq)) for the task queue,
   plan publishing, and stranded-claim rescue.
 - One auth file per worker at `~/.codex/accounts/<email>.json`. Generate
-  them with `codex-auth login` per account.
+  them with `agent-auth login` per account.
 
 ## Usage
 

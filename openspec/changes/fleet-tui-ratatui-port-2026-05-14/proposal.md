@@ -36,7 +36,7 @@ boundary is: anything that *renders a frame* moves to Rust; anything that
    widgets with section headers, right-aligned keybind hints, and a
    selected-row accent — surfaces that are clumsy to build in tmux.
 4. **Typed data layer.** Every dashboard currently re-parses
-   `plan.json`, `codex-auth list`, and tmux scrollback with scripts.
+   `plan.json`, `agent-auth list`, and tmux scrollback with scripts.
    Centralising those into `serde` structs eliminates duplicated regex.
 
 ## Out of scope

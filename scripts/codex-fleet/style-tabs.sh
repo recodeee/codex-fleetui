@@ -236,10 +236,12 @@ fi
 
 # ── iOS-style menu styling ───────────────────────────────────────────────────
 # Sheet-style card on tertiarySystemBackground, rounded border, iOS-blue
-# selection row — mirrors a UIKit context menu on dark mode.
+# selection row — mirrors a UIKit context menu on dark mode. The border fg
+# nudges up to #3A3A3C so the rounded outline reads on a black background
+# (the prior #2C2C2E was nearly invisible against the pane chrome).
 tx_set menu-style          "fg=#FFFFFF,bg=#1C1C1E"
 tx_set menu-selected-style "fg=#FFFFFF,bg=#007AFF,bold"
-tx_set menu-border-style   "fg=#2C2C2E"
+tx_set menu-border-style   "fg=#3A3A3C,bg=#1C1C1E"
 tx_set menu-border-lines   "rounded"
 
 # ── sticky right-click menu ──────────────────────────────────────────────────
@@ -280,17 +282,61 @@ trap 'rm -f "$sticky_menu_conf"' EXIT
 # whole `VAR:-default` as one variable name and rejects it with "invalid
 # environment variable"). Resolve the fallback in bash first, then push it
 # into tmux's env so the binding sees a plain ${CODEX_FLEET_REPO_ROOT}.
-_repo_root="${CODEX_FLEET_REPO_ROOT:-$HOME/Documents/recodee}"
+_repo_root="${CODEX_FLEET_REPO_ROOT:-$HOME/Documents/codex-fleet}"
 tmux set-environment -g CODEX_FLEET_REPO_ROOT "$_repo_root" 2>/dev/null || true
 cat >"$sticky_menu_conf" <<'TMUX_CONF'
+# ── Right-click context menu ─────────────────────────────────────────────────
+# Plain right-click opens a native `display-menu` styled with the iOS palette
+# (rounded chrome from menu-border-lines, accents from menu-style). This is
+# faster than the bash/ratatui popup, feels like a regular terminal context
+# menu, and keeps tmux as the single source of truth for the keystroke loop.
+#
+# Shift+Right-click opens the richer popup card (pane-context-menu-chooser.sh)
+# for operators who want the live LIVE chip header + chip-shaped key hints.
+#
+# The if-shell gate is unchanged: TUI panes that hold mouse_any_flag get the
+# mouse event passed through; copy-mode panes also get it through; otherwise
+# we open the menu.
 unbind-key -T root MouseDown3Pane
-# Right-click context menu — runs the ratatui-rendered iOS menu when its
-# binary exists, otherwise falls back to the bash renderer.
-# The chooser shell script keeps the conditional out of tmux's substitution
-# layer (tmux eats `$FB`-style shell vars before the popup spawns).
-bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { set-environment -g CODEX_FLEET_MENU_LINE "#{q:mouse_line}" ; display-popup -E -B -w 60 -h 28 -x M -y M -t = "bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-context-menu-chooser.sh '#{pane_id}'" }
+unbind-key -T root S-MouseDown3Pane
+bind-key   -T root MouseDown3Pane \
+  if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" \
+    { select-pane -t = ; send-keys -M } \
+    { set-environment -g CODEX_FLEET_MENU_LINE "#{q:mouse_line}" ; \
+      select-pane -t = ; \
+      display-menu -O -x M -y M \
+        -T "#[align=centre,bold,fg=#FFFFFF,bg=#1C1C1E]  pane #{pane_index} · #{pane_id}  " \
+        "#[fg=#AEAEB2]▣  #[fg=#FFFFFF]Copy whole pane"    C  "run-shell \"tmux capture-pane -t '#{pane_id}' -p -S - -E - | bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-clip-dual.sh && tmux display-message -d 1200 '▣  pane history copied'\"" \
+        "#[fg=#AEAEB2]▢  #[fg=#FFFFFF]Copy visible"       c  "run-shell \"tmux capture-pane -t '#{pane_id}' -p | bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-clip-dual.sh && tmux display-message -d 1200 '▢  visible area copied'\"" \
+        "#[fg=#AEAEB2]─  #[fg=#FFFFFF]Copy this line"     l  "run-shell \"bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-copy-line.sh\"" \
+        "#[fg=#34C759]↳  #[fg=#FFFFFF]Paste clipboard"    p  "run-shell \"wl-paste --no-newline | tmux load-buffer - && tmux paste-buffer -d -p -t '#{pane_id}'\"" \
+        "" \
+        "#[fg=#AEAEB2]↟  #[fg=#FFFFFF]Scroll to top"      "<" "copy-mode -t '#{pane_id}' ; send-keys -X -t '#{pane_id}' history-top" \
+        "#[fg=#AEAEB2]↡  #[fg=#FFFFFF]Scroll to bottom"   ">" "copy-mode -t '#{pane_id}' ; send-keys -X -t '#{pane_id}' history-bottom" \
+        "" \
+        "#[fg=#AEAEB2]⊟  #[fg=#FFFFFF]Split right"        h  "split-window -h -t '#{pane_id}'" \
+        "#[fg=#AEAEB2]⊞  #[fg=#FFFFFF]Split down"         v  "split-window -v -t '#{pane_id}'" \
+        "#{?#{>:#{window_panes},1},,-}#[fg=#AEAEB2]⤢  #[fg=#FFFFFF]#{?window_zoomed_flag,Unzoom pane,Zoom pane}" z "resize-pane -Z -t '#{pane_id}'" \
+        "" \
+        "#{?#{>:#{window_panes},1},,-}#[fg=#AEAEB2]↥  #[fg=#FFFFFF]Swap up"   u "swap-pane -U -t '#{pane_id}'" \
+        "#{?#{>:#{window_panes},1},,-}#[fg=#AEAEB2]↧  #[fg=#FFFFFF]Swap down" d "swap-pane -D -t '#{pane_id}'" \
+        "#{?pane_marked_set,,-}#[fg=#AEAEB2]⇄  #[fg=#FFFFFF]Swap with marked"  s "swap-pane -t '#{pane_id}'" \
+        "#[fg=#FFCC00]★  #[fg=#FFFFFF]#{?pane_marked,Unmark pane,Mark pane}" m "select-pane -m -t '#{pane_id}'" \
+        "" \
+        "#[fg=#FF9500]↻  #[fg=#FFFFFF]Respawn pane"       R  "respawn-pane -k -t '#{pane_id}'" \
+        "#[fg=#FF3B30]✕  #[fg=#FF3B30,bold]Kill pane"     X  "confirm-before -p '#[fg=#FF3B30,bold]  Kill pane #{pane_id}? (y/n)  ' 'kill-pane -t \"#{pane_id}\"'" \
+        "" \
+        "#[fg=#8E8E93]?  Keyboard help…"                  "?" "display-popup -E -B -w 60 -h 28 -x M -y M -t = \"bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/help-popup.sh\"" }
 
-# Mouse-wheel routing — narrowed gate (alt-screen only).
+# Shift+Right-click → rich popup card (live LIVE chip + chip-shaped key hints).
+bind-key -T root S-MouseDown3Pane \
+  if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" \
+    { select-pane -t = ; send-keys -M } \
+    { set-environment -g CODEX_FLEET_MENU_LINE "#{q:mouse_line}" ; \
+      display-popup -E -B -w 60 -h 28 -x M -y M -t = \
+        "bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-context-menu-chooser.sh '#{pane_id}'" }
+
+# Mouse-wheel routing — narrowed gate (alt-screen OR codex CLI inline mode).
 #
 # Old behavior: wheel always entered copy-mode unless the pane held
 # mouse_any_flag. That made every plain shell pane (codex-bia-zazrifka
@@ -298,15 +344,20 @@ bind-key   -T root MouseDown3Pane if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:
 # from there parked tmux's "(search down)" prompt across the status bar.
 #
 # New gate (in dispatch order):
-#   1. pane already in copy-mode  → send-keys -M (scrolls inside copy-mode)
-#   2. pane holds mouse_any_flag  → send-keys -M (codex CLI / TUI handles it)
-#   3. pane is in alt-screen      → copy-mode -e (override: anim dashboards
-#                                    set \033[?1049h but don't grab mouse, so
-#                                    tmux's default would silently drop the
-#                                    wheel — entering copy-mode is the only
-#                                    way to scroll their rendered output)
-#   4. otherwise (plain shell)    → send-keys -M (no accidental copy-mode;
-#                                    use prefix+[ for shell backlog instead)
+#   1. pane already in copy-mode    → send-keys -M (scrolls inside copy-mode)
+#   2. pane holds mouse_any_flag    → send-keys -M (TUI handles it)
+#   3. pane is in alt-screen        → copy-mode -e (anim dashboards set
+#                                      \033[?1049h but don't grab mouse, so
+#                                      tmux's default would silently drop the
+#                                      wheel — copy-mode is the only way to
+#                                      scroll their rendered output)
+#   4. pane runs codex CLI (`node`) → copy-mode -e (codex >=v0.5 renders
+#                                      inline, never enters alt-screen at the
+#                                      idle prompt, and ignores forwarded
+#                                      wheel events. Without this case, scroll
+#                                      silently does nothing in chat panes.)
+#   5. otherwise (plain shell)      → send-keys -M (no accidental copy-mode;
+#                                      use prefix+[ for shell backlog instead)
 #
 # Why alternate_on instead of a window-name allowlist: full-bringup.sh has
 # six viz windows (fleet, plan, waves, review, watcher, design) and two
@@ -317,10 +368,10 @@ unbind-key -T root WheelUpPane
 unbind-key -T root WheelDownPane
 bind-key   -T root WheelUpPane   if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" \
   "send-keys -M" \
-  "if-shell -F '#{alternate_on}' 'copy-mode -e' 'send-keys -M'"
+  "if-shell -F '#{||:#{alternate_on},#{m/r:^node$,#{pane_current_command}}}' 'copy-mode -e' 'send-keys -M'"
 bind-key   -T root WheelDownPane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" \
   "send-keys -M" \
-  "if-shell -F '#{alternate_on}' 'copy-mode -e' 'send-keys -M'"
+  "if-shell -F '#{||:#{alternate_on},#{m/r:^node$,#{pane_current_command}}}' 'copy-mode -e' 'send-keys -M'"
 
 # Close ONLY the focused pane on `prefix + w` (operator's habit).
 #
@@ -347,6 +398,69 @@ unbind-key -T root MouseDown1Status
 bind-key   -T root MouseDown1Status select-window -t=
 TMUX_CONF
 tmux source-file "$sticky_menu_conf" >/dev/null 2>&1 || echo "[style-tabs] WARN: sticky menu rebind failed (see $sticky_menu_conf)"
+
+# ── system-clipboard piping for mouse selection ─────────────────────────────
+# tmux's default copy-pipe-and-cancel writes the selection to a tmux paste
+# buffer only — operators expect drag/double/triple-click to land in the OS
+# clipboard so they can paste into the browser. Wire up the right command for
+# the host's display server.
+#
+# Detection order (first available wins):
+#   wl-copy                  — Wayland (sway, GNOME, KDE Plasma 6)
+#   xclip -selection clipboard — Xorg / XWayland fallback
+#   xsel --clipboard --input — older Xorg setups
+#
+# When none is found we leave the bindings alone (selection still lives in
+# the tmux buffer; `prefix + ]` pastes it). The codex-fleet bin/* scripts
+# already hard-depend on wl-copy, so on this rig the first branch wins.
+# Use the dual-clip helper so every selection lands in BOTH the system
+# clipboard and the X11 primary selection at once. Primary feeds Shift+Insert
+# / middle-click paste the way a normal Linux terminal does; clipboard feeds
+# Ctrl+Shift+V / paste-buffer.
+_dual_clip="bash ${CODEX_FLEET_REPO_ROOT:-$HOME/Documents/codex-fleet}/scripts/codex-fleet/bin/pane-menu-clip-dual.sh"
+_clip_cmd=""
+if command -v wl-copy >/dev/null 2>&1 || command -v xclip >/dev/null 2>&1 || command -v xsel >/dev/null 2>&1; then
+  _clip_cmd="$_dual_clip"
+fi
+if [[ -n "$_clip_cmd" ]]; then
+  # Drag-end fires inside copy-mode-vi (MouseDrag1Pane enters copy-mode -M
+  # for non-mouse-grabbing panes). Pipe the selection through the clipboard
+  # tool then cancel copy-mode so the user is back at the prompt.
+  tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$_clip_cmd" 2>/dev/null || true
+  # `Enter` and `y` (vi yank) — also pipe through clipboard.
+  tmux bind-key -T copy-mode-vi Enter             send-keys -X copy-pipe-and-cancel "$_clip_cmd" 2>/dev/null || true
+  tmux bind-key -T copy-mode-vi y                 send-keys -X copy-pipe-and-cancel "$_clip_cmd" 2>/dev/null || true
+  # Double / triple click in copy-mode (word / line selection).
+  tmux bind-key -T copy-mode-vi DoubleClick1Pane "select-pane ; send-keys -X select-word ; run-shell -d 0.3 ; send-keys -X copy-pipe-and-cancel '$_clip_cmd'" 2>/dev/null || true
+  tmux bind-key -T copy-mode-vi TripleClick1Pane "select-pane ; send-keys -X select-line ; run-shell -d 0.3 ; send-keys -X copy-pipe-and-cancel '$_clip_cmd'" 2>/dev/null || true
+  # Root-table double/triple click — the version that fires when the user
+  # isn't already in copy-mode. tmux's default jumps into copy-mode -H, makes
+  # the selection, and `copy-pipe-and-cancel` drops back. Same wiring through
+  # the clipboard.
+  tmux bind-key -T root DoubleClick1Pane "select-pane -t = ; if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' { send-keys -M } { copy-mode -H ; send-keys -X select-word ; run-shell -d 0.3 ; send-keys -X copy-pipe-and-cancel '$_clip_cmd' }" 2>/dev/null || true
+  tmux bind-key -T root TripleClick1Pane "select-pane -t = ; if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' { send-keys -M } { copy-mode -H ; send-keys -X select-line ; run-shell -d 0.3 ; send-keys -X copy-pipe-and-cancel '$_clip_cmd' }" 2>/dev/null || true
+
+  # Middle-click → paste PRIMARY selection (the X11 "last selection" buffer
+  # that's filled by every drag/double/triple-click). Shift+Insert mirrors
+  # this so keyboard-driven primary paste works too. Both gestures match
+  # xterm / gnome-terminal / kitty defaults — the symmetric half of the
+  # "feels like a normal terminal" copy/paste loop.
+  #
+  # For an explicit clipboard paste (the Ctrl+Shift+V semantic), use the
+  # Paste row in the right-click menu or `prefix + ]`.
+  _primary_cmd=""
+  if command -v wl-paste >/dev/null 2>&1; then
+    _primary_cmd="wl-paste --no-newline --primary"
+  elif command -v xclip >/dev/null 2>&1; then
+    _primary_cmd="xclip -selection primary -o"
+  elif command -v xsel >/dev/null 2>&1; then
+    _primary_cmd="xsel --primary --output"
+  fi
+  if [[ -n "$_primary_cmd" ]]; then
+    tmux bind-key -T root MouseDown2Pane "select-pane -t = ; if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' { send-keys -M } { run-shell '$_primary_cmd | tmux load-buffer - && tmux paste-buffer -d -p' }" 2>/dev/null || true
+    tmux bind-key -T root S-IC          "if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' { send-keys S-IC } { run-shell '$_primary_cmd | tmux load-buffer - && tmux paste-buffer -d -p' }" 2>/dev/null || true
+  fi
+fi
 
 # Default UX: hide the tmux status bar entirely. The canonical navigation
 # surface is now the in-binary tab strip rendered by `rust/fleet-ui::tab_strip`

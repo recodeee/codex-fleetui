@@ -287,8 +287,8 @@ usage_lines() {
     cat "$USAGE_FILE"
     return 0
   fi
-  if command -v codex-auth >/dev/null 2>&1; then
-    codex-auth list 2>/dev/null || true
+  if command -v agent-auth >/dev/null 2>&1; then
+    agent-auth list 2>/dev/null || true
   fi
 }
 

@@ -1,5 +1,5 @@
 ---
-base_root_hash: missing-spec-root
+base_root_hash: f43dddb0
 slug: codex-fleet-overlays-phase5-2026-05-14
 ---
 

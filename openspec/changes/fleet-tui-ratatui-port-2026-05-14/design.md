@@ -8,7 +8,7 @@ The fleet has two layers and only one moves.
 |----------------|--------------------------------------------------|----------------|
 | Orchestration  | `full-bringup.sh`, `cap-swap-daemon.sh`, `force-claim.sh`, `cap-probe.sh`, `claim-release-supervisor.sh`, `style-tabs.sh` | **stays bash** |
 | Rendering      | `watcher-board.sh`, `fleet-state-anim.sh`, `plan-tree-anim.sh`, `waves-anim*.sh`, `fleet-tick.sh` (rendering half) | **becomes Rust (ratatui)** |
-| Data plumbing  | `plan.json` parsers, `codex-auth list` parsers, tmux pane introspection | **becomes Rust (typed)** |
+| Data plumbing  | `plan.json` parsers, `agent-auth list` parsers, tmux pane introspection | **becomes Rust (typed)** |
 
 `style-tabs.sh` *renders* (it sets tmux options + bindings) but it operates
 on the tmux server, not on a frame buffer. It stays bash.
@@ -49,7 +49,7 @@ rust/
 │   └── overlay.rs   centered_overlay(area, w, h); Clear + bordered popup
 ├── fleet-data/      library crate — typed data layer
 │   ├── plan.rs      serde structs for openspec/plans/*/plan.json
-│   ├── accounts.rs  codex-auth list parser → Account { email, 5h%, weekly%, … }
+│   ├── accounts.rs  agent-auth list parser → Account { email, 5h%, weekly%, … }
 │   └── panes.rs     tmux introspection, PaneState enum
 ├── fleet-watcher/   bin replacing watcher-board.sh
 ├── fleet-state/     bin replacing fleet-state-anim.sh + fleet-tick.sh (render half)
@@ -90,7 +90,7 @@ Each module ships with `insta` snapshot tests so the existing
 
 ### Phase 2 — `fleet-data` typed data layer
 
-`plan.rs` (`plan.json` deser), `accounts.rs` (`codex-auth list`
+`plan.rs` (`plan.json` deser), `accounts.rs` (`agent-auth list`
 parser), `panes.rs` (tmux introspection + `PaneState` enum). First
 port: keep scraping `tmux capture-pane` for pane classification. A
 follow-up plan replaces scraping with a real signal (Colony presence

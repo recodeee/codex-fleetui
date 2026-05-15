@@ -67,7 +67,7 @@ cat <<HINT
 
 HINT
 
-for bin in tmux kitty git python3 colony codex codex-auth inotifywait jq; do
+for bin in tmux kitty git python3 colony codex agent-auth inotifywait jq; do
   if command -v "$bin" >/dev/null 2>&1; then
     printf '    [ok]   %s -> %s\n' "$bin" "$(command -v "$bin")"
   else

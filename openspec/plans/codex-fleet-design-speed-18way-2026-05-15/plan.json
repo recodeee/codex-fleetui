@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "plan_slug": "codex-fleet-design-speed-18way-2026-05-15",
+  "title": "18-way parallel iOS-design polish + render-speed pass across the fleet TUI",
+  "problem": "The codex-fleet TUI has 10 reference iOS-style design surfaces captured as static PNG + HTML mocks in /home/deadpool/Documents/codex-fleetui/images/ (Designs A–J: Context menu, Spotlight, Action sheet, Session switcher, Glass dock, ⌘K jump grid, Fleet worker list, Plan wave tree, Waves spawn timeline, Review approval queue). The live fleet renders functional but unstyled equivalents — flat colors, no card shadows, full redraws per tick, blocking IO during state polling, and no frame budget. This plan opens 18 fully-parallel lanes (10 design surfaces + 8 render-speed lanes) that each land their work in a NEW module file inside their target crate. File scopes are disjoint so all 18 panes can claim+edit concurrently with zero serialization on overlay.rs or main.rs. Wiring the new modules into their respective main.rs binaries is intentionally OUT OF SCOPE here — it ships in a follow-up integration plan once these 18 land. Reference images live at /home/deadpool/Documents/codex-fleetui/images/{A..J}_*.png (open the .html sibling for hover/animation behavior).",
+  "acceptance_criteria": [
+    "All 18 tasks have depends_on=[] and disjoint file_scope; no two tasks list the same file.",
+    "Each task lands a single NEW .rs module file under its target crate; no edits to existing main.rs / lib.rs / overlay.rs in this plan.",
+    "Each Design lane (sub-0..sub-9) implements a ratatui Widget whose snapshot output matches the reference at /home/deadpool/Documents/codex-fleetui/images/<letter>_*.png within reasonable TUI fidelity (color palette, padding, card shadow, separator weight).",
+    "Each Speed lane (sub-10..sub-17) lands a self-contained struct with a public API plus unit tests proving its perf claim (frame budget, debounce window, cache hit, diff coverage).",
+    "Each new module compiles standalone via `cargo check -p <crate>` even though it is not yet wired into the binary.",
+    "Each task includes one `cargo test -p <crate>` invocation as its verifier evidence."
+  ],
+  "roles": [
+    "planner",
+    "architect",
+    "executor",
+    "verifier"
+  ],
+  "tasks": [
+    {
+      "subtask_index": 0,
+      "title": "Design A — iOS Context menu widget (pinned-to-pane)",
+      "description": "Create rust/fleet-ui/src/overlay/context_menu_ios.rs implementing an iOS-styled ContextMenu ratatui Widget. Reference: /home/deadpool/Documents/codex-fleetui/images/A _ Context menu _ pinned to active pane.png and its sibling .html for hover/active states. Match: rounded card, two-tone separator, SF-Pro-like uppercase first letter of each item, destructive-red last row. Expose `IosContextMenu { items: Vec<MenuItem>, anchor: Rect }` and one inline `#[cfg(test)]` snapshot test using insta. Do NOT modify overlay.rs in this plan.",
+      "file_scope": [
+        "rust/fleet-ui/src/overlay/context_menu_ios.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 1,
+      "title": "Design B — iOS Spotlight search palette",
+      "description": "Create rust/fleet-ui/src/overlay/spotlight_ios.rs implementing a search-first command palette modeled on /home/deadpool/Documents/codex-fleetui/images/B _ Spotlight _ search-first palette.png. Match: blurred backdrop sentinel, top-pinned text input with leading magnifier glyph, result rows with subtitle + right-aligned hotkey chip. Public struct `IosSpotlight { query: String, results: Vec<SpotlightHit> }` plus an insta snapshot test for the empty-query and populated-results states. Do not touch overlay.rs.",
+      "file_scope": [
+        "rust/fleet-ui/src/overlay/spotlight_ios.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 2,
+      "title": "Design C — iOS grouped Action sheet (Cancel)",
+      "description": "Create rust/fleet-ui/src/overlay/action_sheet_ios.rs implementing a bottom-anchored grouped action sheet matching /home/deadpool/Documents/codex-fleetui/images/C _ Action sheet _ grouped _ Cancel.png. Match: two visually-separated cards (action group + Cancel), 1px hairline separators, larger destructive-red row, full-width Cancel pill. Public `IosActionSheet { groups: Vec<ActionGroup>, cancel_label: &'static str }` plus snapshot test. Do not touch overlay.rs.",
+      "file_scope": [
+        "rust/fleet-ui/src/overlay/action_sheet_ios.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 3,
+      "title": "Design D — iOS Session switcher card stack",
+      "description": "Create rust/fleet-ui/src/overlay/session_switcher_ios.rs implementing a card-stack session switcher modeled on /home/deadpool/Documents/codex-fleetui/images/D _ Session switcher _ card stack.png. Match: peeking card stack, active card lifted with stronger shadow, session name + last-activity timestamp, swipe-up-to-dismiss chrome row. Public `IosSessionSwitcher { sessions: Vec<SessionCard>, active: usize }` plus snapshot test. Do not touch overlay.rs.",
+      "file_scope": [
+        "rust/fleet-ui/src/overlay/session_switcher_ios.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 4,
+      "title": "Design E — Glass dock floating top nav",
+      "description": "Create rust/fleet-ui/src/glass_dock.rs implementing a floating top navigation dock with a glass/blur backdrop, modeled on /home/deadpool/Documents/codex-fleetui/images/E _ Glass dock _ floating top nav.png. Match: pill-shaped container, leading session badge, trailing icon cluster, subtle inner highlight to fake glass. Public `GlassDock { tabs: Vec<DockTab>, active: usize }` plus snapshot test. Do not edit lib.rs in this plan.",
+      "file_scope": [
+        "rust/fleet-ui/src/glass_dock.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 5,
+      "title": "Design F — ⌘K jump grid section menu",
+      "description": "Create rust/fleet-ui/src/overlay/jump_grid.rs implementing a ⌘K-style 3-column section jump grid modeled on /home/deadpool/Documents/codex-fleetui/images/F _ Section menu _ _K jump grid.png. Match: square tile per section, glyph + label, focused tile with thick rounded border, footer help-row showing ↵ to open / ⌘K to dismiss. Public `JumpGrid { sections: Vec<SectionTile>, cursor: (usize, usize) }` plus snapshot test. Do not touch overlay.rs.",
+      "file_scope": [
+        "rust/fleet-ui/src/overlay/jump_grid.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 6,
+      "title": "Design G — Fleet worker list with live status",
+      "description": "Create rust/fleet-state/src/worker_table.rs implementing a 5-column worker table widget modeled on /home/deadpool/Documents/codex-fleetui/images/G _ Fleet _ worker list _ live status.png. Columns: agent · status pill · current-task summary · file-claim count · last-tick age. Match: zebra rows, status pill colors (idle=cool gray, working=accent blue, blocked=warning amber, done=success green), monospace timestamps. Public `WorkerTable { rows: Vec<WorkerRow> }` plus a snapshot test. Do not touch main.rs.",
+      "file_scope": [
+        "rust/fleet-state/src/worker_table.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 7,
+      "title": "Design H — Plan wave tree (topo levels)",
+      "description": "Create rust/fleet-plan-tree/src/topo_tree.rs implementing a topologically-leveled wave tree modeled on /home/deadpool/Documents/codex-fleetui/images/H _ Plan _ wave tree_ topo levels.png. Match: horizontal rails per topo level, dotted dependency arrows, claimed-vs-available chip per node, current-wave highlight. Public `TopoTree { levels: Vec<Vec<TaskNode>>, edges: Vec<(usize,usize)>, current_wave: usize }` plus snapshot test. Do not touch main.rs.",
+      "file_scope": [
+        "rust/fleet-plan-tree/src/topo_tree.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 8,
+      "title": "Design I — Waves spawn timeline",
+      "description": "Create rust/fleet-waves/src/spawn_timeline.rs implementing a horizontal-scroll spawn-timeline widget modeled on /home/deadpool/Documents/codex-fleetui/images/I _ Waves _ spawn timeline.png. Match: one row per worker, colored span per spawn segment, vertical now-cursor, hover-tooltip ghost row at bottom. Public `SpawnTimeline { rows: Vec<TimelineRow>, now: Instant, viewport: Range<Instant> }` plus snapshot test. Do not touch main.rs.",
+      "file_scope": [
+        "rust/fleet-waves/src/spawn_timeline.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 9,
+      "title": "Design J — Review approval queue",
+      "description": "Create rust/fleet-ui/src/review_queue.rs implementing the review approval queue modeled on /home/deadpool/Documents/codex-fleetui/images/J _ Review _ approval queue.png. Match: stacked review cards with diff stat chips, approve/needs-changes/reject buttons in iOS pill row, top filter segmented control (Open / Mine / Resolved). Public `ReviewQueue { cards: Vec<ReviewCard>, filter: ReviewFilter }` plus snapshot test. Do not touch lib.rs.",
+      "file_scope": [
+        "rust/fleet-ui/src/review_queue.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_ui",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 10,
+      "title": "Speed — diff-based plan-tree redraw",
+      "description": "Create rust/fleet-plan-tree/src/diff_redraw.rs exposing a `DiffRedraw` engine that compares the previous frame's plan-tree model to the next and emits only the dirty Rects. Goal: skip full redraws when only one node's status changes. Include a unit test that proves a single status flip produces ≤ 1 dirty Rect (not the whole frame). Do not touch main.rs.",
+      "file_scope": [
+        "rust/fleet-plan-tree/src/diff_redraw.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_perf",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 11,
+      "title": "Speed — cached wave snapshot",
+      "description": "Create rust/fleet-waves/src/snapshot_cache.rs exposing a `SnapshotCache` keyed by (plan_slug, mtime_ns) that memoizes the parsed-and-laid-out wave timeline. Goal: avoid re-parsing plan.json + recomputing topo layers when the file hasn't changed. Unit test: 2nd call with same mtime returns the cached `Arc<Snapshot>` (pointer-equal) and does NOT re-read the file. Do not touch main.rs.",
+      "file_scope": [
+        "rust/fleet-waves/src/snapshot_cache.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_perf",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 12,
+      "title": "Speed — frame-budget loop for fleet-tui-poc",
+      "description": "Create rust/fleet-tui-poc/src/frame_budget.rs exposing `FrameBudget::tick()` that caps the render loop at 30fps with a soft 33ms slice and yields early when nothing is dirty. Public API: `FrameBudget::new(target_fps: u32)` + `should_render(&mut self, dirty: bool) -> bool`. Unit test: at 30fps with continuous dirty=true, exactly 30 renders happen across a simulated 1s window. Do not touch main.rs.",
+      "file_scope": [
+        "rust/fleet-tui-poc/src/frame_budget.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_perf",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 13,
+      "title": "Speed — lazy off-screen tab render",
+      "description": "Create rust/fleet-tab-strip/src/lazy_render.rs exposing a `LazyTabRenderer` that only invokes a tab's render fn when the tab is the active one or is within an N-tab look-ahead window. Public API: `LazyTabRenderer::new(lookahead: usize)` + `render(&mut self, tabs: &[Tab], active: usize, frame: &mut Frame)`. Unit test: with 6 tabs, lookahead=1, active=2 → tabs 1,2,3 render; tabs 0,4,5 are skipped. Do not touch main.rs.",
+      "file_scope": [
+        "rust/fleet-tab-strip/src/lazy_render.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_perf",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 14,
+      "title": "Speed — async file-claim fetch in fleet-state",
+      "description": "Create rust/fleet-state/src/claim_fetch.rs exposing `ClaimFetcher` that spawns Colony `task_list_account_claims` calls on a background thread and returns a non-blocking `try_latest() -> Option<Snapshot>`. Goal: stop the render loop blocking on the MCP roundtrip. Public API: `ClaimFetcher::new(poll: Duration)` + `try_latest()` + `Drop` that joins cleanly. Unit test: a mocked fetcher with a 200ms latency lets the render thread call `try_latest()` 100x in under 50ms with the cached value. Do not touch main.rs.",
+      "file_scope": [
+        "rust/fleet-state/src/claim_fetch.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_perf",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 15,
+      "title": "Speed — watcher event debounce",
+      "description": "Create rust/fleet-watcher/src/debounce.rs exposing a `Debouncer<E>` that coalesces a burst of events within a configurable window (default 50ms) into one emitted event. Public API: `Debouncer::new(window: Duration)` + `push(event: E)` + `drain() -> Vec<E>` (one per coalesce key). Unit test: 100 events pushed within 10ms with the same key coalesce to a single drained event; events with different keys remain distinct. Do not touch main.rs.",
+      "file_scope": [
+        "rust/fleet-watcher/src/debounce.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_perf",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 16,
+      "title": "Speed — layout cache for fleet-layout",
+      "description": "Create rust/fleet-layout/src/cache.rs exposing a `LayoutCache` that memoizes `Layout::split(Rect)` results keyed by (preset_id, rect). Goal: avoid recomputing identical splits across ticks. Public API: `LayoutCache::default()` + `split(&mut self, preset: &Preset, rect: Rect) -> &[Rect]`. Unit test: 1000 identical (preset, rect) calls perform the underlying split exactly once and return slice-equal results. Do not touch lib.rs or preset.rs.",
+      "file_scope": [
+        "rust/fleet-layout/src/cache.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_perf",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 17,
+      "title": "Speed — input event coalescing in fleet-input",
+      "description": "Create rust/fleet-input/src/coalesce.rs exposing `InputCoalescer` that merges repeated arrow-key / mouse-drag events arriving within one frame into a single Action carrying the net delta. Public API: `InputCoalescer::new()` + `push(action: Action)` + `flush() -> Vec<Action>`. Unit test: 8 consecutive `Action::MoveCursor { dy: 1 }` events flush to one `MoveCursor { dy: 8 }`; mixed-direction events do not merge. Do not touch lib.rs, action.rs, keymap.rs, modal.rs, or context.rs.",
+      "file_scope": [
+        "rust/fleet-input/src/coalesce.rs"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "rust_perf",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    }
+  ]
+}
