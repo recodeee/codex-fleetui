@@ -23,8 +23,11 @@
 //! | `IOS_BG_SOLID`      | `#1c1c1e` | `.systemBackground`   |
 //! | `IOS_HAIRLINE`      | `#3c3c41` | `.separator`          |
 //! | `IOS_HAIRLINE_STRONG` | `#55555a` | `.opaqueSeparator`  |
+//! | `IOS_HAIRLINE_BORDER` | `#3c3c41` | card border hairline|
 //! | `IOS_CHIP_BG`       | `#36363a` | shortcut-chip fill    |
 //! | `IOS_CARD_BG`       | `#2c2c30` | grouped section bg    |
+//! | `IOS_ROW_BG_LIGHT`  | `#2c2c30` | alternating row fill  |
+//! | `IOS_ROW_BG_DARK`   | `#262628` | alternating row fill  |
 //! | `IOS_ICON_CHIP`     | `#46464c` | 30×30 icon tile bg    |
 //! | `IOS_TINT_DARK`     | `#0764dc` | active-pill shadow    |
 //! | `IOS_TINT_SUB`      | `#d2e0ff` | Top-Hit subtitle fg   |
@@ -49,8 +52,11 @@ pub const IOS_BG_GLASS: Color = Color::Rgb(38, 38, 40);
 pub const IOS_BG_SOLID: Color = Color::Rgb(28, 28, 30);
 pub const IOS_HAIRLINE: Color = Color::Rgb(60, 60, 65);
 pub const IOS_HAIRLINE_STRONG: Color = Color::Rgb(85, 85, 90);
+pub const IOS_HAIRLINE_BORDER: Color = Color::Rgb(60, 60, 65);
 pub const IOS_CHIP_BG: Color = Color::Rgb(54, 54, 58);
 pub const IOS_CARD_BG: Color = Color::Rgb(44, 44, 48);
+pub const IOS_ROW_BG_LIGHT: Color = Color::Rgb(44, 44, 48);
+pub const IOS_ROW_BG_DARK: Color = Color::Rgb(38, 38, 40);
 pub const IOS_ICON_CHIP: Color = Color::Rgb(70, 70, 76);
 
 // Tint variants
@@ -64,13 +70,60 @@ mod tests {
     /// Hex-table parity guard. If any const drifts, this asserts which one.
     #[test]
     fn palette_hex_parity() {
-        assert_eq!(IOS_TINT,        Color::Rgb(0x0a, 0x84, 0xff), "IOS_TINT must be #0a84ff");
-        assert_eq!(IOS_DESTRUCTIVE, Color::Rgb(0xff, 0x45, 0x3a), "IOS_DESTRUCTIVE must be #ff453a");
-        assert_eq!(IOS_GREEN,       Color::Rgb(0x30, 0xd1, 0x58), "IOS_GREEN must be #30d158");
-        assert_eq!(IOS_ORANGE,      Color::Rgb(0xff, 0x9f, 0x0a), "IOS_ORANGE must be #ff9f0a");
-        assert_eq!(IOS_YELLOW,      Color::Rgb(0xff, 0xd6, 0x0a), "IOS_YELLOW must be #ffd60a");
-        assert_eq!(IOS_PURPLE,      Color::Rgb(0xbf, 0x5a, 0xf2), "IOS_PURPLE must be #bf5af2");
-        assert_eq!(IOS_FG,          Color::Rgb(0xf2, 0xf2, 0xf7), "IOS_FG must be #f2f2f7");
-        assert_eq!(IOS_BG_SOLID,    Color::Rgb(0x1c, 0x1c, 0x1e), "IOS_BG_SOLID must be #1c1c1e");
+        assert_eq!(
+            IOS_TINT,
+            Color::Rgb(0x0a, 0x84, 0xff),
+            "IOS_TINT must be #0a84ff"
+        );
+        assert_eq!(
+            IOS_DESTRUCTIVE,
+            Color::Rgb(0xff, 0x45, 0x3a),
+            "IOS_DESTRUCTIVE must be #ff453a"
+        );
+        assert_eq!(
+            IOS_GREEN,
+            Color::Rgb(0x30, 0xd1, 0x58),
+            "IOS_GREEN must be #30d158"
+        );
+        assert_eq!(
+            IOS_ORANGE,
+            Color::Rgb(0xff, 0x9f, 0x0a),
+            "IOS_ORANGE must be #ff9f0a"
+        );
+        assert_eq!(
+            IOS_YELLOW,
+            Color::Rgb(0xff, 0xd6, 0x0a),
+            "IOS_YELLOW must be #ffd60a"
+        );
+        assert_eq!(
+            IOS_PURPLE,
+            Color::Rgb(0xbf, 0x5a, 0xf2),
+            "IOS_PURPLE must be #bf5af2"
+        );
+        assert_eq!(
+            IOS_FG,
+            Color::Rgb(0xf2, 0xf2, 0xf7),
+            "IOS_FG must be #f2f2f7"
+        );
+        assert_eq!(
+            IOS_BG_SOLID,
+            Color::Rgb(0x1c, 0x1c, 0x1e),
+            "IOS_BG_SOLID must be #1c1c1e"
+        );
+        assert_eq!(
+            IOS_HAIRLINE_BORDER,
+            Color::Rgb(0x3c, 0x3c, 0x41),
+            "IOS_HAIRLINE_BORDER must be #3c3c41"
+        );
+        assert_eq!(
+            IOS_ROW_BG_LIGHT,
+            Color::Rgb(0x2c, 0x2c, 0x30),
+            "IOS_ROW_BG_LIGHT must be #2c2c30"
+        );
+        assert_eq!(
+            IOS_ROW_BG_DARK,
+            Color::Rgb(0x26, 0x26, 0x28),
+            "IOS_ROW_BG_DARK must be #262628"
+        );
     }
 }
