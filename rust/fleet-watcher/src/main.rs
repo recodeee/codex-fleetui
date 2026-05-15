@@ -1,15 +1,17 @@
-// fleet-watcher — tuirealm port. Renders the watcher-board chrome (header
-// banner + 4 stat cards + per-pane table placeholder) as a tuirealm
-// `AppComponent`. Fifth binary in the codex-fleet ratatui → tuirealm
-// migration after fleet-tab-strip (#50), fleet-state (#52),
-// fleet-plan-tree (#53), fleet-waves (#54).
+// fleet-watcher — live review approval queue.
+//
+// Data sources are intentionally best-effort: `gh pr list` drives counts,
+// recent decisions, and merged-PR diff histograms; `colony task_messages
+// kind=review` is sampled for reviewer events when the CLI exists. If either
+// side is missing, the pane renders a deterministic fixture instead of
+// panicking, so bare development shells still show the intended board.
 
 use std::io;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fleet_ui::{
-    overlay::{card_shadow, centered_overlay, render_overlay},
+    chip::{status_chip, ChipKind},
     palette::*,
 };
 use tuirealm::application::{Application, PollStrategy};
@@ -18,10 +20,10 @@ use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyEvent, NoUserEvent};
 use tuirealm::listener::EventListenerCfg;
 use tuirealm::props::{AttrValue, Attribute, Props, QueryResult};
-use tuirealm::ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
+use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use tuirealm::ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use tuirealm::ratatui::Frame;
 use tuirealm::state::State;
 use tuirealm::subscription::{EventClause, Sub, SubClause};
@@ -30,7 +32,6 @@ use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Msg {
     Tick,
-    Redraw,
     Quit,
 }
 
@@ -39,1656 +40,838 @@ pub enum Id {
     Watcher,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Overlay {
-    #[default]
-    None,
-    Spotlight,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReviewOutcome {
+    Pending,
+    Approved,
+    ChangesRequested,
+    Merged,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct SpotlightItem {
-    group: &'static str,
-    icon: &'static str,
-    title: &'static str,
-    sub: &'static str,
-    kbd: &'static str,
+impl ReviewOutcome {
+    fn chip_kind(self) -> ChipKind {
+        match self {
+            Self::Pending => ChipKind::Working,
+            Self::Approved => ChipKind::Done,
+            Self::ChangesRequested => ChipKind::Blocked,
+            Self::Merged => ChipKind::Working,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::ChangesRequested => "changes",
+            Self::Merged => "merged",
+        }
+    }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct MergeQueueItem {
-    number: String,
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ReviewStats {
+    pending: usize,
+    approved_today: usize,
+    changes_requested: usize,
+    merged_last_hour: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReviewEvent {
+    hhmm: String,
+    reviewer: String,
     title: String,
-    author: String,
-    merge_state: String,
-    review_decision: String,
-    blocked_checks: String,
-    url: String,
+    outcome: ReviewOutcome,
 }
 
-const SPOTLIGHT_ITEMS: &[SpotlightItem] = &[
-    SpotlightItem {
-        group: "PANE",
-        icon: "⊟",
-        title: "Horizontal split",
-        sub: "Split active pane top/bottom",
-        kbd: "h",
-    },
-    SpotlightItem {
-        group: "PANE",
-        icon: "⊞",
-        title: "Vertical split",
-        sub: "Split active pane left/right",
-        kbd: "v",
-    },
-    SpotlightItem {
-        group: "PANE",
-        icon: "⤢",
-        title: "Zoom pane",
-        sub: "Toggle full-screen for this pane",
-        kbd: "z",
-    },
-    SpotlightItem {
-        group: "PANE",
-        icon: "⇄",
-        title: "Swap with marked pane",
-        sub: "Swap active and marked panes",
-        kbd: "s",
-    },
-    SpotlightItem {
-        group: "SESSION",
-        icon: "⧉",
-        title: "Copy whole session",
-        sub: "Copy the current transcript",
-        kbd: "⇧C",
-    },
-    SpotlightItem {
-        group: "SESSION",
-        icon: "☰",
-        title: "Queue message",
-        sub: "Send a message on next idle",
-        kbd: "↹",
-    },
-    SpotlightItem {
-        group: "SESSION",
-        icon: "⌚",
-        title: "Search history…",
-        sub: "Search the current session",
-        kbd: "/",
-    },
-    SpotlightItem {
-        group: "FLEET",
-        icon: "+",
-        title: "Spawn new codex worker",
-        sub: "Open another worker pane",
-        kbd: "Ctrl N",
-    },
-    SpotlightItem {
-        group: "FLEET",
-        icon: "⎇",
-        title: "Switch worktree…",
-        sub: "Choose another branch/worktree",
-        kbd: "Ctrl B",
-    },
-];
-
-fn spotlight_filter(query: &str) -> Vec<&'static SpotlightItem> {
-    if query.is_empty() {
-        return SPOTLIGHT_ITEMS.iter().collect();
-    }
-
-    let q = query.to_lowercase();
-    SPOTLIGHT_ITEMS
-        .iter()
-        .filter(|it| {
-            it.title.to_lowercase().contains(&q)
-                || it.sub.to_lowercase().contains(&q)
-                || it.group.to_lowercase().contains(&q)
-        })
-        .collect()
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReviewData {
+    stats: ReviewStats,
+    events: Vec<ReviewEvent>,
+    diff_bins: Vec<i32>,
+    source: String,
+    degraded: bool,
 }
 
-fn spotlight_group_count(items: &[&'static SpotlightItem]) -> usize {
-    let mut groups = 0;
-    let mut last_group: Option<&str> = None;
-    for item in items {
-        if last_group != Some(item.group) {
-            groups += 1;
-            last_group = Some(item.group);
-        }
-    }
-    groups
-}
-
-fn spotlight_selected(total: usize, selected: usize) -> usize {
-    if total == 0 {
-        0
-    } else {
-        selected.min(total - 1)
-    }
-}
-
-const REVIEW_BG: Color = Color::Rgb(11, 13, 18);
-const REVIEW_PANEL: Color = Color::Rgb(31, 32, 36);
-const REVIEW_PANEL_RAISED: Color = Color::Rgb(39, 40, 44);
-const REVIEW_PANEL_MUTED: Color = Color::Rgb(45, 46, 50);
-const REVIEW_BLUE: Color = Color::Rgb(22, 141, 255);
-const REVIEW_GREEN_BG: Color = Color::Rgb(14, 61, 35);
-const REVIEW_GREEN_FG: Color = Color::Rgb(50, 230, 109);
-const REVIEW_YELLOW_BG: Color = Color::Rgb(84, 61, 18);
-const REVIEW_YELLOW_FG: Color = Color::Rgb(255, 194, 85);
-const REVIEW_RED_BG: Color = Color::Rgb(85, 34, 34);
-const REVIEW_RED_FG: Color = Color::Rgb(255, 138, 130);
-const REVIEW_GRAY_BORDER: Color = Color::Rgb(72, 74, 80);
-const REVIEW_DARK_BORDER: Color = Color::Rgb(42, 44, 49);
-const REVIEW_TEXT: Color = Color::Rgb(248, 248, 252);
-const REVIEW_MUTED: Color = Color::Rgb(165, 166, 176);
-const REVIEW_FAINT: Color = Color::Rgb(118, 119, 130);
-
-fn fill(frame: &mut Frame, area: Rect, color: Color) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    frame.render_widget(Block::default().style(Style::default().bg(color)), area);
-}
-
-fn rounded_block(border: Color, bg: Color, active: bool) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border).add_modifier(if active {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        }))
-        .style(Style::default().bg(bg))
-}
-
-fn text(frame: &mut Frame, area: Rect, line: Line<'static>) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    frame.render_widget(Paragraph::new(line), area);
-}
-
-fn fit(input: &str, width: u16) -> String {
-    let w = width as usize;
-    if w == 0 {
-        return String::new();
-    }
-    let mut chars = input.chars();
-    let mut out = String::new();
-    for _ in 0..w {
-        if let Some(c) = chars.next() {
-            out.push(c);
-        } else {
-            return out;
-        }
-    }
-    if chars.next().is_some() && w > 1 {
-        out.pop();
-        out.push('…');
-    }
-    out
-}
-
-fn pill_line(label: &str, fg: Color, bg: Color) -> Line<'static> {
-    Line::from(Span::styled(
-        format!("  {label}  "),
-        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-    ))
-}
-
-fn render_pill(frame: &mut Frame, area: Rect, label: &str, fg: Color, bg: Color) {
-    fill(frame, area, bg);
-    text(frame, area, pill_line(label, fg, bg));
-}
-
-fn render_nav_pill(
-    frame: &mut Frame,
-    area: Rect,
-    index: &'static str,
-    icon: &'static str,
-    label: &'static str,
-    count: &'static str,
-    active: bool,
-) {
-    let bg = if active { REVIEW_BLUE } else { REVIEW_PANEL };
-    let border = if active {
-        Color::Rgb(63, 166, 255)
-    } else {
-        REVIEW_DARK_BORDER
-    };
-    let block = rounded_block(border, bg, active);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let count_bg = if active {
-        Color::Rgb(73, 164, 255)
-    } else {
-        IOS_CHIP_BG
-    };
-    text(
-        frame,
-        Rect {
-            x: inner.x + 1,
-            y: inner.y,
-            width: inner.width.saturating_sub(1),
-            height: 1,
-        },
-        Line::from(vec![
-            Span::styled(
-                format!(" {index} "),
-                Style::default()
-                    .fg(IOS_FG_MUTED)
-                    .bg(IOS_CHIP_BG)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                icon,
-                Style::default()
-                    .fg(REVIEW_TEXT)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("  {label} "),
-                Style::default()
-                    .fg(REVIEW_TEXT)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" {count} "),
-                Style::default()
-                    .fg(REVIEW_TEXT)
-                    .bg(count_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-    );
-}
-
-fn parse_merge_queue_tsv(tsv: &str) -> Vec<MergeQueueItem> {
-    tsv.lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(7, '\t');
-            let item = MergeQueueItem {
-                number: parts.next()?.trim().to_owned(),
-                title: parts.next()?.trim().to_owned(),
-                author: parts.next()?.trim().to_owned(),
-                merge_state: parts.next()?.trim().to_owned(),
-                review_decision: parts.next()?.trim().to_owned(),
-                blocked_checks: parts.next()?.trim().to_owned(),
-                url: parts.next()?.trim().to_owned(),
-            };
-            if item.number.is_empty() || !item.review_decision.eq_ignore_ascii_case("APPROVED") {
-                None
-            } else {
-                Some(item)
-            }
-        })
-        .collect()
-}
-
-fn load_merge_queue() -> (Vec<MergeQueueItem>, Option<String>) {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--search",
-            "review:approved",
-            "--limit",
-            "6",
-            "--json",
-            "number,title,author,mergeStateStatus,reviewDecision,statusCheckRollup,url",
-            "--jq",
-            ".[] | [.number, .title, .author.login, (.mergeStateStatus // \"\"), (.reviewDecision // \"\"), (((.statusCheckRollup // []) | map(select((.conclusion // \"\") != \"SUCCESS\" and (.conclusion // \"\") != \"SKIPPED\")) | length) | tostring), .url] | @tsv",
-        ])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            (parse_merge_queue_tsv(&stdout), None)
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let message = stderr
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("gh pr list failed")
-                .trim()
-                .to_owned();
-            (Vec::new(), Some(message))
-        }
-        Err(error) => (Vec::new(), Some(format!("gh unavailable: {error}"))),
-    }
-}
-
-fn merge_queue_check_label(item: &MergeQueueItem) -> String {
-    match item.blocked_checks.parse::<usize>() {
-        Ok(0) => "CI green".to_owned(),
-        Ok(1) => "1 check blocking".to_owned(),
-        Ok(count) => format!("{count} checks blocking"),
-        Err(_) => "CI unknown".to_owned(),
-    }
-}
-
-fn merge_queue_check_style(item: &MergeQueueItem) -> (Color, Color) {
-    match item.blocked_checks.parse::<usize>() {
-        Ok(0) => (REVIEW_GREEN_FG, REVIEW_GREEN_BG),
-        Ok(1) => (REVIEW_YELLOW_FG, REVIEW_YELLOW_BG),
-        Ok(_) => (REVIEW_RED_FG, REVIEW_RED_BG),
-        Err(_) => (REVIEW_MUTED, REVIEW_PANEL_MUTED),
-    }
-}
-
-fn merge_queue_state_label(item: &MergeQueueItem) -> String {
-    if item.merge_state.is_empty() {
-        "merge state pending".to_owned()
-    } else {
-        item.merge_state.replace('_', " ").to_lowercase()
-    }
-}
-
-fn render_merge_queue(
-    frame: &mut Frame,
-    area: Rect,
-    queue: &[MergeQueueItem],
-    error: Option<&str>,
-) {
-    if area.width < 28 || area.height < 5 {
-        return;
-    }
-
-    let block = rounded_block(IOS_HAIRLINE, IOS_BG_GLASS, false);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    fill(frame, inner, IOS_BG_GLASS);
-
-    text(
-        frame,
-        Rect {
-            x: inner.x + 1,
-            y: inner.y,
-            width: inner.width.saturating_sub(2),
-            height: 1,
-        },
-        Line::from(vec![
-            Span::styled(
-                "MERGE QUEUE",
-                Style::default()
-                    .fg(IOS_FG)
-                    .bg(IOS_BG_GLASS)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "{:>width$}",
-                    format!("{} approved open", queue.len()),
-                    width = inner.width.saturating_sub(12) as usize
-                ),
-                Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-            ),
-        ]),
-    );
-
-    let mut y = inner.y + 2;
-    if let Some(error) = error {
-        text(
-            frame,
-            Rect {
-                x: inner.x + 1,
-                y,
-                width: inner.width.saturating_sub(2),
-                height: 1,
+impl ReviewData {
+    fn demo(source: impl Into<String>) -> Self {
+        Self {
+            stats: ReviewStats {
+                pending: 3,
+                approved_today: 8,
+                changes_requested: 1,
+                merged_last_hour: 5,
             },
-            Line::from(vec![
-                Span::styled("gh: ", Style::default().fg(IOS_TINT).bg(IOS_BG_GLASS)),
-                Span::styled(
-                    fit(error, inner.width.saturating_sub(6)),
-                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                ),
-            ]),
-        );
-        return;
-    }
-
-    if queue.is_empty() {
-        text(
-            frame,
-            Rect {
-                x: inner.x + 1,
-                y,
-                width: inner.width.saturating_sub(2),
-                height: 1,
-            },
-            Line::from(Span::styled(
-                "No approved open PRs from gh",
-                Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-            )),
-        );
-        return;
-    }
-
-    for item in queue
-        .iter()
-        .take(((inner.height.saturating_sub(2)) / 2) as usize)
-    {
-        if y + 1 >= inner.y + inner.height {
-            break;
-        }
-        let check_label = merge_queue_check_label(item);
-        let left_w = inner.width.saturating_sub(18);
-        text(
-            frame,
-            Rect {
-                x: inner.x + 1,
-                y,
-                width: left_w,
-                height: 1,
-            },
-            Line::from(vec![
-                Span::styled(
-                    format!("#{} ", item.number),
-                    Style::default()
-                        .fg(IOS_TINT)
-                        .bg(IOS_BG_GLASS)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    fit(&item.title, left_w.saturating_sub(6)),
-                    Style::default().fg(IOS_FG).bg(IOS_BG_GLASS),
-                ),
-            ]),
-        );
-        render_pill(
-            frame,
-            Rect {
-                x: inner.x + inner.width.saturating_sub(13),
-                y,
-                width: 12,
-                height: 1,
-            },
-            "APPROVED",
-            REVIEW_TEXT,
-            REVIEW_BLUE,
-        );
-        if inner.width > 48 {
-            let (check_fg, check_bg) = merge_queue_check_style(item);
-            text(
-                frame,
-                Rect {
-                    x: inner.x + 1,
-                    y: y + 1,
-                    width: inner.width.saturating_sub(24),
-                    height: 1,
+            events: vec![
+                ReviewEvent {
+                    hhmm: "13:00".into(),
+                    reviewer: "auto-reviewer".into(),
+                    title: "fleet-watcher live review board".into(),
+                    outcome: ReviewOutcome::Approved,
                 },
-                Line::from(vec![
-                    Span::styled(
-                        format!("@{} · ", fit(&item.author, 16)),
-                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                    ),
-                    Span::styled(
-                        format!("{} · ", merge_queue_state_label(item)),
-                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                    ),
-                    Span::styled(
-                        fit(&item.url, 32),
-                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                    ),
-                ]),
-            );
-            render_pill(
-                frame,
-                Rect {
-                    x: inner.x + inner.width.saturating_sub(23),
-                    y: y + 1,
-                    width: 22,
-                    height: 1,
+                ReviewEvent {
+                    hhmm: "12:56".into(),
+                    reviewer: "claude".into(),
+                    title: "waves idle rows need lively state".into(),
+                    outcome: ReviewOutcome::Pending,
                 },
-                &check_label,
-                check_fg,
-                check_bg,
-            );
-        } else {
-            text(
-                frame,
-                Rect {
-                    x: inner.x + 1,
-                    y: y + 1,
-                    width: inner.width.saturating_sub(2),
-                    height: 1,
+                ReviewEvent {
+                    hhmm: "12:49".into(),
+                    reviewer: "codex".into(),
+                    title: "request tighter diff sparkline contrast".into(),
+                    outcome: ReviewOutcome::ChangesRequested,
                 },
-                Line::from(vec![
-                    Span::styled(
-                        format!("@{} · ", fit(&item.author, 16)),
-                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                    ),
-                    Span::styled(
-                        format!("{} · ", merge_queue_state_label(item)),
-                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                    ),
-                    Span::styled(
-                        merge_queue_check_label(item),
-                        Style::default().fg(IOS_TINT).bg(IOS_BG_GLASS),
-                    ),
-                    Span::styled(" · ", Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS)),
-                    Span::styled(
-                        fit(&item.url, 32),
-                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                    ),
-                ]),
-            );
-        }
-        y += 2;
-    }
-}
-
-fn render_top_dock(frame: &mut Frame, area: Rect) {
-    if area.width < 80 || area.height < 4 {
-        return;
-    }
-    let dock = Rect {
-        x: area.x + 3,
-        y: area.y + 1,
-        width: area.width.saturating_sub(6),
-        height: 3,
-    };
-    let block = rounded_block(REVIEW_GRAY_BORDER, REVIEW_PANEL, false);
-    let inner = block.inner(dock);
-    frame.render_widget(block, dock);
-
-    text(
-        frame,
-        Rect {
-            x: inner.x + 2,
-            y: inner.y,
-            width: 24,
-            height: 1,
-        },
-        Line::from(vec![
-            Span::styled(
-                " ◆ ",
-                Style::default()
-                    .fg(Color::Rgb(255, 146, 28))
-                    .bg(Color::Rgb(255, 105, 32)),
-            ),
-            Span::styled(
-                " codex-fleet",
-                Style::default()
-                    .fg(REVIEW_TEXT)
-                    .bg(REVIEW_PANEL)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " 18:51:01",
-                Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL),
-            ),
-        ]),
-    );
-    text(
-        frame,
-        Rect {
-            x: inner.x + 28,
-            y: inner.y,
-            width: 1,
-            height: 1,
-        },
-        Line::from(Span::styled(
-            "│",
-            Style::default().fg(REVIEW_DARK_BORDER).bg(REVIEW_PANEL),
-        )),
-    );
-
-    let tabs = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(23),
-            Constraint::Length(19),
-            Constraint::Length(19),
-            Constraint::Length(20),
-            Constraint::Length(23),
-            Constraint::Length(11),
-            Constraint::Min(0),
-        ])
-        .split(Rect {
-            x: inner.x + 31,
-            y: dock.y,
-            width: inner.width.saturating_sub(31),
-            height: dock.height,
-        });
-    render_nav_pill(frame, tabs[0], "0", "⌘", "Overview", "7", false);
-    render_nav_pill(frame, tabs[1], "1", "↬", "Fleet", "7", false);
-    render_nav_pill(frame, tabs[2], "2", "☑", "Plan", "12", false);
-    render_nav_pill(frame, tabs[3], "3", "≋", "Waves", "3", false);
-    render_nav_pill(frame, tabs[4], "4", "♢", "Review", "1", true);
-    render_pill(frame, tabs[5], "● live", REVIEW_GREEN_FG, REVIEW_GREEN_BG);
-}
-
-fn render_subnav(frame: &mut Frame, area: Rect) {
-    if area.width < 40 || area.height == 0 {
-        return;
-    }
-    let nav = Rect {
-        x: area.x + 4,
-        y: area.y,
-        width: area.width.saturating_sub(8),
-        height: 3.min(area.height),
-    };
-    let block = rounded_block(REVIEW_DARK_BORDER, Color::Rgb(18, 20, 25), false);
-    let inner = block.inner(nav);
-    frame.render_widget(block, nav);
-    text(
-        frame,
-        Rect {
-            x: inner.x + 1,
-            y: inner.y,
-            width: inner.width.saturating_sub(2),
-            height: 1,
-        },
-        Line::from(vec![
-            Span::styled(
-                "0 Watcher    ",
-                Style::default().fg(REVIEW_FAINT).bg(Color::Rgb(18, 20, 25)),
-            ),
-            Span::styled(
-                "1 Overview    ",
-                Style::default().fg(REVIEW_FAINT).bg(Color::Rgb(18, 20, 25)),
-            ),
-            Span::styled(
-                "2 Fleet    ",
-                Style::default().fg(REVIEW_FAINT).bg(Color::Rgb(18, 20, 25)),
-            ),
-            Span::styled(
-                "3 Plan    ",
-                Style::default().fg(REVIEW_FAINT).bg(Color::Rgb(18, 20, 25)),
-            ),
-            Span::styled(
-                " 4 Waves ",
-                Style::default().fg(REVIEW_TEXT).bg(REVIEW_BLUE),
-            ),
-            Span::styled(
-                "    REVIEW · 1 pending · auto-reviewer on",
-                Style::default().fg(REVIEW_MUTED).bg(Color::Rgb(18, 20, 25)),
-            ),
-        ]),
-    );
-}
-
-fn render_review_hero(frame: &mut Frame, area: Rect) {
-    let left = Rect {
-        x: area.x + 2,
-        y: area.y,
-        width: area.width.saturating_sub(4),
-        height: area.height,
-    };
-    text(
-        frame,
-        Rect {
-            x: left.x,
-            y: left.y,
-            width: left.width,
-            height: 1,
-        },
-        Line::from(Span::styled(
-            "REVIEW",
-            Style::default()
-                .fg(REVIEW_MUTED)
-                .add_modifier(Modifier::BOLD),
-        )),
-    );
-    if left.height > 2 {
-        text(
-            frame,
-            Rect {
-                x: left.x,
-                y: left.y + 1,
-                width: left.width,
-                height: 1,
-            },
-            Line::from(vec![
-                Span::styled(
-                    "1 awaiting",
-                    Style::default()
-                        .fg(REVIEW_TEXT)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" · 124 approved", Style::default().fg(REVIEW_MUTED)),
-            ]),
-        );
-    }
-    if area.width > 110 && area.height > 2 {
-        render_pill(
-            frame,
-            Rect {
-                x: area.x + area.width - 36,
-                y: area.y + 1,
-                width: 23,
-                height: 1,
-            },
-            "✦ Auto-reviewer on",
-            REVIEW_GREEN_FG,
-            REVIEW_GREEN_BG,
-        );
-        render_pill(
-            frame,
-            Rect {
-                x: area.x + area.width - 12,
-                y: area.y + 1,
-                width: 10,
-                height: 1,
-            },
-            "▣ Policy",
-            REVIEW_TEXT,
-            REVIEW_PANEL,
-        );
-    }
-}
-
-fn render_review_action(
-    frame: &mut Frame,
-    area: Rect,
-    label: &'static str,
-    icon: &'static str,
-    fg: Color,
-    bg: Color,
-    border: Color,
-    active: bool,
-) {
-    if area.width < 8 || area.height == 0 {
-        return;
-    }
-    let block = rounded_block(border, bg, active);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("{icon} "),
-                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                label,
-                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .alignment(Alignment::Center),
-        inner,
-    );
-}
-
-fn render_review_card(
-    frame: &mut Frame,
-    area: Rect,
-    merge_queue: &[MergeQueueItem],
-    merge_queue_error: Option<&str>,
-) {
-    if area.width < 36 || area.height < 14 {
-        return;
-    }
-    let block = rounded_block(REVIEW_BLUE, REVIEW_PANEL, true);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    fill(frame, inner, REVIEW_PANEL);
-
-    let icon_rect = Rect {
-        x: inner.x + 2,
-        y: inner.y + 1,
-        width: 7.min(inner.width),
-        height: 3.min(inner.height),
-    };
-    let icon = rounded_block(REVIEW_YELLOW_FG, REVIEW_YELLOW_BG, false);
-    let icon_inner = icon.inner(icon_rect);
-    frame.render_widget(icon, icon_rect);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "⚡",
-            Style::default()
-                .fg(IOS_ORANGE)
-                .bg(REVIEW_YELLOW_BG)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .alignment(Alignment::Center),
-        icon_inner,
-    );
-
-    let meta_x = inner.x + 11;
-    text(
-        frame,
-        Rect {
-            x: meta_x,
-            y: inner.y + 1,
-            width: inner.width.saturating_sub(13),
-            height: 1,
-        },
-        Line::from(vec![
-            Span::styled(
-                "REV-014",
-                Style::default()
-                    .fg(REVIEW_MUTED)
-                    .bg(REVIEW_PANEL)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "  ●  9m 17s",
-                Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL),
-            ),
-        ]),
-    );
-    text(
-        frame,
-        Rect {
-            x: meta_x,
-            y: inner.y + 2,
-            width: inner.width.saturating_sub(13),
-            height: 1,
-        },
-        Line::from(Span::styled(
-            "apply_patch touching 3 files",
-            Style::default()
-                .fg(REVIEW_TEXT)
-                .bg(REVIEW_PANEL)
-                .add_modifier(Modifier::BOLD),
-        )),
-    );
-    text(
-        frame,
-        Rect {
-            x: meta_x,
-            y: inner.y + 3,
-            width: inner.width.saturating_sub(13),
-            height: 1,
-        },
-        Line::from(Span::styled(
-            "codex-ricsi-zazrifka · pane 4",
-            Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL),
-        )),
-    );
-
-    if inner.width > 44 {
-        let rx = inner.x + inner.width - 18;
-        render_pill(
-            frame,
-            Rect {
-                x: rx,
-                y: inner.y + 1,
-                width: 16,
-                height: 1,
-            },
-            "● risk medium",
-            REVIEW_YELLOW_FG,
-            REVIEW_YELLOW_BG,
-        );
-        render_pill(
-            frame,
-            Rect {
-                x: rx,
-                y: inner.y + 3,
-                width: 16,
-                height: 1,
-            },
-            "● auth high",
-            REVIEW_RED_FG,
-            REVIEW_RED_BG,
-        );
-    }
-
-    let rationale_y = inner.y + 6;
-    let rationale_h = 4.min(inner.height.saturating_sub(10));
-    if rationale_h > 0 {
-        let rationale = Rect {
-            x: inner.x + 2,
-            y: rationale_y,
-            width: inner.width.saturating_sub(4),
-            height: rationale_h,
-        };
-        fill(frame, rationale, REVIEW_PANEL_RAISED);
-        text(
-            frame,
-            Rect {
-                x: rationale.x,
-                y: rationale.y,
-                width: 1,
-                height: rationale.height,
-            },
-            Line::from(Span::styled(
-                "┃",
-                Style::default().fg(IOS_YELLOW).bg(REVIEW_PANEL_RAISED),
-            )),
-        );
-        text(
-            frame,
-            Rect {
-                x: rationale.x + 2,
-                y: rationale.y,
-                width: rationale.width.saturating_sub(4),
-                height: 1,
-            },
-            Line::from(Span::styled(
-                "AUTO-REVIEWER RATIONALE",
-                Style::default()
-                    .fg(REVIEW_MUTED)
-                    .bg(REVIEW_PANEL_RAISED)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        );
-        frame.render_widget(
-            Paragraph::new("Bounded local edits within the claimed task file scope on an isolated agent worktree, a reversible change explicitly authorized by the user's worker and repo workflow.")
-                .style(Style::default().fg(REVIEW_TEXT).bg(REVIEW_PANEL_RAISED))
-                .wrap(Wrap { trim: true }),
-            Rect { x: rationale.x + 2, y: rationale.y + 1, width: rationale.width.saturating_sub(4), height: rationale.height.saturating_sub(1) },
-        );
-    }
-
-    let files_y = rationale_y + rationale_h + 1;
-    if files_y + 4 < inner.y + inner.height {
-        text(
-            frame,
-            Rect {
-                x: inner.x + 2,
-                y: files_y,
-                width: inner.width.saturating_sub(4),
-                height: 1,
-            },
-            Line::from(Span::styled(
-                "3 FILES TOUCHED",
-                Style::default()
-                    .fg(REVIEW_MUTED)
-                    .bg(REVIEW_PANEL)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        );
-        for (i, file) in [
-            "↕ scripts/codex-fleet/lib/_env.sh",
-            "↕ scripts/codex-fleet/down-kitty.sh",
-            "↕ docs/cockpit.md",
-        ]
-        .iter()
-        .enumerate()
-        {
-            let y = files_y + 1 + i as u16;
-            let row = Rect {
-                x: inner.x + 2,
-                y,
-                width: inner.width.saturating_sub(4),
-                height: 1,
-            };
-            fill(frame, row, REVIEW_PANEL_RAISED);
-            text(
-                frame,
-                Rect {
-                    x: row.x + 1,
-                    y,
-                    width: row.width.saturating_sub(2),
-                    height: 1,
+                ReviewEvent {
+                    hhmm: "12:43".into(),
+                    reviewer: "merge-bot".into(),
+                    title: "approved review queue chrome".into(),
+                    outcome: ReviewOutcome::Merged,
                 },
-                Line::from(vec![
-                    Span::styled(
-                        "↕ ",
-                        Style::default()
-                            .fg(REVIEW_BLUE)
-                            .bg(REVIEW_PANEL_RAISED)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        fit(file.trim_start_matches("↕ "), row.width.saturating_sub(4)),
-                        Style::default().fg(REVIEW_TEXT).bg(REVIEW_PANEL_RAISED),
-                    ),
-                ]),
-            );
+            ],
+            diff_bins: demo_diff_bins(),
+            source: source.into(),
+            degraded: true,
         }
     }
 
-    let button_y = inner.y + inner.height.saturating_sub(3);
-    let queue_y = files_y + 5;
-    if queue_y + 4 < button_y {
-        render_merge_queue(
-            frame,
-            Rect {
-                x: inner.x + 2,
-                y: queue_y,
-                width: inner.width.saturating_sub(4),
-                height: button_y.saturating_sub(queue_y).saturating_sub(1),
-            },
-            merge_queue,
-            merge_queue_error,
-        );
-    }
-
-    if inner.height >= 5 {
-        let buttons = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(34),
-                Constraint::Percentage(38),
-                Constraint::Percentage(28),
-            ])
-            .split(Rect {
-                x: inner.x + 2,
-                y: button_y,
-                width: inner.width.saturating_sub(4),
-                height: 3,
-            });
-        render_review_action(
-            frame,
-            buttons[0],
-            "Approve",
-            "✓",
-            REVIEW_TEXT,
-            REVIEW_BLUE,
-            Color::Rgb(63, 166, 255),
-            true,
-        );
-        render_review_action(
-            frame,
-            buttons[1],
-            "Request changes",
-            "!",
-            REVIEW_RED_FG,
-            REVIEW_RED_BG,
-            Color::Rgb(166, 58, 53),
-            false,
-        );
-        render_review_action(
-            frame,
-            buttons[2],
-            "Skip",
-            "→",
-            REVIEW_TEXT,
-            REVIEW_PANEL_MUTED,
-            REVIEW_GRAY_BORDER,
-            false,
-        );
-    }
-}
-
-fn render_recent_decision_row(
-    frame: &mut Frame,
-    area: Rect,
-    title: &'static str,
-    author: &'static str,
-    age: &'static str,
-    risk: &'static str,
-    state: &'static str,
-    state_fg: Color,
-    state_bg: Color,
-) {
-    if area.width < 20 || area.height < 2 {
-        return;
-    }
-    text(
-        frame,
-        Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width.saturating_sub(15),
-            height: 1,
-        },
-        Line::from(Span::styled(
-            title,
-            Style::default()
-                .fg(REVIEW_TEXT)
-                .bg(REVIEW_PANEL)
-                .add_modifier(Modifier::BOLD),
-        )),
-    );
-    text(
-        frame,
-        Rect {
-            x: area.x,
-            y: area.y + 1,
-            width: area.width.saturating_sub(15),
-            height: 1,
-        },
-        Line::from(vec![
-            Span::styled(author, Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL)),
-            Span::styled(
-                format!("  ● {age}  ● risk · {risk}"),
-                Style::default().fg(REVIEW_FAINT).bg(REVIEW_PANEL),
-            ),
-        ]),
-    );
-    render_pill(
-        frame,
-        Rect {
-            x: area.x + area.width.saturating_sub(13),
-            y: area.y,
-            width: 13,
-            height: 1,
-        },
-        state,
-        state_fg,
-        state_bg,
-    );
-    if area.height > 2 {
-        text(
-            frame,
-            Rect {
-                x: area.x,
-                y: area.y + 2,
-                width: area.width,
-                height: 1,
-            },
-            Line::from(Span::styled(
-                "─".repeat(area.width as usize),
-                Style::default().fg(REVIEW_DARK_BORDER).bg(REVIEW_PANEL),
-            )),
-        );
-    }
-}
-
-fn render_recent_decisions(frame: &mut Frame, area: Rect) {
-    if area.width < 28 || area.height < 12 {
-        return;
-    }
-    let block = rounded_block(REVIEW_GRAY_BORDER, REVIEW_PANEL, false);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    fill(frame, inner, REVIEW_PANEL);
-    text(
-        frame,
-        Rect {
-            x: inner.x + 2,
-            y: inner.y + 1,
-            width: inner.width.saturating_sub(4),
-            height: 1,
-        },
-        Line::from(vec![
-            Span::styled(
-                "Recent decisions",
-                Style::default()
-                    .fg(REVIEW_TEXT)
-                    .bg(REVIEW_PANEL)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "{:>width$}",
-                    "last 30m",
-                    width = inner.width.saturating_sub(18) as usize
-                ),
-                Style::default().fg(REVIEW_MUTED).bg(REVIEW_PANEL),
-            ),
-        ]),
-    );
-    let mut y = inner.y + 3;
-    for (title, author, age, risk, state, fg, bg) in [
-        (
-            "sleep 60",
-            "codex-admin-kollarrobert",
-            "3m ago",
-            "low",
-            "● approved",
-            REVIEW_GREEN_FG,
-            REVIEW_GREEN_BG,
-        ),
-        (
-            "openspec validate --spec",
-            "codex-admin-magnolia",
-            "7m ago",
-            "low",
-            "● approved",
-            REVIEW_GREEN_FG,
-            REVIEW_GREEN_BG,
-        ),
-        (
-            "bash -lc 'ls scripts/'",
-            "codex-matt-gg",
-            "12m ago",
-            "low",
-            "● approved",
-            REVIEW_GREEN_FG,
-            REVIEW_GREEN_BG,
-        ),
-        (
-            "git diff --no-index",
-            "codex-fico-magnolia",
-            "18m ago",
-            "low",
-            "● approved",
-            REVIEW_GREEN_FG,
-            REVIEW_GREEN_BG,
-        ),
-        (
-            "rm -rf .cap-probe-cache",
-            "codex-recodee-mite",
-            "24m ago",
-            "medium",
-            "● escalated",
-            IOS_YELLOW,
-            REVIEW_YELLOW_BG,
-        ),
-        (
-            "curl https://api.colony…",
-            "codex-ricsi-zazrifka",
-            "31m ago",
-            "medium",
-            "● denied",
-            REVIEW_RED_FG,
-            REVIEW_RED_BG,
-        ),
-    ] {
-        if y + 2 >= inner.y + inner.height {
-            break;
+    fn queue_clear(source: impl Into<String>) -> Self {
+        Self {
+            stats: ReviewStats::default(),
+            events: Vec::new(),
+            diff_bins: vec![0; 60],
+            source: source.into(),
+            degraded: false,
         }
-        render_recent_decision_row(
-            frame,
-            Rect {
-                x: inner.x + 2,
-                y,
-                width: inner.width.saturating_sub(4),
-                height: 3,
-            },
-            title,
-            author,
-            age,
-            risk,
-            state,
-            fg,
-            bg,
-        );
-        y += 3;
     }
+}
+
+trait PrFeed {
+    fn load(&mut self) -> ReviewData;
 }
 
 #[derive(Default)]
-struct WatcherView {
-    props: Props,
-    overlay: Overlay,
-    spotlight_query: String,
-    spotlight_selected: usize,
-    spotlight_tick: u64,
-    merge_queue: Vec<MergeQueueItem>,
-    merge_queue_error: Option<String>,
-    merge_queue_loaded: bool,
+struct CommandPrFeed {
+    cache: Option<(Instant, ReviewData)>,
 }
 
-impl WatcherView {
-    fn ensure_merge_queue_loaded(&mut self) {
-        if self.merge_queue_loaded {
-            return;
+impl PrFeed for CommandPrFeed {
+    fn load(&mut self) -> ReviewData {
+        if let Some((loaded_at, data)) = &self.cache {
+            if loaded_at.elapsed() < Duration::from_secs(30) {
+                return data.clone();
+            }
         }
-        let (queue, error) = load_merge_queue();
-        self.merge_queue = queue;
-        self.merge_queue_error = error;
-        self.merge_queue_loaded = true;
-    }
 
-    fn open_spotlight(&mut self) {
-        self.overlay = Overlay::Spotlight;
-        self.spotlight_query.clear();
-        self.spotlight_selected = 0;
-    }
-
-    fn close_spotlight(&mut self) {
-        self.overlay = Overlay::None;
-        self.spotlight_query.clear();
-        self.spotlight_selected = 0;
+        let data = load_command_data()
+            .unwrap_or_else(|| ReviewData::demo("demo fixture · gh/colony unavailable"));
+        self.cache = Some((Instant::now(), data.clone()));
+        data
     }
 }
 
-fn render_dashboard(
-    frame: &mut Frame,
-    area: Rect,
-    merge_queue: &[MergeQueueItem],
-    merge_queue_error: Option<&str>,
-) {
-    if area.width < 30 || area.height < 8 {
+struct WatcherView<F: PrFeed> {
+    props: Props,
+    feed: F,
+    data: ReviewData,
+    tick: u64,
+}
+
+impl Default for WatcherView<CommandPrFeed> {
+    fn default() -> Self {
+        Self::with_feed(CommandPrFeed::default())
+    }
+}
+
+impl<F: PrFeed> WatcherView<F> {
+    fn with_feed(feed: F) -> Self {
+        Self {
+            props: Props::default(),
+            feed,
+            data: ReviewData::demo("loading live review feed"),
+            tick: 0,
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.data = self.feed.load();
+    }
+}
+
+fn load_command_data() -> Option<ReviewData> {
+    let today = command_stdout("date", &["-u", "+%Y-%m-%d"])?;
+    let one_hour_ago = command_stdout("date", &["-u", "-d", "1 hour ago", "+%Y-%m-%dT%H:%M:%SZ"])
+        .unwrap_or_else(|| today.clone());
+    let thirty_min_ago = command_stdout(
+        "date",
+        &["-u", "-d", "30 minutes ago", "+%Y-%m-%dT%H:%M:%SZ"],
+    )
+    .unwrap_or_else(|| today.clone());
+
+    let pending = gh_count("is:open is:pr review:pending")?;
+    let approved_today = gh_count(&format!("is:pr review:approved updated:>={today}"))?;
+    let changes_requested = gh_count("is:open is:pr review:changes_requested")?;
+    let merged_last_hour = gh_count(&format!("is:merged is:pr merged:>={one_hour_ago}"))?;
+
+    let mut events = gh_recent_events(&thirty_min_ago);
+    events.extend(colony_review_events());
+    events.sort_by(|a, b| b.hhmm.cmp(&a.hhmm));
+    events.truncate(10);
+
+    let diff_bins = gh_diff_bins(&one_hour_ago).unwrap_or_else(|| vec![0; 60]);
+    let stats = ReviewStats {
+        pending,
+        approved_today,
+        changes_requested,
+        merged_last_hour,
+    };
+
+    if stats == ReviewStats::default() && events.is_empty() {
+        Some(ReviewData::queue_clear("gh pr list · colony task_messages"))
+    } else {
+        Some(ReviewData {
+            stats,
+            events,
+            diff_bins,
+            source: "gh pr list · colony task_messages".into(),
+            degraded: false,
+        })
+    }
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn gh_count(search: &str) -> Option<usize> {
+    command_stdout(
+        "gh",
+        &[
+            "pr", "list", "--state", "all", "--limit", "200", "--search", search, "--json",
+            "number", "--jq", "length",
+        ],
+    )?
+    .parse()
+    .ok()
+}
+
+fn gh_recent_events(since: &str) -> Vec<ReviewEvent> {
+    let jq =
+        ".[] | [(.updatedAt // .mergedAt // \"\"), (.author.login // \"reviewer\"), .number, .title, (.reviewDecision // (if .mergedAt then \"MERGED\" else \"PENDING\" end))] | @tsv";
+    let Some(out) = command_stdout(
+        "gh",
+        &[
+            "pr",
+            "list",
+            "--state",
+            "all",
+            "--limit",
+            "20",
+            "--search",
+            &format!("is:pr updated:>={since}"),
+            "--json",
+            "number,title,author,reviewDecision,updatedAt,mergedAt",
+            "--jq",
+            jq,
+        ],
+    ) else {
+        return Vec::new();
+    };
+    out.lines().filter_map(parse_gh_event).take(10).collect()
+}
+
+fn parse_gh_event(line: &str) -> Option<ReviewEvent> {
+    let mut parts = line.splitn(5, '\t');
+    let when = parts.next()?.trim();
+    let reviewer = parts.next()?.trim();
+    let number = parts.next()?.trim();
+    let title = parts.next()?.trim();
+    let outcome = parse_outcome(parts.next()?.trim());
+    Some(ReviewEvent {
+        hhmm: hhmm_from_timestamp(when),
+        reviewer: reviewer.to_owned(),
+        title: format!("#{number} {title}"),
+        outcome,
+    })
+}
+
+fn parse_outcome(raw: &str) -> ReviewOutcome {
+    match raw.to_ascii_uppercase().as_str() {
+        "APPROVED" => ReviewOutcome::Approved,
+        "CHANGES_REQUESTED" => ReviewOutcome::ChangesRequested,
+        "MERGED" => ReviewOutcome::Merged,
+        _ => ReviewOutcome::Pending,
+    }
+}
+
+fn colony_review_events() -> Vec<ReviewEvent> {
+    let Some(out) = command_stdout(
+        "colony",
+        &["task_messages", "--kind", "review", "--limit", "10"],
+    ) else {
+        return Vec::new();
+    };
+    out.lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(10)
+        .map(|line| ReviewEvent {
+            hhmm: clock_hhmm(),
+            reviewer: "colony".into(),
+            title: line.trim().to_owned(),
+            outcome: ReviewOutcome::Pending,
+        })
+        .collect()
+}
+
+fn gh_diff_bins(since: &str) -> Option<Vec<i32>> {
+    let jq = ".[] | [.mergedAt, (.additions // 0), (.deletions // 0)] | @tsv";
+    let out = command_stdout(
+        "gh",
+        &[
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--limit",
+            "100",
+            "--search",
+            &format!("is:merged is:pr merged:>={since}"),
+            "--json",
+            "mergedAt,additions,deletions",
+            "--jq",
+            jq,
+        ],
+    )?;
+    let now = epoch_now()?;
+    let mut bins = vec![0; 60];
+    for line in out.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let merged_at = parts.next().unwrap_or_default();
+        let additions = parts
+            .next()
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0);
+        let deletions = parts
+            .next()
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0);
+        let Some(epoch) = epoch_for_timestamp(merged_at) else {
+            continue;
+        };
+        let delta_minutes = ((now - epoch) / 60).clamp(0, 59) as usize;
+        let idx = 59usize.saturating_sub(delta_minutes);
+        bins[idx] += additions + deletions;
+    }
+    Some(bins)
+}
+
+fn epoch_now() -> Option<i64> {
+    command_stdout("date", &["+%s"])?.parse().ok()
+}
+
+fn epoch_for_timestamp(ts: &str) -> Option<i64> {
+    command_stdout("date", &["-u", "-d", ts, "+%s"])?
+        .parse()
+        .ok()
+}
+
+fn clock_hms() -> String {
+    command_stdout("date", &["+%H:%M:%S"]).unwrap_or_else(|| "--:--:--".into())
+}
+
+fn clock_hhmm() -> String {
+    command_stdout("date", &["+%H:%M"]).unwrap_or_else(|| "--:--".into())
+}
+
+fn hhmm_from_timestamp(ts: &str) -> String {
+    if ts.len() >= 16 {
+        ts[11..16].to_owned()
+    } else {
+        clock_hhmm()
+    }
+}
+
+fn demo_diff_bins() -> Vec<i32> {
+    (0..60)
+        .map(|i| {
+            if i % 11 == 0 {
+                96
+            } else if i % 7 == 0 {
+                48
+            } else if i % 5 == 0 {
+                20
+            } else {
+                0
+            }
+        })
+        .collect()
+}
+
+fn fill(frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
-    fill(frame, area, REVIEW_BG);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(IOS_BG_SOLID)),
+        area,
+    );
+}
 
+fn card_block(title: Option<&str>) -> Block<'static> {
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(IOS_HAIRLINE))
+        .style(Style::default().bg(IOS_CARD_BG));
+    if let Some(title) = title {
+        block = block.title(Span::styled(
+            format!(" {title} "),
+            Style::default()
+                .fg(IOS_FG)
+                .bg(IOS_CARD_BG)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    block
+}
+
+fn render_line(frame: &mut Frame, area: Rect, line: Line<'static>) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(IOS_CARD_BG)),
+        area,
+    );
+}
+
+fn clip(input: &str, width: u16) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = input.chars().collect();
+    if chars.len() <= width as usize {
+        return input.to_owned();
+    }
+    if width == 1 {
+        return "…".into();
+    }
+    let mut out: String = chars
+        .into_iter()
+        .take(width.saturating_sub(1) as usize)
+        .collect();
+    out.push('…');
+    out
+}
+
+fn right_text(text: &str, width: u16) -> String {
+    format!("{:>width$}", clip(text, width), width = width as usize)
+}
+
+fn shimmer(tick: u64) -> &'static str {
+    match tick % 4 {
+        0 => "·",
+        1 => "•",
+        2 => "∙",
+        _ => " ",
+    }
+}
+
+fn render_header(frame: &mut Frame, area: Rect, data: &ReviewData) {
+    if area.height == 0 {
+        return;
+    }
+    let title = format!(
+        "WATCHER · {} pending · auto-reviewer on",
+        data.stats.pending
+    );
+    let clock = clock_hms();
+    let right_w = clock.chars().count() as u16;
+    let title_w = area.width.saturating_sub(right_w + 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                clip(&title, title_w),
+                Style::default()
+                    .fg(IOS_FG)
+                    .bg(IOS_BG_SOLID)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                right_text(&clock, area.width.saturating_sub(title_w)),
+                Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_SOLID),
+            ),
+        ])),
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        },
+    );
+
+    if area.height > 1 {
+        let state = if data.degraded {
+            "fixture mode · gh/colony unavailable"
+        } else if data.stats == ReviewStats::default() && data.events.is_empty() {
+            "queue clear · auto-reviewer caught up"
+        } else {
+            "live queue · refreshed every 30s"
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                state,
+                Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_SOLID),
+            )),
+            Rect {
+                x: area.x,
+                y: area.y + 1,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+struct StatCard {
+    title: &'static str,
+    count: usize,
+    kind: ChipKind,
+}
+
+fn visible_stats(data: &ReviewData, width: u16) -> Vec<StatCard> {
+    let mut cards = vec![
+        StatCard {
+            title: "PENDING",
+            count: data.stats.pending,
+            kind: ChipKind::Working,
+        },
+        StatCard {
+            title: "APPROVED-TODAY",
+            count: data.stats.approved_today,
+            kind: ChipKind::Done,
+        },
+        StatCard {
+            title: "CHANGES-REQUESTED",
+            count: data.stats.changes_requested,
+            kind: ChipKind::Idle,
+        },
+        StatCard {
+            title: "MERGED-LAST-1H",
+            count: data.stats.merged_last_hour,
+            kind: ChipKind::Working,
+        },
+    ];
+    let min_card_width = 23;
+    if width < (cards.len() as u16 * min_card_width) {
+        cards.retain(|card| card.count > 0);
+        if cards.is_empty() {
+            cards.push(StatCard {
+                title: "PENDING",
+                count: 0,
+                kind: ChipKind::Working,
+            });
+        }
+    }
+    cards
+}
+
+fn render_stats(frame: &mut Frame, area: Rect, data: &ReviewData, tick: u64) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let cards = visible_stats(data, area.width);
+    let constraints = vec![Constraint::Ratio(1, cards.len() as u32); cards.len()];
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    for (card, chunk) in cards.iter().zip(chunks.iter()) {
+        let area = Rect {
+            x: chunk.x,
+            y: chunk.y,
+            width: chunk.width.saturating_sub(1),
+            height: chunk.height,
+        };
+        render_stat_card(frame, area, card, tick);
+    }
+}
+
+fn render_stat_card(frame: &mut Frame, area: Rect, card: &StatCard, tick: u64) {
+    if area.width < 6 || area.height < 3 {
+        return;
+    }
+    let block = card_block(None);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_line(
+        frame,
+        Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        },
+        Line::from(Span::styled(
+            clip(card.title, inner.width.saturating_sub(2)),
+            Style::default()
+                .fg(IOS_FG_MUTED)
+                .bg(IOS_CARD_BG)
+                .add_modifier(Modifier::BOLD),
+        )),
+    );
+    if inner.height > 1 {
+        render_line(
+            frame,
+            Rect {
+                x: inner.x + 1,
+                y: inner.y + 1,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            },
+            Line::from(vec![
+                Span::styled(
+                    format!("{:>3}", card.count),
+                    Style::default()
+                        .fg(if card.count == 0 {
+                            IOS_FG_FAINT
+                        } else {
+                            IOS_FG
+                        })
+                        .bg(IOS_CARD_BG)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  ", Style::default().bg(IOS_CARD_BG)),
+                Span::styled(
+                    shimmer(tick),
+                    Style::default().fg(IOS_HAIRLINE).bg(IOS_CARD_BG),
+                ),
+            ]),
+        );
+    }
+    if inner.height > 2 {
+        let mut spans = status_chip(card.kind);
+        spans.insert(0, Span::styled(" ", Style::default().bg(IOS_CARD_BG)));
+        render_line(
+            frame,
+            Rect {
+                x: inner.x,
+                y: inner.y + 2,
+                width: inner.width,
+                height: 1,
+            },
+            Line::from(spans),
+        );
+    }
+}
+
+fn render_feed(frame: &mut Frame, area: Rect, data: &ReviewData, tick: u64) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let block = card_block(Some("RECENT DECISIONS · last 30m"));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if data.events.is_empty() {
+        let y = inner.y + inner.height.saturating_sub(1) / 2;
+        render_line(
+            frame,
+            Rect {
+                x: inner.x + 2,
+                y,
+                width: inner.width.saturating_sub(4),
+                height: 1,
+            },
+            Line::from(vec![
+                Span::styled(shimmer(tick), Style::default().fg(IOS_TINT).bg(IOS_CARD_BG)),
+                Span::styled(
+                    " queue clear · auto-reviewer caught up",
+                    Style::default()
+                        .fg(IOS_FG)
+                        .bg(IOS_CARD_BG)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        );
+        return;
+    }
+
+    let max_rows = inner.height.saturating_sub(1) as usize;
+    for (idx, event) in data.events.iter().take(max_rows).enumerate() {
+        let y = inner.y + idx as u16;
+        let title_budget = inner.width.saturating_sub(38);
+        let mut spans = vec![
+            Span::styled(
+                format!("{} · ", event.hhmm),
+                Style::default().fg(IOS_FG_MUTED).bg(IOS_CARD_BG),
+            ),
+            Span::styled(
+                format!(" @{} ", clip(&event.reviewer, 14)),
+                Style::default()
+                    .fg(IOS_FG)
+                    .bg(IOS_CHIP_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ", Style::default().bg(IOS_CARD_BG)),
+            Span::styled(
+                clip(&event.title, title_budget),
+                Style::default().fg(IOS_FG).bg(IOS_CARD_BG),
+            ),
+            Span::styled(" ", Style::default().bg(IOS_CARD_BG)),
+        ];
+        spans.extend(status_chip(event.outcome.chip_kind()));
+        spans.push(Span::styled(
+            format!(" {}", event.outcome.label()),
+            Style::default().fg(IOS_FG_MUTED).bg(IOS_CARD_BG),
+        ));
+        render_line(
+            frame,
+            Rect {
+                x: inner.x + 1,
+                y,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            },
+            Line::from(spans),
+        );
+    }
+}
+
+fn render_diff_sparkline(frame: &mut Frame, area: Rect, data: &ReviewData, tick: u64) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let block = card_block(Some("DIFF SPARKLINE · merged PRs · last 60m"));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+    let bars = sparkline(&data.diff_bins, inner.width.saturating_sub(4));
+    render_line(
+        frame,
+        Rect {
+            x: inner.x + 2,
+            y: inner.y,
+            width: inner.width.saturating_sub(4),
+            height: 1,
+        },
+        Line::from(Span::styled(
+            bars,
+            Style::default()
+                .fg(if data.diff_bins.iter().any(|v| *v > 0) {
+                    IOS_TINT
+                } else {
+                    IOS_FG_FAINT
+                })
+                .bg(IOS_CARD_BG)
+                .add_modifier(Modifier::BOLD),
+        )),
+    );
+    if inner.height > 1 {
+        let total: i32 = data.diff_bins.iter().sum();
+        let label = if total == 0 {
+            format!("{} no merged diff activity yet", shimmer(tick))
+        } else {
+            format!("+/- {total} lines merged in the last hour")
+        };
+        render_line(
+            frame,
+            Rect {
+                x: inner.x + 2,
+                y: inner.y + 1,
+                width: inner.width.saturating_sub(4),
+                height: 1,
+            },
+            Line::from(Span::styled(
+                clip(&label, inner.width.saturating_sub(4)),
+                Style::default().fg(IOS_FG_MUTED).bg(IOS_CARD_BG),
+            )),
+        );
+    }
+}
+
+fn sparkline(values: &[i32], width: u16) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let max = values.iter().copied().max().unwrap_or(0).max(1);
+    let chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    let mut sampled = Vec::new();
+    for x in 0..width as usize {
+        let idx = x * values.len().max(1) / width as usize;
+        let value = values.get(idx).copied().unwrap_or(0);
+        let level = if value <= 0 {
+            0
+        } else {
+            ((value as f32 / max as f32) * 7.0).ceil() as usize
+        };
+        sampled.push(chars[level.min(7)]);
+    }
+    sampled.join("")
+}
+
+fn render_footer(frame: &mut Frame, area: Rect, data: &ReviewData) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let left = " q quit · / filter soon · 2s tick ";
+    let source = format!("source: {}", data.source);
+    let source_w = area.width.saturating_sub(left.chars().count() as u16);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(left, Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_SOLID)),
+            Span::styled(
+                right_text(&source, source_w),
+                Style::default().fg(IOS_FG_FAINT).bg(IOS_BG_SOLID),
+            ),
+        ])),
+        area,
+    );
+}
+
+fn render_dashboard(frame: &mut Frame, area: Rect, data: &ReviewData, tick: u64) {
+    if area.width < 30 || area.height < 12 {
+        fill(frame, area);
+        return;
+    }
+    fill(frame, area);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
-            Constraint::Length(4),
+            Constraint::Length(3),
             Constraint::Length(5),
             Constraint::Min(0),
-            Constraint::Length(2),
+            Constraint::Length(1),
         ])
         .split(area);
 
-    render_top_dock(frame, rows[0]);
-    render_subnav(frame, rows[1]);
-    render_review_hero(frame, rows[2]);
+    render_header(frame, rows[0], data);
+    render_stats(frame, rows[1], data, tick);
 
     let content = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(Rect {
-            x: area.x + 2,
-            y: rows[3].y,
-            width: area.width.saturating_sub(4),
-            height: rows[3].height,
-        });
-    render_review_card(
-        frame,
-        Rect {
-            x: content[0].x,
-            y: content[0].y,
-            width: content[0].width.saturating_sub(1),
-            height: content[0].height,
-        },
-        merge_queue,
-        merge_queue_error,
-    );
-    render_recent_decisions(
-        frame,
-        Rect {
-            x: content[1].x + 1,
-            y: content[1].y,
-            width: content[1].width.saturating_sub(1),
-            height: content[1].height,
-        },
-    );
-
-    text(
-        frame,
-        Rect {
-            x: area.x + 3,
-            y: rows[4].y,
-            width: area.width.saturating_sub(6),
-            height: 1,
-        },
-        Line::from(vec![
-            Span::styled(
-                "A",
-                Style::default()
-                    .fg(REVIEW_TEXT)
-                    .bg(IOS_CHIP_BG)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " Approve   ",
-                Style::default().fg(REVIEW_MUTED).bg(REVIEW_BG),
-            ),
-            Span::styled(
-                "R",
-                Style::default()
-                    .fg(REVIEW_TEXT)
-                    .bg(IOS_CHIP_BG)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " Request Changes   ",
-                Style::default().fg(REVIEW_MUTED).bg(REVIEW_BG),
-            ),
-            Span::styled(
-                "S",
-                Style::default()
-                    .fg(REVIEW_TEXT)
-                    .bg(IOS_CHIP_BG)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Skip   ", Style::default().fg(REVIEW_MUTED).bg(REVIEW_BG)),
-            Span::styled(
-                "D",
-                Style::default()
-                    .fg(REVIEW_TEXT)
-                    .bg(IOS_CHIP_BG)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " View diff",
-                Style::default().fg(REVIEW_MUTED).bg(REVIEW_BG),
-            ),
-        ]),
-    );
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(5)])
+        .split(rows[2]);
+    render_feed(frame, content[0], data, tick);
+    render_diff_sparkline(frame, content[1], data, tick);
+    render_footer(frame, rows[3], data);
 }
 
-fn render_spotlight(frame: &mut Frame, area: Rect, view: &WatcherView) {
-    let filtered = spotlight_filter(&view.spotlight_query);
-    let total = filtered.len();
-    let overlay_h = if total == 0 {
-        12
-    } else {
-        (9 + total as u16 + spotlight_group_count(&filtered) as u16)
-            .min(area.height.saturating_sub(2))
-            .max(12)
-    };
-    let rect = centered_overlay(area, 76, overlay_h);
-    card_shadow(frame, rect, area);
-    let inner = render_overlay(frame, rect, Some("SPOTLIGHT"));
-    if inner.width == 0 || inner.height < 6 {
-        return;
-    }
-
-    let mut y = inner.y + 1;
-
-    // Search row.
-    let caret_on = (view.spotlight_tick / 4) % 2 == 0;
-    let caret_char = if caret_on { "▏" } else { " " };
-    let query_display = if view.spotlight_query.is_empty() {
-        "type to filter…"
-    } else {
-        view.spotlight_query.as_str()
-    };
-    let query_style = if view.spotlight_query.is_empty() {
-        Style::default().fg(IOS_FG_FAINT)
-    } else {
-        Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD)
-    };
-    let hint = " /? ";
-    let hint_w = hint.chars().count() as u16;
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("⌕  ", Style::default().fg(IOS_FG_MUTED)),
-            Span::styled(query_display.to_string(), query_style),
-            Span::styled(
-                caret_char,
-                Style::default().fg(IOS_TINT).add_modifier(Modifier::BOLD),
-            ),
-        ])),
-        Rect {
-            x: inner.x,
-            y,
-            width: inner.width.saturating_sub(hint_w + 1),
-            height: 1,
-        },
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            hint,
-            Style::default().fg(IOS_FG_FAINT).bg(IOS_CHIP_BG),
-        ))),
-        Rect {
-            x: inner.x + inner.width - hint_w,
-            y,
-            width: hint_w,
-            height: 1,
-        },
-    );
-    y += 1;
-
-    let hairline = "─".repeat(inner.width as usize);
-    frame.render_widget(
-        Paragraph::new(Span::styled(hairline, Style::default().fg(IOS_HAIRLINE))),
-        Rect {
-            x: inner.x,
-            y,
-            width: inner.width,
-            height: 1,
-        },
-    );
-    y += 2;
-
-    if total == 0 {
-        let msg = "no matches";
-        let mw = msg.chars().count() as u16;
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                msg,
-                Style::default()
-                    .fg(IOS_FG_MUTED)
-                    .add_modifier(Modifier::BOLD),
-            ))),
-            Rect {
-                x: inner.x + (inner.width.saturating_sub(mw)) / 2,
-                y: y + 1,
-                width: mw,
-                height: 1,
-            },
-        );
-        render_spotlight_footer(frame, inner);
-        return;
-    }
-
-    let selected = spotlight_selected(total, view.spotlight_selected);
-    let mut last_group: Option<&str> = None;
-    let bottom_guard = inner.y + inner.height - 2;
-
-    for (index, item) in filtered.iter().enumerate() {
-        if y >= bottom_guard {
-            break;
-        }
-        if last_group != Some(item.group) {
-            if last_group.is_some() {
-                if y >= bottom_guard {
-                    break;
-                }
-                y += 1;
-            }
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!(" {}", item.group),
-                    Style::default()
-                        .fg(IOS_FG_MUTED)
-                        .add_modifier(Modifier::BOLD),
-                ))),
-                Rect {
-                    x: inner.x,
-                    y,
-                    width: inner.width,
-                    height: 1,
-                },
-            );
-            y += 1;
-            last_group = Some(item.group);
-        }
-
-        if y >= bottom_guard {
-            break;
-        }
-        render_spotlight_row(frame, inner, y, item, index == selected);
-        y += 1;
-    }
-
-    render_spotlight_footer(frame, inner);
-}
-
-fn render_spotlight_row(
-    frame: &mut Frame,
-    inner: Rect,
-    y: u16,
-    item: &SpotlightItem,
-    selected: bool,
-) {
-    let row_bg = if selected { IOS_TINT_DARK } else { IOS_CARD_BG };
-    let title_fg = if selected {
-        Color::Rgb(255, 255, 255)
-    } else {
-        IOS_FG
-    };
-    let sub_fg = if selected { IOS_TINT_SUB } else { IOS_FG_MUTED };
-    let kbd = format!(" {} ", item.kbd);
-    let kbd_w = kbd.chars().count() as u16;
-    let row_rect = Rect {
-        x: inner.x,
-        y,
-        width: inner.width,
-        height: 1,
-    };
-    frame.render_widget(
-        Block::default().style(Style::default().bg(row_bg)),
-        row_rect,
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(" {} ", item.icon),
-                Style::default()
-                    .fg(title_fg)
-                    .bg(IOS_ICON_CHIP)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("  {}", item.title),
-                Style::default()
-                    .fg(title_fg)
-                    .bg(row_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("  {}", item.sub),
-                Style::default().fg(sub_fg).bg(row_bg),
-            ),
-        ])),
-        Rect {
-            x: inner.x,
-            y,
-            width: inner.width.saturating_sub(kbd_w + 1),
-            height: 1,
-        },
-    );
-    if inner.width > kbd_w + 1 {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                kbd,
-                Style::default()
-                    .fg(title_fg)
-                    .bg(IOS_CHIP_BG)
-                    .add_modifier(Modifier::BOLD),
-            ))),
-            Rect {
-                x: inner.x + inner.width - kbd_w,
-                y,
-                width: kbd_w,
-                height: 1,
-            },
-        );
-    }
-}
-
-fn render_spotlight_footer(frame: &mut Frame, inner: Rect) {
-    let fy = inner.y + inner.height - 1;
-    let footer = Line::from(vec![
-        Span::styled("↵", Style::default().fg(IOS_FG)),
-        Span::styled(" close    ", Style::default().fg(IOS_FG_MUTED)),
-        Span::styled("esc", Style::default().fg(IOS_FG)),
-        Span::styled(" dismiss    ", Style::default().fg(IOS_FG_MUTED)),
-        Span::styled("↑↓", Style::default().fg(IOS_FG)),
-        Span::styled(" move    ", Style::default().fg(IOS_FG_MUTED)),
-        Span::styled("/ ?", Style::default().fg(IOS_PURPLE)),
-        Span::styled(" search", Style::default().fg(IOS_FG_MUTED)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(footer),
-        Rect {
-            x: inner.x,
-            y: fy,
-            width: inner.width,
-            height: 1,
-        },
-    );
-}
-
-impl Component for WatcherView {
+impl<F: PrFeed> Component for WatcherView<F> {
     fn view(&mut self, frame: &mut Frame, area: Rect) {
-        self.ensure_merge_queue_loaded();
-        render_dashboard(
-            frame,
-            area,
-            &self.merge_queue,
-            self.merge_queue_error.as_deref(),
-        );
-        if self.overlay == Overlay::Spotlight {
-            render_spotlight(frame, area, self);
-        }
+        self.refresh();
+        render_dashboard(frame, area, &self.data, self.tick);
     }
 
     fn query(&self, attr: Attribute) -> Option<QueryResult<'_>> {
@@ -1708,70 +891,16 @@ impl Component for WatcherView {
     }
 }
 
-impl AppComponent<Msg, NoUserEvent> for WatcherView {
+impl<F: PrFeed + 'static> AppComponent<Msg, NoUserEvent> for WatcherView<F> {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match ev {
-            Event::Keyboard(KeyEvent {
-                code: Key::Char('/'),
-                ..
-            })
-            | Event::Keyboard(KeyEvent {
-                code: Key::Char('?'),
-                ..
-            }) => {
-                self.open_spotlight();
-                Some(Msg::Redraw)
-            }
             Event::Keyboard(KeyEvent {
                 code: Key::Char('q'),
                 ..
             })
-            | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => {
-                if self.overlay == Overlay::Spotlight {
-                    self.close_spotlight();
-                    Some(Msg::Redraw)
-                } else {
-                    Some(Msg::Quit)
-                }
-            }
-            Event::Keyboard(KeyEvent {
-                code: Key::Enter, ..
-            }) if self.overlay == Overlay::Spotlight => {
-                self.close_spotlight();
-                Some(Msg::Redraw)
-            }
-            Event::Keyboard(KeyEvent {
-                code: Key::Backspace,
-                ..
-            }) if self.overlay == Overlay::Spotlight => {
-                self.spotlight_query.pop();
-                self.spotlight_selected = 0;
-                Some(Msg::Redraw)
-            }
-            Event::Keyboard(KeyEvent { code: Key::Up, .. })
-                if self.overlay == Overlay::Spotlight =>
-            {
-                self.spotlight_selected = self.spotlight_selected.saturating_sub(1);
-                Some(Msg::Redraw)
-            }
-            Event::Keyboard(KeyEvent {
-                code: Key::Down, ..
-            }) if self.overlay == Overlay::Spotlight => {
-                let max = spotlight_filter(&self.spotlight_query)
-                    .len()
-                    .saturating_sub(1);
-                self.spotlight_selected = (self.spotlight_selected + 1).min(max);
-                Some(Msg::Redraw)
-            }
-            Event::Keyboard(KeyEvent {
-                code: Key::Char(c), ..
-            }) if self.overlay == Overlay::Spotlight && !c.is_control() => {
-                self.spotlight_query.push(*c);
-                self.spotlight_selected = 0;
-                Some(Msg::Redraw)
-            }
+            | Event::Keyboard(KeyEvent { code: Key::Esc, .. }) => Some(Msg::Quit),
             Event::Tick => {
-                self.spotlight_tick = self.spotlight_tick.wrapping_add(1);
+                self.tick = self.tick.wrapping_add(1);
                 Some(Msg::Tick)
             }
             _ => None,
@@ -1803,7 +932,7 @@ impl Model<CrosstermTerminalAdapter> {
         let mut app: Application<Id, Msg, NoUserEvent> = Application::init(
             EventListenerCfg::default()
                 .crossterm_input_listener(Duration::from_millis(100), 3)
-                .tick_interval(Duration::from_millis(500)),
+                .tick_interval(Duration::from_millis(2_000)),
         );
         app.mount(
             Id::Watcher,
@@ -1834,7 +963,7 @@ impl<T: TerminalAdapter> Model<T> {
         self.redraw = true;
         match msg {
             Msg::Quit => self.quit = true,
-            Msg::Tick | Msg::Redraw => {}
+            Msg::Tick => {}
         }
     }
 }
@@ -1868,110 +997,114 @@ mod tests {
     use super::*;
     use tuirealm::ratatui::{backend::TestBackend, Terminal};
 
-    #[test]
-    fn spotlight_filter_keeps_catalog_order_for_empty_query() {
-        let hits = spotlight_filter("");
-        assert_eq!(hits.len(), SPOTLIGHT_ITEMS.len());
-        assert_eq!(hits[0].title, "Horizontal split");
-        assert_eq!(hits[hits.len() - 1].title, "Switch worktree…");
+    #[derive(Clone)]
+    struct StubPrFeed {
+        data: ReviewData,
+    }
+
+    impl StubPrFeed {
+        fn fixture() -> Self {
+            Self {
+                data: ReviewData {
+                    stats: ReviewStats {
+                        pending: 2,
+                        approved_today: 4,
+                        changes_requested: 0,
+                        merged_last_hour: 3,
+                    },
+                    events: vec![
+                        ReviewEvent {
+                            hhmm: "12:59".into(),
+                            reviewer: "auto-reviewer".into(),
+                            title: "#91 Replace watcher placeholder".into(),
+                            outcome: ReviewOutcome::Approved,
+                        },
+                        ReviewEvent {
+                            hhmm: "12:54".into(),
+                            reviewer: "codex".into(),
+                            title: "#90 Idle rows need motion".into(),
+                            outcome: ReviewOutcome::Pending,
+                        },
+                    ],
+                    diff_bins: demo_diff_bins(),
+                    source: "stub snapshot feed".into(),
+                    degraded: false,
+                },
+            }
+        }
+    }
+
+    impl PrFeed for StubPrFeed {
+        fn load(&mut self) -> ReviewData {
+            self.data.clone()
+        }
     }
 
     #[test]
-    fn spotlight_filter_matches_group_title_and_subtext_case_insensitively() {
-        let hits = spotlight_filter("split");
-        let titles: Vec<&str> = hits.iter().map(|hit| hit.title).collect();
-        assert!(titles.contains(&"Horizontal split"));
-        assert!(titles.contains(&"Vertical split"));
-        let query_hits = spotlight_filter("SESSION");
-        assert!(query_hits
-            .iter()
-            .any(|hit| hit.title == "Copy whole session"));
+    fn parse_gh_event_maps_review_decision() {
+        let event = parse_gh_event(
+            "2026-05-15T10:42:03Z\treview-bot\t91\tReplace watcher placeholder\tAPPROVED",
+        )
+        .unwrap();
+        assert_eq!(event.hhmm, "10:42");
+        assert_eq!(event.reviewer, "review-bot");
+        assert_eq!(event.title, "#91 Replace watcher placeholder");
+        assert_eq!(event.outcome, ReviewOutcome::Approved);
     }
 
     #[test]
-    fn spotlight_selection_clamps_to_available_results() {
-        assert_eq!(spotlight_selected(0, 99), 0);
-        assert_eq!(spotlight_selected(3, 99), 2);
-        assert_eq!(spotlight_selected(3, 1), 1);
+    fn zero_cards_hide_only_when_row_would_overflow() {
+        let data = ReviewData::queue_clear("test");
+        assert_eq!(visible_stats(&data, 120).len(), 4);
+        assert_eq!(visible_stats(&data, 40).len(), 1);
     }
 
     #[test]
-    fn spotlight_open_and_close_reset_state() {
-        let mut view = WatcherView::default();
-        view.spotlight_query = "zoom".into();
-        view.spotlight_selected = 2;
-        view.open_spotlight();
-        assert_eq!(view.overlay, Overlay::Spotlight);
-        assert!(view.spotlight_query.is_empty());
-        assert_eq!(view.spotlight_selected, 0);
-
-        view.spotlight_query = "split".into();
-        view.spotlight_selected = 1;
-        view.close_spotlight();
-        assert_eq!(view.overlay, Overlay::None);
-        assert!(view.spotlight_query.is_empty());
-        assert_eq!(view.spotlight_selected, 0);
-    }
-
-    #[test]
-    fn parse_merge_queue_tsv_keeps_only_approved_open_prs() {
-        let rows = "\
-72\tPolish review queue\tcodex-one\tREADY_TO_MERGE\tAPPROVED\t0\thttps://example.test/72\n\
-73\tNeeds another pass\tcodex-two\tBLOCKED\tCHANGES_REQUESTED\t2\thttps://example.test/73\n";
-
-        let queue = parse_merge_queue_tsv(rows);
-
-        assert_eq!(queue.len(), 1);
-        assert_eq!(queue[0].number, "72");
-        assert_eq!(queue[0].title, "Polish review queue");
-        assert_eq!(queue[0].blocked_checks, "0");
-    }
-
-    #[test]
-    fn review_queue_render_keeps_design_j_chrome() {
-        let queue = [MergeQueueItem {
-            number: "72".into(),
-            title: "Polish review queue".into(),
-            author: "codex-one".into(),
-            merge_state: "READY_TO_MERGE".into(),
-            review_decision: "APPROVED".into(),
-            blocked_checks: "0".into(),
-            url: "https://example.test/72".into(),
-        }];
-        let mut terminal = Terminal::new(TestBackend::new(140, 44)).unwrap();
+    fn stub_feed_renders_live_board_at_sixty_rows() {
+        let mut view = WatcherView::with_feed(StubPrFeed::fixture());
+        let mut terminal = Terminal::new(TestBackend::new(120, 60)).unwrap();
         terminal
-            .draw(|frame| render_dashboard(frame, frame.area(), &queue, None))
+            .draw(|frame| view.view(frame, frame.area()))
             .unwrap();
         let frame = format!("{}", terminal.backend());
 
         for needle in [
-            "codex-fleet",
-            "Review",
-            "1 awaiting",
-            "124 approved",
-            "Auto-reviewer on",
-            "apply_patch touching 3 files",
-            "risk medium",
-            "auth high",
-            "AUTO-REVIEWER RATIONALE",
-            "3 FILES TOUCHED",
-            "Approve",
-            "Request changes",
-            "Skip",
-            "MERGE QUEUE",
-            "#72",
-            "APPROVED",
-            "ready to merge",
-            "CI green",
-            "Recent decisions",
-            "approved",
-            "escalated",
-            "denied",
+            "WATCHER · 2 pending · auto-reviewer on",
+            "PENDING",
+            "APPROVED-TODAY",
+            "CHANGES-REQUESTED",
+            "MERGED-LAST-1H",
+            "RECENT DECISIONS · last 30m",
+            "#91 Replace watcher placeholder",
+            "DIFF SPARKLINE · merged PRs · last 60m",
+            "source: stub snapshot feed",
         ] {
-            assert!(
-                frame.contains(needle),
-                "rendered review queue should contain {needle:?}\n{frame}"
-            );
+            assert!(frame.contains(needle), "missing {needle:?}\n{frame}");
         }
+    }
+
+    #[test]
+    fn queue_clear_fallback_still_fills_sixty_rows() {
+        let data = ReviewData::queue_clear("fixture");
+        let mut terminal = Terminal::new(TestBackend::new(100, 60)).unwrap();
+        terminal
+            .draw(|frame| render_dashboard(frame, frame.area(), &data, 2))
+            .unwrap();
+        let frame = format!("{}", terminal.backend());
+
+        assert!(frame.contains("queue clear · auto-reviewer caught up"));
+        assert!(frame.contains("DIFF SPARKLINE"));
+        assert!(frame.contains("no merged diff activity yet"));
+    }
+
+    #[test]
+    fn render_sixty_row_snapshot_for_pr_body() {
+        let mut view = WatcherView::with_feed(StubPrFeed::fixture());
+        let mut terminal = Terminal::new(TestBackend::new(120, 60)).unwrap();
+        terminal
+            .draw(|frame| view.view(frame, frame.area()))
+            .unwrap();
+        println!("--- fleet-watcher 120x60 snapshot ---");
+        println!("{}", terminal.backend());
     }
 }
