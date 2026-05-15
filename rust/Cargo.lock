@@ -405,6 +405,15 @@ name = "fleet-layout"
 version = "0.0.1"
 
 [[package]]
+name = "fleet-pane-health"
+version = "0.0.1"
+dependencies = [
+ "crossterm",
+ "fleet-ui",
+ "ratatui",
+]
+
+[[package]]
 name = "fleet-plan-tree"
 version = "0.0.1"
 dependencies = [
