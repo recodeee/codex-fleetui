@@ -6,8 +6,10 @@
 //! inside `Block::inner(rect)`; this module is purely the wrapper.
 
 use crate::palette::*;
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Borders};
+use ratatui::Frame;
 
 /// Build a rounded `Block` with the canonical iOS chrome.
 ///
@@ -21,15 +23,19 @@ use ratatui::widgets::{Block, BorderType, Borders};
 /// the systemBlue tint, matching the focus state on the session-switcher D
 /// artboard.
 pub fn card<'a>(title: Option<&'a str>, active: bool) -> Block<'a> {
-    let border_color = if active { IOS_TINT } else { IOS_HAIRLINE_STRONG };
+    let border_color = if active {
+        IOS_TINT
+    } else {
+        IOS_HAIRLINE_STRONG
+    };
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(
-            Style::default()
-                .fg(border_color)
-                .add_modifier(if active { Modifier::BOLD } else { Modifier::empty() }),
-        )
+        .border_style(Style::default().fg(border_color).add_modifier(if active {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        }))
         .style(Style::default().bg(IOS_BG_SOLID));
     if let Some(t) = title {
         block = block.title(ratatui::text::Span::styled(
@@ -58,12 +64,34 @@ pub fn card_accent<'a>(title: Option<&'a str>, accent: Color) -> Block<'a> {
     block
 }
 
+/// Paint an inset iOS glass surface inside a card content area.
+///
+/// Dashboards use this after `card(...).inner(area)` when the card needs a
+/// tinted sub-surface for grouped rows while keeping the public card chrome
+/// stable.
+pub fn card_inner(frame: &mut Frame, area: Rect, tint: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(IOS_HAIRLINE_BORDER).bg(tint))
+            .style(Style::default().bg(tint)),
+        area,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
+    use ratatui::Terminal;
 
     #[test]
     fn renders_rounded_corners() {
@@ -87,5 +115,21 @@ mod tests {
         let inner = card(None, false).inner(area);
         // ratatui Block reserves 1 cell on each side for the border.
         assert_eq!(inner, Rect::new(1, 1, 18, 3));
+    }
+
+    #[test]
+    fn card_inner_paints_tinted_hairline_surface() {
+        let mut terminal = Terminal::new(TestBackend::new(12, 6)).unwrap();
+        terminal
+            .draw(|frame| card_inner(frame, Rect::new(1, 1, 10, 4), IOS_BG_GLASS))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(1, 1)].symbol(), "╭");
+        assert_eq!(buffer[(10, 1)].symbol(), "╮");
+        assert_eq!(buffer[(1, 4)].symbol(), "╰");
+        assert_eq!(buffer[(10, 4)].symbol(), "╯");
+        assert_eq!(buffer[(1, 1)].fg, IOS_HAIRLINE_BORDER);
+        assert_eq!(buffer[(5, 2)].bg, IOS_BG_GLASS);
     }
 }
