@@ -32,6 +32,7 @@ use std::{io, path::PathBuf, time::Duration};
 
 use fleet_data::plan::{self, Plan, Subtask};
 use fleet_ui::{
+    card::card,
     chip::{status_chip, ChipKind, CHIP_WIDTH},
     palette::*,
 };
@@ -228,6 +229,31 @@ fn active_wave_info(waves: &[Vec<u32>], plan: &Plan) -> (usize, &'static str, u3
         }
     }
     (waves.len().max(1), "done", pct)
+}
+
+struct WavePreview<'a> {
+    wave_index: usize,
+    status: WaveStatus,
+    title: &'a str,
+}
+
+fn unfinished_waves<'a>(waves_v: &'a [Vec<u32>], plan: &'a Plan, limit: usize) -> Vec<WavePreview<'a>> {
+    let mut out = Vec::new();
+    for (wave_index, indices) in waves_v.iter().enumerate() {
+        let status = wave_status(indices, plan);
+        if matches!(status, WaveStatus::Done) {
+            continue;
+        }
+        out.push(WavePreview {
+            wave_index,
+            status,
+            title: first_task_title(indices, plan),
+        });
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
 }
 
 fn clip(s: &str, max: u16) -> String {
@@ -464,6 +490,94 @@ fn render_wave_bar(
     }
 }
 
+fn render_wave_preview_card(frame: &mut Frame, area: Rect, plan: &Plan, waves_v: &[Vec<u32>]) {
+    if area.width < 24 || area.height < 4 {
+        return;
+    }
+
+    let block = card(Some("UP NEXT"), false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let previews = unfinished_waves(waves_v, plan, inner.height.saturating_sub(2) as usize);
+    if previews.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  plan complete — every wave is done",
+                Style::default().fg(IOS_FG_MUTED).add_modifier(Modifier::BOLD),
+            ))),
+            Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+        );
+        return;
+    }
+
+    let total = plan.tasks.len() as u32;
+    let done = plan.tasks.iter().filter(|t| t.status == "completed").count() as u32;
+    let remaining = total.saturating_sub(done);
+    let lead = &previews[0];
+    let lead_word = match lead.status {
+        WaveStatus::Working => "in flight",
+        WaveStatus::Idle => "queued",
+        WaveStatus::Done => "done",
+    };
+    let summary = clip(
+        &format!(
+            "  W{} {} · {} unfinished waves · {} tasks remaining",
+            lead.wave_index + 1,
+            lead_word,
+            previews.len(),
+            remaining
+        ),
+        inner.width.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            summary,
+            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+        ))),
+        Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
+    );
+
+    if inner.height > 2 {
+        let divider = "─".repeat(inner.width as usize);
+        frame.render_widget(
+            Paragraph::new(Span::styled(divider, Style::default().fg(IOS_HAIRLINE))),
+            Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
+        );
+    }
+
+    let mut y = inner.y + 2;
+    for preview in previews.iter().take(inner.height.saturating_sub(2) as usize) {
+        if y >= inner.y + inner.height {
+            break;
+        }
+        let kind = match preview.status {
+            WaveStatus::Done => ChipKind::Done,
+            WaveStatus::Working => ChipKind::Working,
+            WaveStatus::Idle => ChipKind::Idle,
+        };
+        let prefix = format!("  W{} ", preview.wave_index + 1);
+        let prefix_w = prefix.chars().count() as u16;
+        let title_budget = inner.width.saturating_sub(prefix_w + CHIP_WIDTH + 1);
+        let title = clip(preview.title, title_budget);
+        let mut spans = vec![Span::styled(
+            prefix,
+            Style::default().fg(IOS_FG).add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(status_chip(kind));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(title, Style::default().fg(IOS_FG)));
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect { x: inner.x, y, width: inner.width, height: 1 },
+        );
+        y += 1;
+    }
+}
+
 fn render(frame: &mut Frame, area: Rect, app: &App) {
     if area.width < 40 || area.height < 6 {
         return;
@@ -493,6 +607,28 @@ fn render(frame: &mut Frame, area: Rect, app: &App) {
             )),
             rows[1],
         );
+    }
+
+    if let Some(plan) = app.plan.as_ref() {
+        let gantt_h = rows[1].height;
+        if gantt_h > 0 {
+            let waves_rendered = waves_v.len() as u16;
+            if gantt_h > waves_rendered {
+                let footer_y = rows[1].y + waves_rendered;
+                let footer_h = gantt_h - waves_rendered;
+                render_wave_preview_card(
+                    frame,
+                    Rect {
+                        x: rows[1].x,
+                        y: footer_y,
+                        width: rows[1].width,
+                        height: footer_h,
+                    },
+                    plan,
+                    &waves_v,
+                );
+            }
+        }
     }
 }
 
@@ -572,4 +708,78 @@ fn main() -> io::Result<()> {
     let _ = model.terminal.disable_raw_mode();
     let _ = model.terminal.leave_alternate_screen();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn demo_plan() -> Plan {
+        Plan {
+            schema_version: 1,
+            plan_slug: "demo".into(),
+            title: "Demo".into(),
+            problem: "demo".into(),
+            acceptance_criteria: vec![],
+            roles: vec![],
+            created_at: None,
+            updated_at: None,
+            published: None,
+            tasks: vec![
+                Subtask {
+                    subtask_index: 0,
+                    title: "Wave zero".into(),
+                    description: "done".into(),
+                    file_scope: vec![],
+                    depends_on: vec![],
+                    capability_hint: None,
+                    spec_row_id: None,
+                    status: "completed".into(),
+                    claimed_by_session_id: None,
+                    claimed_by_agent: None,
+                    completed_summary: None,
+                },
+                Subtask {
+                    subtask_index: 1,
+                    title: "Wave one".into(),
+                    description: "claimed".into(),
+                    file_scope: vec![],
+                    depends_on: vec![0],
+                    capability_hint: None,
+                    spec_row_id: None,
+                    status: "claimed".into(),
+                    claimed_by_session_id: None,
+                    claimed_by_agent: Some("codex-alpha".into()),
+                    completed_summary: None,
+                },
+                Subtask {
+                    subtask_index: 2,
+                    title: "Wave two".into(),
+                    description: "available".into(),
+                    file_scope: vec![],
+                    depends_on: vec![1],
+                    capability_hint: None,
+                    spec_row_id: None,
+                    status: "available".into(),
+                    claimed_by_session_id: None,
+                    claimed_by_agent: None,
+                    completed_summary: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn unfinished_waves_skip_completed_rows() {
+        let plan = demo_plan();
+        let waves_v = waves(&plan.tasks);
+        let previews = unfinished_waves(&waves_v, &plan, 3);
+        assert_eq!(previews.len(), 2);
+        assert_eq!(previews[0].wave_index, 1);
+        assert!(matches!(previews[0].status, WaveStatus::Working));
+        assert_eq!(previews[0].title, "Wave one");
+        assert_eq!(previews[1].wave_index, 2);
+        assert!(matches!(previews[1].status, WaveStatus::Idle));
+        assert_eq!(previews[1].title, "Wave two");
+    }
 }
