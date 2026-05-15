@@ -1,0 +1,15 @@
+[package]
+name = "fleet-metrics-viewer"
+version = "0.0.1"
+edition = "2021"
+description = "ratatui live-tail viewer for the supervisor metrics TSV with iOS-style chrome."
+publish = false
+
+[[bin]]
+name = "fleet-metrics-viewer"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+fleet-ui = { path = "../fleet-ui" }
