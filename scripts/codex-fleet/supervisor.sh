@@ -10,9 +10,11 @@
 # This file is the canonical home for the codex-fleet supervisor *classifier
 # prompt*. The classifier runs once per supervisor tick per pane: a captured
 # pane snapshot (last ~80 lines of tmux output) is sent to Claude, and Claude
-# returns one of four labels — working / asking / blocked / done — so the
+# returns one of four labels — busy / asking / blocked / quiet — so the
 # fleet can decide whether to leave the pane alone, answer its question,
-# escalate, or harvest results.
+# escalate, or harvest results. These labels match the live classifier
+# library at scripts/codex-fleet/lib/claude-supervisor-classifier.sh so
+# the supervisor daemon and any replay/test harness agree on naming.
 #
 # Sister daemons (claude-supervisor.sh, plan-watcher.sh, cap-swap-daemon.sh,
 # auto-reviewer.sh) SOURCE this file to pull the canonical prompt + tiering
@@ -55,20 +57,21 @@
 # counter keyed by (pane_id, classification, iso8601_timestamp). The metric
 # that trips the guard is exactly:
 #
-#     pane_id=<tmux pane id>  classification=<working|asking|blocked|done>
+#     pane_id=<tmux pane id>  classification=<busy|asking|blocked|quiet>
 #     timestamp=<RFC3339 UTC, e.g. 2026-05-15T23:37:00Z>
 #
 # Rule: after 3 consecutive identical classifications on the same pane,
 # STOP re-running the classifier on that pane and escalate to a different
 # action instead:
-#   - working x3  -> no-op (healthy steady state, just reset the streak
+#   - busy    x3  -> no-op (healthy steady state, just reset the streak
 #                    and skip the next classifier call to save tokens)
 #   - asking  x3  -> page the operator + post a Colony note; the question
 #                    was not answered after 3 ticks, human attention needed
 #   - blocked x3  -> escalate to Opus 4.7 once; if Opus also returns
 #                    "blocked" then poke the pane (Ctrl-C + retry hint)
 #                    and post a Colony note with the captured snapshot
-#   - done    x3  -> harvest results, mark the lane complete, and respawn
+#   - quiet   x3  -> harvest any completed results (PR URL, MERGED line),
+#                    mark the lane complete if appropriate, then respawn
 #                    the worker into a fresh task
 #
 # Reset rules: the streak counter resets to zero whenever the
@@ -107,13 +110,13 @@ snapshot (the last ~80 lines of terminal output for a single Codex/Claude
 worker) and you must return EXACTLY ONE of the following lowercase labels,
 with no surrounding prose, no punctuation, and no whitespace:
 
-    working | asking | blocked | done | uncertain
+    busy | asking | blocked | quiet | uncertain
 
 Category definitions and one canonical example per category follow. Match
 on intent and current state, not on stray keywords that may appear in
 earlier scrollback.
 
-[CATEGORY: working]
+[CATEGORY: busy]
 The pane shows an agent actively making progress: editing files, running
 commands, streaming model output, or printing tool results. No prompt is
 currently waiting on human input and no fatal error is in the last few
@@ -150,10 +153,13 @@ Example:
     error: You've hit your usage limit. Try again in 4h 12m.
     [agent] giving up; awaiting supervisor swap.
 
-[CATEGORY: done]
-The pane has finished its current task cleanly: a PR URL is printed, a
-"merged" / "completed" / "all green" line appears in the last few rows,
-or the agent is idle at a shell prompt after announcing completion.
+[CATEGORY: quiet]
+The pane is idle: no recent activity in the on-screen window, the cursor
+sits at a shell prompt waiting for the next task, or the agent has just
+finished cleanly (PR URL printed, "merged" / "completed" / "all green"
+line in the last few rows). Quiet covers both "task done" and "between
+tasks" — the supervisor distinguishes them by checking for a PR URL in
+the same snapshot.
 Example:
     [agent] gx branch finish ... --via-pr --cleanup
     https://github.com/NagyVikt/codex-fleet/pull/72
@@ -171,7 +177,7 @@ Example:
     [some bytes that look like a partial ANSI escape sequence] ESC[?25l
 
 Output contract:
-- Return exactly one of: working asking blocked done uncertain
+- Return exactly one of: busy asking blocked quiet uncertain
 - No quotes, no markdown, no trailing newline beyond a single \n.
 - Do not explain. The supervisor parses your reply with a strict regex.
 

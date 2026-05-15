@@ -30,6 +30,9 @@ REPO_ROOT="${CODEX_FLEET_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 PLAN_SLUG=""
 DRY_RUN=0
+LOOP=0
+INTERVAL=300
+ONCE=0
 DIFF_LINE_LIMIT="${AUTO_REVIEW_DIFF_LINES:-200}"
 OUTPUT_DIR="${AUTO_REVIEW_OUTPUT_DIR:-/tmp/claude-viz}"
 
@@ -46,13 +49,18 @@ usage() {
 auto-reviewer.sh - end-of-plan auto-reviewer for codex-fleet.
 
 Usage:
-  auto-reviewer.sh [--plan-slug <slug>] [--dry-run] [-h|--help]
+  auto-reviewer.sh [--plan-slug <slug>] [--dry-run] [--once|--loop [--interval=<sec>]] [-h|--help]
 
 Options:
   --plan-slug <slug>   Plan slug to review. Defaults to contents of
                        .codex-fleet/active-plan.
   --dry-run            Build and print the prompt to stdout; do not invoke
                        claude and do not write the review artifact.
+  --once               Run main() once and exit (the default). Mutually
+                       exclusive with --loop.
+  --loop               Run main() repeatedly with --interval between runs.
+                       Used by full-bringup.sh's ticker window.
+  --interval=<sec>     Seconds between iterations in --loop mode (default 300).
   -h, --help           Show this help and exit.
 USAGE
 }
@@ -62,6 +70,10 @@ while [[ $# -gt 0 ]]; do
     --plan-slug) PLAN_SLUG="${2:-}"; shift 2 ;;
     --plan-slug=*) PLAN_SLUG="${1#*=}"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --once) ONCE=1; LOOP=0; shift ;;
+    --loop) LOOP=1; ONCE=0; shift ;;
+    --interval) INTERVAL="${2:-300}"; shift 2 ;;
+    --interval=*) INTERVAL="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown arg: $1" ;;
   esac
@@ -309,4 +321,12 @@ main() {
   log "review written plan=$slug file=$output_file"
 }
 
-main "$@"
+if [[ "$LOOP" -eq 1 ]]; then
+  log "loop mode interval=${INTERVAL}s"
+  while true; do
+    main || warn "iteration failed rc=$?; continuing"
+    sleep "$INTERVAL"
+  done
+else
+  main
+fi
