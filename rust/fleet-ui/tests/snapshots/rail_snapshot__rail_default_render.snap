@@ -1,0 +1,9 @@
+---
+source: fleet-ui/tests/rail_snapshot.rs
+expression: "format!(\"{}\", terminal.backend())"
+---
+"                    "
+"                    "
+"    ▕██████░░░░▏    "
+"                    "
+"                    "
