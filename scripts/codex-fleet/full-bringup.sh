@@ -765,6 +765,11 @@ ticker_window claim-release "CR_SUP_SESSION=$SESSION CR_SUP_WINDOW=overview bash
 # Cooldown prevents re-prompting the same worker on the same plan.
 ticker_window plan-watcher "CODEX_FLEET_SESSION=$SESSION CODEX_FLEET_REPO_ROOT=$REPO bash $SCRIPT_DIR/plan-watcher.sh --loop --interval=30"
 
+# auto-reviewer: every 5m, reviews merged PRs attached to completed plan
+# sub-tasks. Slow cadence keeps Claude call cost bounded while still catching
+# new completions within the hour.
+ticker_window auto-reviewer "bash $SCRIPT_DIR/auto-reviewer.sh --loop --interval=300"
+
 # stall-watcher: every 60s, `colony rescue stranded --apply` releases claims
 # held > 30m without progress, then enqueues a takeover_recommended event
 # per rescued agent into /tmp/claude-viz/supervisor-queue.jsonl.
