@@ -1,0 +1,15 @@
+[package]
+name = "fleet-pane-health"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "Per-pane health dashboard for codex-fleet."
+
+[[bin]]
+name = "fleet-pane-health"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+fleet-ui = { path = "../fleet-ui" }
