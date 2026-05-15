@@ -232,14 +232,14 @@ fn fit(input: &str, width: u16) -> String {
     out
 }
 
-fn pill_line(label: &'static str, fg: Color, bg: Color) -> Line<'static> {
+fn pill_line(label: &str, fg: Color, bg: Color) -> Line<'static> {
     Line::from(Span::styled(
         format!("  {label}  "),
         Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
     ))
 }
 
-fn render_pill(frame: &mut Frame, area: Rect, label: &'static str, fg: Color, bg: Color) {
+fn render_pill(frame: &mut Frame, area: Rect, label: &str, fg: Color, bg: Color) {
     fill(frame, area, bg);
     text(frame, area, pill_line(label, fg, bg));
 }
@@ -377,6 +377,15 @@ fn merge_queue_check_label(item: &MergeQueueItem) -> String {
     }
 }
 
+fn merge_queue_check_style(item: &MergeQueueItem) -> (Color, Color) {
+    match item.blocked_checks.parse::<usize>() {
+        Ok(0) => (REVIEW_GREEN_FG, REVIEW_GREEN_BG),
+        Ok(1) => (REVIEW_YELLOW_FG, REVIEW_YELLOW_BG),
+        Ok(_) => (REVIEW_RED_FG, REVIEW_RED_BG),
+        Err(_) => (REVIEW_MUTED, REVIEW_PANEL_MUTED),
+    }
+}
+
 fn merge_queue_state_label(item: &MergeQueueItem) -> String {
     if item.merge_state.is_empty() {
         "merge state pending".to_owned()
@@ -472,6 +481,7 @@ fn render_merge_queue(
         if y + 1 >= inner.y + inner.height {
             break;
         }
+        let check_label = merge_queue_check_label(item);
         let left_w = inner.width.saturating_sub(18);
         text(
             frame,
@@ -495,50 +505,85 @@ fn render_merge_queue(
                 ),
             ]),
         );
-        text(
+        render_pill(
             frame,
             Rect {
-                x: inner.x + inner.width.saturating_sub(16),
+                x: inner.x + inner.width.saturating_sub(13),
                 y,
-                width: 15,
+                width: 12,
                 height: 1,
             },
-            Line::from(Span::styled(
-                "APPROVED",
-                Style::default()
-                    .fg(IOS_FG)
-                    .bg(IOS_TINT)
-                    .add_modifier(Modifier::BOLD),
-            )),
+            "APPROVED",
+            REVIEW_TEXT,
+            REVIEW_BLUE,
         );
-        text(
-            frame,
-            Rect {
-                x: inner.x + 1,
-                y: y + 1,
-                width: inner.width.saturating_sub(2),
-                height: 1,
-            },
-            Line::from(vec![
-                Span::styled(
-                    format!("@{} · ", fit(&item.author, 16)),
-                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                ),
-                Span::styled(
-                    format!("{} · ", merge_queue_state_label(item)),
-                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                ),
-                Span::styled(
-                    merge_queue_check_label(item),
-                    Style::default().fg(IOS_TINT).bg(IOS_BG_GLASS),
-                ),
-                Span::styled(" · ", Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS)),
-                Span::styled(
-                    fit(&item.url, 32),
-                    Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
-                ),
-            ]),
-        );
+        if inner.width > 48 {
+            let (check_fg, check_bg) = merge_queue_check_style(item);
+            text(
+                frame,
+                Rect {
+                    x: inner.x + 1,
+                    y: y + 1,
+                    width: inner.width.saturating_sub(24),
+                    height: 1,
+                },
+                Line::from(vec![
+                    Span::styled(
+                        format!("@{} · ", fit(&item.author, 16)),
+                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                    ),
+                    Span::styled(
+                        format!("{} · ", merge_queue_state_label(item)),
+                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                    ),
+                    Span::styled(
+                        fit(&item.url, 32),
+                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                    ),
+                ]),
+            );
+            render_pill(
+                frame,
+                Rect {
+                    x: inner.x + inner.width.saturating_sub(23),
+                    y: y + 1,
+                    width: 22,
+                    height: 1,
+                },
+                &check_label,
+                check_fg,
+                check_bg,
+            );
+        } else {
+            text(
+                frame,
+                Rect {
+                    x: inner.x + 1,
+                    y: y + 1,
+                    width: inner.width.saturating_sub(2),
+                    height: 1,
+                },
+                Line::from(vec![
+                    Span::styled(
+                        format!("@{} · ", fit(&item.author, 16)),
+                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                    ),
+                    Span::styled(
+                        format!("{} · ", merge_queue_state_label(item)),
+                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                    ),
+                    Span::styled(
+                        merge_queue_check_label(item),
+                        Style::default().fg(IOS_TINT).bg(IOS_BG_GLASS),
+                    ),
+                    Span::styled(" · ", Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS)),
+                    Span::styled(
+                        fit(&item.url, 32),
+                        Style::default().fg(IOS_FG_MUTED).bg(IOS_BG_GLASS),
+                    ),
+                ]),
+            );
+        }
         y += 2;
     }
 }
