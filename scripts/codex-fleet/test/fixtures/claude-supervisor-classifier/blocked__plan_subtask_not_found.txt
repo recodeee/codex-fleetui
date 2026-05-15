@@ -1,0 +1,5 @@
+> OVERRIDE: claim sub-task 0 of plan codex-fleet-glass-menu-drop-tabstrip-2026-05-15
+  reading openspec/plans/codex-fleet-glass-menu-drop-tabstrip-2026-05-15/plan.json
+  PLAN_SUBTASK_NOT_FOUND: sub-task 0 is already complete, no available work
+  queue is empty
+Blocked. PLAN_SUBTASK_NOT_FOUND, queue empty.

@@ -1,0 +1,7 @@
+  Detected three candidate approaches for this refactor:
+  1) inline the helper into the only call site
+  2) extract a new module under rust/fleet-ui/src/glass/ (recommended)
+  3) leave the duplication and tag with TODO
+
+  Which option would you like me to take?
+2) extract a new module under rust/fleet-ui/src/glass/ (recommended)

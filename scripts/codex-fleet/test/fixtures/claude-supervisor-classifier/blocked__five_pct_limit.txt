@@ -1,0 +1,5 @@
+> mid-task: editing rust/fleet-waves/src/main.rs
+  edits queued
+  attempting to send to model
+  warning: less than 5% of your 5h limit remaining
+  pausing — will not start another long turn

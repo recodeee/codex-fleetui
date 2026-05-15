@@ -1,0 +1,11 @@
+  earlier in this lane:
+  > BLOCKED: stale-claim blocker on sub-task 2, told me not to rescue
+  > queue is empty, what now?
+  operator: claim was rescued, retry plan-watcher pulled a fresh sub-task
+
+  resumed: sub-task 5 of codex-fleet-ios-pages-design-pass-2026-05-15
+  reading plan content
+  Detected migration drift, two options:
+  1) regenerate the migration (recommended)
+  2) hand-edit the current migration
+1) regenerate the migration (recommended)

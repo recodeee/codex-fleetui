@@ -1,0 +1,4 @@
+> git pull --ff-only
+  error: uncommitted changes in 4 files
+  hint: stash, finish in worktree, or commit before pulling
+  refusing to proceed

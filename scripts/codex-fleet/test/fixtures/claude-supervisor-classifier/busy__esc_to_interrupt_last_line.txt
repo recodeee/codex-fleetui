@@ -1,0 +1,5 @@
+> running cargo test -p fleet-tab-strip
+  Compiling fleet-tab-strip v0.1.0
+  Compiling fleet-ui v0.1.0
+test result: ok. 18 passed; 0 failed
+Working (1m 12s • ↑ 7.8k tokens • esc to interrupt)
