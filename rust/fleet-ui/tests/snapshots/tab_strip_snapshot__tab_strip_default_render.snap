@@ -1,0 +1,7 @@
+---
+source: fleet-ui/tests/tab_strip_snapshot.rs
+expression: "normalize_clock(format!(\"{}\", terminal.backend()))"
+---
+"                                                                                                                                "
+" ◆ codex-fleet HH:MM:SS   ◖ 0 ⊞ Overview 7 ◗ ◖ 1 ⌬ Fleet 12 ◗ ◖  2 ▤  Plan  3  ◗ ◖ 3 ≋ Waves 1 ◗ ◖ 4 ✓ Review 0 ◗   ● live · 42 "
+"                                                                                                                                "
