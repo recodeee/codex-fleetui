@@ -52,6 +52,15 @@ MARKED_ANYWHERE="$(tmux display -p -t "$PANE_ID" '#{pane_marked_set}' 2>/dev/nul
 ZOOMED="$(tmux display -p -t "$PANE_ID" '#{window_zoomed_flag}' 2>/dev/null || echo 0)"
 PANE_MARKED="$(tmux display -p -t "$PANE_ID" '#{pane_marked}' 2>/dev/null || echo 0)"
 
+# Smart top row: if tmux already has selection text in its paste buffer, surface
+# it as a one-tap "Copy selection · <preview>…" row so the operator's most
+# probable next action is on the cursor by default. BUFFER_SIZE==0 means no
+# recent selection — the row is hidden and the menu falls back to its prior
+# top item ("Copy whole session").
+BUFFER_SIZE="$(tmux show-buffer 2>/dev/null | wc -c | tr -d ' ')"
+BUFFER_SIZE="${BUFFER_SIZE:-0}"
+BUFFER_SAMPLE="$(tmux show-buffer 2>/dev/null | head -c 30 | tr -d '\n')"
+
 # ── chrome helpers (operate inside the popup's pty) ────────────────────────
 menu_fg() {
   local fg="$1"; shift || true
@@ -172,6 +181,21 @@ render_menu() {
   draw_header
   draw_hairline
 
+  # Smart top row — anticipates the operator's next action. When tmux already
+  # holds selection text (BUFFER_SIZE > 0), the first row is "Copy selection ·
+  # <preview>…" and the cursor lands on it. The hotkey is 'S' (capital S —
+  # 's' stays bound to "swap with marked").
+  if (( BUFFER_SIZE > 0 )); then
+    local sel_label="Copy selection · ${BUFFER_SAMPLE}…"
+    # Trim label so the row stays inside INNER_W when buffer samples are long.
+    local sel_max=$(( INNER_W - 5 - 4 ))   # 5 chrome + "· S " chip
+    if (( ${#sel_label} > sel_max )); then
+      sel_label="${sel_label:0:sel_max}"
+    fi
+    draw_item '✓'  "$sel_label"           'S' normal "$focus_key"
+    draw_hairline
+  fi
+
   draw_item '▣'  "Copy whole session"     'C' normal "$focus_key"
   draw_item '▢'  "Copy visible"           'c' normal "$focus_key"
   draw_item '─'  "Copy this line"         'l' normal "$focus_key"
@@ -215,13 +239,21 @@ mark_label="Mark pane"
 # Order matches the visual order rendered in render_menu so arrow-nav walks
 # the menu top-to-bottom. Disabled rows keep their hotkey wired (parity with
 # the prior single-keystroke behavior) but are skipped during arrow walks.
-ITEM_KEYS=(C c l p '<' '>' h v z u d s m R X '?')
-ITEM_STYLES=(normal normal normal normal \
-             normal normal \
-             normal normal "$zoom_style" \
-             "$multi" "$multi" "$swap_marked_style" normal \
-             normal danger \
-             normal)
+# When BUFFER_SIZE > 0 the smart "Copy selection" row (hotkey 'S') is prepended
+# at index 0 so the focus seeker below lands on it by default.
+ITEM_KEYS=()
+ITEM_STYLES=()
+if (( BUFFER_SIZE > 0 )); then
+  ITEM_KEYS+=('S')
+  ITEM_STYLES+=(normal)
+fi
+ITEM_KEYS+=(C c l p '<' '>' h v z u d s m R X '?')
+ITEM_STYLES+=(normal normal normal normal \
+              normal normal \
+              normal normal "$zoom_style" \
+              "$multi" "$multi" "$swap_marked_style" normal \
+              normal danger \
+              normal)
 
 # Walk the ITEM_STYLES table, skipping 'disabled' entries, wrapping around.
 next_enabled_idx() {
@@ -294,7 +326,7 @@ done
 
 feedback_key=''
 case "$choice" in
-  C|c|l|p|'<'|'>'|h|v|z|u|d|s|m|R|X|'?') feedback_key="$choice" ;;
+  S|C|c|l|p|'<'|'>'|h|v|z|u|d|s|m|R|X|'?') feedback_key="$choice" ;;
   $'\b'|$'\x08') feedback_key='?' ;;
 esac
 if [[ -n "$feedback_key" ]]; then
@@ -304,6 +336,14 @@ fi
 clear
 
 case "$choice" in
+  S)  # Smart top-row: copy the existing tmux paste buffer (the recent
+      # selection) into the SYSTEM clipboard through the dual-clipboard helper
+      # so wl-copy + tmux buffer stay in sync. No-op if the buffer is empty
+      # (BUFFER_SIZE > 0 gates the row, but re-check to be safe).
+      if [[ "${BUFFER_SIZE:-0}" -gt 0 ]]; then
+        tmux show-buffer | bash "$SCRIPT_DIR/pane-menu-clip-dual.sh"
+        tmux display-message -d 1200 '✓  selection copied'
+      fi ;;
   C)  tmux capture-pane -t "$PANE_ID" -p -S - -E - | wl-copy
       tmux display-message -d 1500 '▣  Pane history copied' ;;
   c)  tmux capture-pane -t "$PANE_ID" -p | wl-copy
