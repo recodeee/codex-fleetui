@@ -1,0 +1,9 @@
+schema: 1
+plan: agent-codex-masterplan-ios-pages-sub-3-2026-05-15-02-13
+role: critic
+status: draft
+artifacts:
+  prompt: prompt.md
+  proposal: proposal.md
+  tasks: tasks.md
+  spec: specs/critic/spec.md
