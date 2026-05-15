@@ -427,17 +427,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fleet-tab-strip"
-version = "0.0.1"
-dependencies = [
- "crossterm",
- "fleet-components",
- "fleet-ui",
- "ratatui",
- "tuirealm",
-]
-
-[[package]]
 name = "fleet-tui-poc"
 version = "0.0.1"
 dependencies = [
