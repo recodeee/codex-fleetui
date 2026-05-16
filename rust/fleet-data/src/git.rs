@@ -89,12 +89,21 @@ pub fn parse(stdout: &str) -> Vec<PrFileset> {
 /// for cross-lane warnings, "I cannot prove this PR is merged" is the safe
 /// default that produces a warning rather than silently suppressing it.
 pub fn branch_contains_pr(branch: &str, pr_head: &str) -> std::io::Result<bool> {
-    let status = std::process::Command::new("git")
-        .args(["merge-base", "--is-ancestor", pr_head, branch])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    Ok(status.success())
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["merge-base", "--is-ancestor", pr_head, branch]);
+    // 2 s deadline: a `git merge-base` against a local repo should return
+    // in milliseconds; a stalled git process (lock contention, filesystem
+    // wedge) collapses to the "cannot prove ancestry" branch, same as a
+    // missing git binary — which is the safe default that surfaces a
+    // merge-pending warning rather than silently suppressing it.
+    let out = match crate::subprocess::output_with_deadline(
+        cmd,
+        crate::subprocess::HEAVY_CMD_DEADLINE,
+    ) {
+        Ok(o) => o,
+        Err(_) => return Ok(false),
+    };
+    Ok(out.status.success())
 }
 
 /// Shell out to `gh pr list` and parse the result.
@@ -104,19 +113,24 @@ pub fn branch_contains_pr(branch: &str, pr_head: &str) -> std::io::Result<bool> 
 /// a crash. `--limit 100` is enough for any plausible fleet; a 100-PR
 /// backlog is itself a signal worth surfacing elsewhere.
 pub fn open_prs_with_files() -> std::io::Result<Vec<PrFileset>> {
-    let out = match std::process::Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--json",
-            "number,headRefName,baseRefName,files",
-            "--limit",
-            "100",
-        ])
-        .output()
-    {
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args([
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--json",
+        "number,headRefName,baseRefName,files",
+        "--limit",
+        "100",
+    ]);
+    // 2 s deadline keeps a stalled network call from freezing the
+    // dashboard tick. On timeout we collapse to the "no warnings"
+    // posture — same as a missing `gh` or a non-zero exit.
+    let out = match crate::subprocess::output_with_deadline(
+        cmd,
+        crate::subprocess::HEAVY_CMD_DEADLINE,
+    ) {
         Ok(o) => o,
         Err(_) => return Ok(Vec::new()),
     };

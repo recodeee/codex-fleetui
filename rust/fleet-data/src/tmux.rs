@@ -23,6 +23,8 @@
 
 use std::process::Command;
 
+use crate::subprocess::{output_with_deadline, TMUX_READ_DEADLINE};
+
 /// A tmux target: `session:window` or `session:window.pane`. Construct via the
 /// builders so callers don't hand-format the `:` / `.` separators (the class
 /// of typo that produced `codex-fleet:1` vs `codex-fleet:overview` bugs).
@@ -61,12 +63,10 @@ impl Target {
 /// Wraps `tmux has-session -t <session>`; the exit status is the answer, so
 /// this never returns an error — an absent tmux binary just reports `false`.
 pub fn has_session(session: &str) -> bool {
-    Command::new("tmux")
-        .args(["has-session", "-t", session])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
+    let mut cmd = Command::new("tmux");
+    cmd.args(["has-session", "-t", session]);
+    output_with_deadline(cmd, TMUX_READ_DEADLINE)
+        .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
@@ -118,9 +118,13 @@ fn parse_pane_row(line: &str) -> Option<PaneRow> {
 /// This is the metadata-only call; `panes::list_panes` layers scrollback
 /// capture on top of it.
 pub fn list_panes(target: &Target) -> std::io::Result<Vec<PaneRow>> {
-    let out = Command::new("tmux")
-        .args(["list-panes", "-t", target.as_str(), "-F", PANE_FORMAT])
-        .output()?;
+    let mut cmd = Command::new("tmux");
+    cmd.args(["list-panes", "-t", target.as_str(), "-F", PANE_FORMAT]);
+    let out = match output_with_deadline(cmd, TMUX_READ_DEADLINE) {
+        Ok(o) => o,
+        // Timeout or spawn failure collapses to the empty-fleet fallback.
+        Err(_) => return Ok(Vec::new()),
+    };
     if !out.status.success() {
         return Ok(Vec::new());
     }
@@ -134,9 +138,13 @@ pub fn list_panes(target: &Target) -> std::io::Result<Vec<PaneRow>> {
 /// from the bottom. Returns `Ok(String::new())` on tmux failure.
 pub fn capture_pane(pane_id: &str, lines: u32) -> std::io::Result<String> {
     let start = format!("-{lines}");
-    let out = Command::new("tmux")
-        .args(["capture-pane", "-p", "-t", pane_id, "-S", &start])
-        .output()?;
+    let mut cmd = Command::new("tmux");
+    cmd.args(["capture-pane", "-p", "-t", pane_id, "-S", &start]);
+    let out = match output_with_deadline(cmd, TMUX_READ_DEADLINE) {
+        Ok(o) => o,
+        // Timeout / spawn failure → empty string, same as a non-zero exit.
+        Err(_) => return Ok(String::new()),
+    };
     if !out.status.success() {
         return Ok(String::new());
     }
@@ -147,9 +155,13 @@ pub fn capture_pane(pane_id: &str, lines: u32) -> std::io::Result<String> {
 /// string against a target. The workhorse behind "what's this pane's tty",
 /// "what session am I in", etc. Returns `Ok(String::new())` on failure.
 pub fn display_message(target: &Target, format: &str) -> std::io::Result<String> {
-    let out = Command::new("tmux")
-        .args(["display-message", "-p", "-t", target.as_str(), format])
-        .output()?;
+    let mut cmd = Command::new("tmux");
+    cmd.args(["display-message", "-p", "-t", target.as_str(), format]);
+    let out = match output_with_deadline(cmd, TMUX_READ_DEADLINE) {
+        Ok(o) => o,
+        // Timeout / spawn failure → empty string fallback.
+        Err(_) => return Ok(String::new()),
+    };
     if !out.status.success() {
         return Ok(String::new());
     }
@@ -163,12 +175,10 @@ pub fn display_message(target: &Target, format: &str) -> std::io::Result<String>
 /// This replaces the four near-identical `select_window` fns in
 /// `fleet-state` / `fleet-watcher` / `fleet-waves` / `fleet-plan-tree`.
 pub fn select_window(target: &Target) -> bool {
-    Command::new("tmux")
-        .args(["select-window", "-t", target.as_str()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
+    let mut cmd = Command::new("tmux");
+    cmd.args(["select-window", "-t", target.as_str()]);
+    output_with_deadline(cmd, TMUX_READ_DEADLINE)
+        .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
@@ -183,12 +193,10 @@ pub fn select_window_index(session: &str, window_index: usize) -> bool {
 /// Used to stamp the `@panel` label — `set_pane_option(pid, "@panel", "[codex-foo]")`.
 /// Best-effort `bool`, same posture as [`select_window`].
 pub fn set_pane_option(pane_id: &str, name: &str, value: &str) -> bool {
-    Command::new("tmux")
-        .args(["set-option", "-p", "-t", pane_id, name, value])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
+    let mut cmd = Command::new("tmux");
+    cmd.args(["set-option", "-p", "-t", pane_id, name, value]);
+    output_with_deadline(cmd, TMUX_READ_DEADLINE)
+        .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
