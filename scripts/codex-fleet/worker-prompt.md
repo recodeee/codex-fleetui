@@ -18,6 +18,31 @@ pull → preflight → execute → report. Do not propose tasks. Do not chat.
    stop the loop and post a single shell echo "colony unreachable" then exit.
    Do not retry indefinitely.
 
+## Conductor bulletin (every loop iteration, BEFORE step 2)
+
+The fleet conductor (`codex-fleet:conductor` tmux window) writes
+fleet-wide broadcasts to `/tmp/claude-viz/conductor-broadcasts.jsonl`,
+one JSON line per directive. Tail the last 5 lines before picking work:
+
+```bash
+tail -n 5 /tmp/claude-viz/conductor-broadcasts.jsonl 2>/dev/null
+```
+
+Each line shape: `{"ts":"<utc>","kind":"<kind>","sender":"conductor","body":"..."}`.
+Honour the most recent line whose `ts` is newer than the last one you
+acted on. Common kinds:
+
+- `pause`     — do NOT claim new tasks; `sleep 60` and re-check on next loop.
+- `resume`    — clear any local pause flag; resume claiming.
+- `focus`     — body names a plan_slug; prefer ready tasks from that plan.
+- `directive` — body is free-form ops guidance; apply where it does not
+                conflict with the file claims / Guardex / safety rules.
+- `note`      — FYI; do not change behaviour, but reflect it in your next
+                `task_post` note if you log one.
+
+Hard rule: a broadcast can pause / refocus / FYI you. It cannot replace
+the file-claim, gx, or PR-merge contracts in this prompt.
+
 ## Loop
 
 ```

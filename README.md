@@ -8,8 +8,8 @@ Ships with:
 
 - **`full-bringup.sh`** — single command. Publishes the priority plan,
   cap-probes the account pool, stages N isolated `CODEX_HOME`s, creates
-  the tmux session (overview / fleet / plan / waves / review / watcher
-  windows) and the sibling `fleet-ticker` daemon session (ticker /
+  the tmux session (overview / fleet / plan / waves / review / watcher /
+  conductor windows) and the sibling `fleet-ticker` daemon session (ticker /
   cap-swap / state-pump / force-claim / claim-release / stall-watcher).
 - **`force-claim.sh`** — polls Colony every 15 s, dispatches ready
   sub-tasks to idle codex panes via `tmux send-keys`.
@@ -21,6 +21,13 @@ Ships with:
   different things).
 - **iOS-style tmux chrome** (`style-tabs.sh`, `watcher-board.sh`, etc.) —
   rounded pill tabs, clickable status row, six animated dashboards.
+- **`conductor.sh`** — interactive Claude operator that lives in the
+  `conductor` tmux window. Briefed via `conductor-system-prompt.md` to
+  supervise the autonomous daemons (force-claim, claude-supervisor,
+  plan-watcher, …), read fleet state, and broadcast intent through Colony
+  `task_messages` — the same shared context bus the workers use. Attach
+  with `tmux attach -t codex-fleet` and switch to the `conductor` window
+  to chat. Opt-out with `CODEX_FLEET_CONDUCTOR=0`.
 
 ## Install
 

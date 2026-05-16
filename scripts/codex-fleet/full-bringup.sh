@@ -649,6 +649,21 @@ else
   open_window watcher "$SCRIPT_DIR/watcher-board.sh"    ""
 fi
 
+# Conductor window — interactive Claude operator that supervises the
+# autonomous daemons. Talks to the fleet via Colony task_messages and
+# reads pane state via tmux capture-pane. Opt-out with CODEX_FLEET_CONDUCTOR=0.
+# Skips silently if the `claude` CLI is not on PATH.
+if [ "${CODEX_FLEET_CONDUCTOR:-1}" = "1" ]; then
+  if command -v claude >/dev/null 2>&1; then
+    open_window conductor "$SCRIPT_DIR/conductor.sh" remain
+    log "conductor window started (interactive Claude supervisor)"
+  else
+    warn "conductor window skipped: claude CLI not on PATH"
+  fi
+else
+  log "conductor window skipped (CODEX_FLEET_CONDUCTOR=0)"
+fi
+
 # Design-preview window (fleet-tui-poc) was retired alongside the POC
 # crate once fleet-ui shipped the canonical overlay widgets. If a
 # fleet-ui-backed preview binary lands later, re-add the open_window
