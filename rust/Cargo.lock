@@ -448,13 +448,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fleet-renderer-polish"
-version = "0.0.1"
-dependencies = [
- "ratatui",
-]
-
-[[package]]
 name = "fleet-state"
 version = "0.0.1"
 dependencies = [

@@ -125,5 +125,58 @@ mod tests {
             Color::Rgb(0x26, 0x26, 0x28),
             "IOS_ROW_BG_DARK must be #262628"
         );
+        // Extended coverage: every constant that per-binary `ios_page_design.rs`
+        // modules import via `palette::*`. If any drifts the migration loses
+        // its canonical anchor.
+        assert_eq!(
+            IOS_FG_MUTED,
+            Color::Rgb(0xa0, 0xa0, 0xaa),
+            "IOS_FG_MUTED must be #a0a0aa"
+        );
+        assert_eq!(
+            IOS_FG_FAINT,
+            Color::Rgb(0x6e, 0x6e, 0x78),
+            "IOS_FG_FAINT must be #6e6e78"
+        );
+        assert_eq!(
+            IOS_BG_GLASS,
+            Color::Rgb(0x26, 0x26, 0x28),
+            "IOS_BG_GLASS must be #262628"
+        );
+        assert_eq!(
+            IOS_HAIRLINE,
+            Color::Rgb(0x3c, 0x3c, 0x41),
+            "IOS_HAIRLINE must be #3c3c41"
+        );
+        assert_eq!(
+            IOS_HAIRLINE_STRONG,
+            Color::Rgb(0x55, 0x55, 0x5a),
+            "IOS_HAIRLINE_STRONG must be #55555a"
+        );
+        assert_eq!(
+            IOS_CHIP_BG,
+            Color::Rgb(0x36, 0x36, 0x3a),
+            "IOS_CHIP_BG must be #36363a"
+        );
+        assert_eq!(
+            IOS_CARD_BG,
+            Color::Rgb(0x2c, 0x2c, 0x30),
+            "IOS_CARD_BG must be #2c2c30"
+        );
+        assert_eq!(
+            IOS_ICON_CHIP,
+            Color::Rgb(0x46, 0x46, 0x4c),
+            "IOS_ICON_CHIP must be #46464c"
+        );
+        assert_eq!(
+            IOS_TINT_DARK,
+            Color::Rgb(0x07, 0x64, 0xdc),
+            "IOS_TINT_DARK must be #0764dc"
+        );
+        assert_eq!(
+            IOS_TINT_SUB,
+            Color::Rgb(0xd2, 0xe0, 0xff),
+            "IOS_TINT_SUB must be #d2e0ff"
+        );
     }
 }
