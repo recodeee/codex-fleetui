@@ -70,12 +70,37 @@ fn extract_runtime(line: &str) -> Option<String> {
     }
 }
 
-/// Cheap substring sniff for the codex status line's model label
-/// (`gpt-5.5 xhigh` / `gpt-5.5 high`). Returns `model` plus at most one
-/// trailing effort word — good enough for the dim subtitle without a full
-/// status-line parser.
+/// Known model-family prefixes we'll sniff out of a pane's status line.
+///
+/// fleet-launcher spawns codex (`gpt-…`), claude (`claude-…`), gemini
+/// (`gemini-…`), and claw panes. Each CLI renders its own status line, so a
+/// single hard-coded prefix would leave non-codex panes unlabelled. We pick
+/// the prefix with the *earliest* occurrence in the line — same lenient
+/// substring spirit as the original `gpt-` sniff, just generalized.
+const MODEL_PREFIXES: &[&str] = &[
+    "gpt-",
+    "claude-",
+    "gemini-",
+    "o1-",
+    "o3-",
+    "sonnet-",
+    "opus-",
+    "haiku-",
+];
+
+/// Cheap substring sniff for a pane's status-line model label
+/// (`gpt-5.5 xhigh`, `claude-opus-4-7 high`, `gemini-2.5-pro`, …).
+/// Returns `model` plus at most one trailing effort word — good enough for
+/// the dim subtitle without a full status-line parser.
 fn extract_model_label(line: &str) -> Option<String> {
-    let idx = line.find("gpt-")?;
+    // Pick the prefix with the smallest `find` index. When two families both
+    // appear in the line, the one that shows up first wins — that's the
+    // pane's actual status line; later occurrences are usually noise from
+    // scrollback (e.g. a prompt that mentions another model).
+    let idx = MODEL_PREFIXES
+        .iter()
+        .filter_map(|p| line.find(p))
+        .min()?;
     let rest = &line[idx..];
     let span: String = rest
         .chars()
@@ -170,6 +195,54 @@ mod tests {
     fn extract_model_label_missing_returns_none() {
         assert!(extract_model_label("port plan.rs").is_none());
         assert!(extract_model_label("").is_none());
+    }
+
+    #[test]
+    fn extract_model_label_claude_with_effort() {
+        assert_eq!(
+            extract_model_label("claude-opus-4-7 high").as_deref(),
+            Some("claude-opus-4-7 high")
+        );
+    }
+
+    #[test]
+    fn extract_model_label_gemini() {
+        // Trailing-word rule picks up the next whitespace-separated token
+        // after the model (the lenient sniff doesn't know which trailing
+        // tokens are "effort" vs. prose — it just grabs one).
+        assert_eq!(
+            extract_model_label("  using gemini-2.5-pro for this task").as_deref(),
+            Some("gemini-2.5-pro for")
+        );
+        // Bare model at end of line yields model-only.
+        assert_eq!(
+            extract_model_label("gemini-2.5-pro").as_deref(),
+            Some("gemini-2.5-pro")
+        );
+    }
+
+    #[test]
+    fn extract_model_label_o3() {
+        // 20-char window after the match is "o3-mini reasoning..." —
+        // splitting yields `o3-mini` + one trailing word `reasoning...`.
+        assert_eq!(
+            extract_model_label("o3-mini reasoning...").as_deref(),
+            Some("o3-mini reasoning...")
+        );
+    }
+
+    #[test]
+    fn extract_model_label_picks_earliest_prefix() {
+        // Both `claude-` and `gpt-` appear; `claude-` is earlier, so it wins.
+        assert_eq!(
+            extract_model_label("claude-opus-4-7 high (last run was gpt-5.5)").as_deref(),
+            Some("claude-opus-4-7 high")
+        );
+        // And the reverse — `gpt-` earlier, claude later in the line.
+        assert_eq!(
+            extract_model_label("gpt-5.5 high (prev claude-opus-4-7)").as_deref(),
+            Some("gpt-5.5 high")
+        );
     }
 
     #[test]
