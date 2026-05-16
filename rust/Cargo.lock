@@ -172,7 +172,6 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
- "futures-core",
  "mio",
  "parking_lot",
  "rustix",
@@ -462,15 +461,6 @@ dependencies = [
  "crossterm",
  "fleet-data",
  "fleet-ui",
- "ratatui",
- "tuirealm",
-]
-
-[[package]]
-name = "fleet-tui-poc"
-version = "0.0.1"
-dependencies = [
- "crossterm",
  "ratatui",
  "tuirealm",
 ]
