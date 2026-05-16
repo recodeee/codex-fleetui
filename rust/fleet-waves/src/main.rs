@@ -41,8 +41,10 @@ use fleet_data::plan::Subtask;
 use fleet_data::toposort::waves;
 use fleet_ui::{
     chip::{status_chip, ChipKind, CHIP_WIDTH},
-    overlay::{filter as filter_spotlight_items, Spotlight, SpotlightItem, SpotlightState},
     palette::*,
+    spotlight_overlay::{
+        shared_spotlight_filter, Spotlight, SpotlightState, SHARED_SPOTLIGHT_ITEMS,
+    },
 };
 use tuirealm::application::{Application, PollStrategy};
 use tuirealm::command::{Cmd, CmdResult};
@@ -77,83 +79,13 @@ enum Overlay {
     Spotlight,
 }
 
-const SPOTLIGHT_ITEMS: &[SpotlightItem] = &[
-    SpotlightItem::new(
-        "PANE",
-        "⊟",
-        "Horizontal split",
-        "Split active pane top/bottom",
-        "h",
-    ),
-    SpotlightItem::new(
-        "PANE",
-        "⊞",
-        "Vertical split",
-        "Split active pane left/right",
-        "v",
-    ),
-    SpotlightItem::new(
-        "PANE",
-        "⤢",
-        "Zoom pane",
-        "Toggle full-screen for this pane",
-        "z",
-    ),
-    SpotlightItem::new(
-        "PANE",
-        "⇄",
-        "Swap with marked pane",
-        "Swap active and marked panes",
-        "s",
-    ),
-    SpotlightItem::new(
-        "SESSION",
-        "⧉",
-        "Copy whole session",
-        "Copy the current transcript",
-        "⇧C",
-    ),
-    SpotlightItem::new(
-        "SESSION",
-        "☰",
-        "Queue message",
-        "Send a message on next idle",
-        "↹",
-    ),
-    SpotlightItem::new(
-        "SESSION",
-        "⌚",
-        "Search history…",
-        "Search the current session",
-        "/",
-    ),
-    SpotlightItem::new(
-        "FLEET",
-        "+",
-        "Spawn new codex worker",
-        "Open another worker pane",
-        "Ctrl N",
-    ),
-    SpotlightItem::new(
-        "FLEET",
-        "⎇",
-        "Switch worktree…",
-        "Choose another branch/worktree",
-        "Ctrl B",
-    ),
-];
-
-fn spotlight_filter(query: &str) -> Vec<&'static SpotlightItem> {
-    filter_spotlight_items(SPOTLIGHT_ITEMS, query)
-}
-
 struct App {
     plan: Option<Plan>,
     props: Props,
     tick: u64,
     timeline: Box<dyn TimelineFeed>,
     overlay: Overlay,
-    spotlight: Spotlight,
+    spotlight: Spotlight<'static>,
     spotlight_state: SpotlightState,
 }
 
@@ -185,7 +117,7 @@ impl App {
             tick: 0,
             timeline,
             overlay: Overlay::None,
-            spotlight: Spotlight::new(),
+            spotlight: Spotlight::new(SHARED_SPOTLIGHT_ITEMS.to_vec()),
             spotlight_state: SpotlightState::default(),
         }
     }
@@ -270,7 +202,7 @@ impl AppComponent<Msg, NoUserEvent> for App {
             Event::Keyboard(KeyEvent {
                 code: Key::Down, ..
             }) if self.overlay == Overlay::Spotlight => {
-                let max = spotlight_filter(&self.spotlight_state.query)
+                let max = shared_spotlight_filter(&self.spotlight_state.query)
                     .len()
                     .saturating_sub(1);
                 self.spotlight_state.selected = (self.spotlight_state.selected + 1).min(max);
@@ -1234,8 +1166,7 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     render_footer(frame, rows[3], app.plan.as_ref());
 
     if app.overlay == Overlay::Spotlight {
-        app.spotlight
-            .render(frame, area, &app.spotlight_state, SPOTLIGHT_ITEMS);
+        app.spotlight.render(frame, area, &app.spotlight_state);
     }
 }
 
@@ -1478,8 +1409,8 @@ mod tests {
 
     #[test]
     fn spotlight_catalogue_matches_fleet_dashboard_order() {
-        let hits = spotlight_filter("");
-        assert_eq!(hits.len(), SPOTLIGHT_ITEMS.len());
+        let hits = shared_spotlight_filter("");
+        assert_eq!(hits.len(), SHARED_SPOTLIGHT_ITEMS.len());
         assert_eq!(hits.first().unwrap().title, "Horizontal split");
         assert_eq!(hits.last().unwrap().title, "Switch worktree…");
     }

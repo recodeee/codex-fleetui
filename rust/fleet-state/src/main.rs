@@ -28,7 +28,9 @@ use fleet_ui::{
     chip::{status_chip, ChipKind},
     palette::*,
     rail::{progress_rail, RailAxis},
-    spotlight_overlay::{Spotlight, SpotlightItem, SpotlightState},
+    spotlight_overlay::{
+        shared_spotlight_filter, Spotlight, SpotlightState, SHARED_SPOTLIGHT_ITEMS,
+    },
 };
 use tuirealm::application::{Application, PollStrategy};
 use tuirealm::command::{Cmd, CmdResult};
@@ -65,88 +67,6 @@ enum Overlay {
     Spotlight,
 }
 
-const SPOTLIGHT_ITEMS: &[SpotlightItem<'static>] = &[
-    SpotlightItem {
-        group: "PANE",
-        icon: "⊟",
-        title: "Horizontal split",
-        sub: "Split active pane top/bottom",
-        kbd: "h",
-    },
-    SpotlightItem {
-        group: "PANE",
-        icon: "⊞",
-        title: "Vertical split",
-        sub: "Split active pane left/right",
-        kbd: "v",
-    },
-    SpotlightItem {
-        group: "PANE",
-        icon: "⤢",
-        title: "Zoom pane",
-        sub: "Toggle full-screen for this pane",
-        kbd: "z",
-    },
-    SpotlightItem {
-        group: "PANE",
-        icon: "⇄",
-        title: "Swap with marked pane",
-        sub: "Swap active and marked panes",
-        kbd: "s",
-    },
-    SpotlightItem {
-        group: "SESSION",
-        icon: "⧉",
-        title: "Copy whole session",
-        sub: "Copy the current transcript",
-        kbd: "⇧C",
-    },
-    SpotlightItem {
-        group: "SESSION",
-        icon: "☰",
-        title: "Queue message",
-        sub: "Send a message on next idle",
-        kbd: "↹",
-    },
-    SpotlightItem {
-        group: "SESSION",
-        icon: "⌚",
-        title: "Search history…",
-        sub: "Search the current session",
-        kbd: "/",
-    },
-    SpotlightItem {
-        group: "FLEET",
-        icon: "+",
-        title: "Spawn new codex worker",
-        sub: "Open another worker pane",
-        kbd: "Ctrl N",
-    },
-    SpotlightItem {
-        group: "FLEET",
-        icon: "⎇",
-        title: "Switch worktree…",
-        sub: "Choose another branch/worktree",
-        kbd: "Ctrl B",
-    },
-];
-
-fn spotlight_filter(query: &str) -> Vec<&'static SpotlightItem<'static>> {
-    if query.is_empty() {
-        return SPOTLIGHT_ITEMS.iter().collect();
-    }
-
-    let q = query.to_lowercase();
-    SPOTLIGHT_ITEMS
-        .iter()
-        .filter(|it| {
-            it.title.to_lowercase().contains(&q)
-                || it.sub.to_lowercase().contains(&q)
-                || it.group.to_lowercase().contains(&q)
-        })
-        .collect()
-}
-
 // ---------- The Fleet component ----------
 
 /// tmux session + window the fleet's worker panes live in. Matches the
@@ -174,7 +94,7 @@ impl Default for FleetView {
             rows: None,
             load_error: None,
             overlay: Overlay::None,
-            spotlight: Spotlight::new(SPOTLIGHT_ITEMS.to_vec()),
+            spotlight: Spotlight::new(SHARED_SPOTLIGHT_ITEMS.to_vec()),
             spotlight_state: SpotlightState::default(),
             props: Props::default(),
         };
@@ -402,7 +322,7 @@ impl AppComponent<Msg, NoUserEvent> for FleetView {
             Event::Keyboard(KeyEvent {
                 code: Key::Down, ..
             }) if self.overlay == Overlay::Spotlight => {
-                let max = spotlight_filter(&self.spotlight_state.query)
+                let max = shared_spotlight_filter(&self.spotlight_state.query)
                     .len()
                     .saturating_sub(1);
                 self.spotlight_state.selected = (self.spotlight_state.selected + 1).min(max);
