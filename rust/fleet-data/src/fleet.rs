@@ -18,6 +18,7 @@
 use crate::accounts::Account;
 use crate::panes::{PaneInfo, PaneState};
 use crate::scores::ScoresFile;
+use crate::scrape::scrape_activity;
 use serde::{Deserialize, Serialize};
 
 /// One row of the Fleet table — an account, the pane it's running in, and
@@ -129,101 +130,6 @@ pub fn agent_id_from_panel(panel: &str) -> Option<String> {
         None
     } else {
         Some(id.to_string())
-    }
-}
-
-/// What a pane is doing, scraped from its scrollback tail. Separate from
-/// [`PaneState`] (the *status*); this is the human-readable *detail* the
-/// artboard's `WORKING ON` column shows.
-struct PaneActivity {
-    /// The headline task line, e.g. `scaffold rust/fleet-ui`.
-    working_on: String,
-    /// Model label, e.g. `gpt-5.5 xhigh`, lifted from the status line.
-    model_label: Option<String>,
-    /// Runtime hint, e.g. `10m 28s`, lifted from `Working (…)`.
-    runtime: Option<String>,
-}
-
-/// Scrape `WORKING ON` text + model + runtime out of a pane's scrollback tail.
-///
-/// Deliberately lenient — same spirit as `panes::classify` and the bash
-/// scrapers in `watcher-board.sh` / `fleet-tick.sh`: every field is optional,
-/// a miss just yields an emptier row rather than dropping it.
-fn scrape_activity(tail: &str) -> PaneActivity {
-    let mut working_on = String::new();
-    let mut model_label = None;
-    let mut runtime = None;
-
-    // Walk newest-to-oldest so the *last* match wins (the pane's current line,
-    // not a stale one higher in the scrollback).
-    for line in tail.lines().rev() {
-        let t = line.trim();
-
-        // Runtime: `● Working (10m 28s · esc to interrupt)` → `10m 28s`.
-        if runtime.is_none() {
-            if let Some(after) = t.split_once("Working (").map(|(_, a)| a) {
-                let span: String = after
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit() || *c == 'm' || *c == 's' || *c == ' ')
-                    .collect();
-                let span = span.trim();
-                if !span.is_empty() {
-                    runtime = Some(span.to_string());
-                }
-            }
-        }
-
-        // Model label: the codex status line carries `gpt-5.5 xhigh` /
-        // `gpt-5.5 high`. Cheap substring sniff — good enough for the dim
-        // subtitle, and avoids a full status-line parser.
-        if model_label.is_none() {
-            if let Some(idx) = t.find("gpt-") {
-                let rest = &t[idx..];
-                let span: String = rest
-                    .chars()
-                    .take_while(|c| !c.is_whitespace() || *c == ' ')
-                    .take(20)
-                    .collect();
-                // keep `gpt-5.5 xhigh` shape: model token + one effort word
-                let mut it = span.split_whitespace();
-                if let Some(model) = it.next() {
-                    let label = match it.next() {
-                        Some(effort) => format!("{model} {effort}"),
-                        None => model.to_string(),
-                    };
-                    model_label = Some(label);
-                }
-            }
-        }
-
-        // Headline: first non-empty, non-status, non-chrome line is the task.
-        // Skip codex's own UI furniture so we land on the actual task text.
-        // The model status line (`gpt-5.5 xhigh · 37% left   49% context`) is
-        // chrome too — exclude it by its leading `gpt-` token so it does not
-        // win as the headline when walking the tail newest-first.
-        if working_on.is_empty()
-            && !t.is_empty()
-            && !t.starts_with('●')
-            && !t.starts_with('⚠')
-            && !t.starts_with('✓')
-            && !t.starts_with('›')
-            && !t.starts_with('└')
-            && !t.starts_with("gpt-")
-            && !t.contains("Working (")
-            && !t.contains("tokens used")
-        {
-            working_on = t.to_string();
-        }
-
-        if !working_on.is_empty() && model_label.is_some() && runtime.is_some() {
-            break;
-        }
-    }
-
-    PaneActivity {
-        working_on,
-        model_label,
-        runtime,
     }
 }
 
