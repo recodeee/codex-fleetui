@@ -72,7 +72,7 @@ fi
   printf 'model=%s log=%s prompt=%s\n' "$MODEL" "$LOG_FILE" "$PROMPT_FILE"
   printf 'cwd=%s\n' "$REPO_ROOT"
   printf 'add-dir: %s\n' "${ADD_DIR_FLAGS[*]}"
-  printf 'channels: colony task_messages (shared with fleet) · tmux capture-pane (read-only)\n'
+  printf 'channels: /tmp/claude-viz/conductor-broadcasts.jsonl (fleet broadcast) · colony task_post (task-scoped) · tmux capture-pane (read-only)\n'
   printf '==========================================\n\n'
 } | tee -a "$LOG_FILE"
 

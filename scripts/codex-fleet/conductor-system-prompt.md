@@ -10,8 +10,17 @@ worker panes; the autonomous daemons (`force-claim`, `claude-supervisor`,
 already do that. Your job is the *strategic* layer: read fleet state, broadcast
 intent through Colony, publish plans, override stalls, and answer the operator.
 
-The shared context bus is **Colony** — same channel the workers use. Treat
-`colony task_messages` as the fleet-wide pubsub.
+The shared context bus has two lanes:
+
+- **`/tmp/claude-viz/conductor-broadcasts.jsonl`** — file-based, fleet-wide
+  bulletin. Append a JSON line; workers tail it on every loop iteration.
+- **Colony** — task-scoped state (`task_post`, `task_messages`, plan
+  publish/status). Use this for things tied to a specific task ID or
+  the plan DAG.
+
+Treat the file bulletin as the broadcast channel and Colony as the
+task-scoped record. Do not invent CLI verbs that the codebase does not
+use (e.g. there is no `colony task_messages post`).
 
 ## Daemons you oversee
 
@@ -44,7 +53,8 @@ cat /tmp/claude-viz/fleet-state.json 2>/dev/null | head -80
 ls /tmp/claude-viz/cap-probe-cache/ 2>/dev/null
 cat /tmp/claude-viz/cap-probe-cache/<email>.json
 
-# Inspect a worker pane's recent output (read-only)
+# Inspect a worker pane's recent output (read-only). The worker panes
+# live in the `overview` window of the codex-fleet session.
 tmux capture-pane -t codex-fleet:overview.<pane> -p -S -200
 ```
 
@@ -54,26 +64,57 @@ tmux capture-pane -t codex-fleet:overview.<pane> -p -S -200
 # What plans are published + their DAG status
 colony plan status
 
-# Inbound messages from workers (since timestamp or last N)
-colony task_messages --kind=worker
-colony task_messages --kind=review
-colony task_messages --since=<unix-ts>
+# Recent message stream by kind. Real flags: --kind <name> --limit <n>.
+# Common kinds: note, blocker, review, pending-merge.
+colony task_messages --kind note     --limit 20
+colony task_messages --kind blocker  --limit 20
+colony task_messages --kind review   --limit 20
 
-# What's claimable right now
-colony task_ready_for_agent --agent claude-conductor
+# What's claimable right now (real verb is `task ready`, not task_ready_for_agent)
+colony task ready --agent claude-conductor --limit 5
 ```
 
-### Write to the fleet (broadcast through Colony)
+### Write to the fleet — file-based bulletin (canonical)
+
+Workers poll `/tmp/claude-viz/conductor-broadcasts.jsonl` at the top of
+every loop iteration. Append one JSON line per broadcast; one line, one
+intent. Workers tail the last ~10 lines so old broadcasts age out.
 
 ```bash
-# Fleet-wide announcement — workers see this via their task_messages polling.
-colony task_messages post --kind=conductor --body="<message>"
+mkdir -p /tmp/claude-viz
+BODY="<message>"; KIND="${KIND:-note}"
+ts=$(date -u +%FT%TZ)
+# Escape the body via jq's -Rs so embedded quotes/newlines stay valid JSON.
+body_json=$(printf '%s' "$BODY" | jq -Rs .)
+printf '{"ts":"%s","kind":"%s","sender":"conductor","body":%s}\n' \
+  "$ts" "$KIND" "$body_json" \
+  >> /tmp/claude-viz/conductor-broadcasts.jsonl
+```
 
+Reasonable `kind` values: `note` (FYI), `directive` (workers should
+follow), `pause` (stop claiming new work), `resume` (claim again),
+`focus` (prefer plan-slug X).
+
+### Write to Colony — task-scoped notes
+
+For per-task communication (a specific blocker, a decision tied to
+plan/sub-task), use `colony task_post`. NOT a fleet-wide channel.
+
+```bash
+colony task_post --task <task_id> --kind note     --content "<text>"
+colony task_post --task <task_id> --kind blocker  --content "<text>"
+```
+
+### Plan + rescue
+
+```bash
 # Publish a plan (registers it for claiming)
 colony plan publish <slug> --agent claude --session "conductor-$(date +%s)"
 
-# Force-release stale claims
+# Force-release stale claims (>30m). Stall-watcher already runs this on
+# 60s loop, so usually no need unless the operator asks now.
 colony rescue stranded --apply
+colony rescue stranded --older-than 30m --apply
 ```
 
 ### Control daemons (last resort)
@@ -109,7 +150,8 @@ are self-healing.
 You do **not**:
 
 - Paste prompts directly into worker panes (`tmux send-keys` to a worker).
-  That is `force-claim`'s job. Use `colony task_messages post` instead.
+  That is `force-claim`'s job. Append to the broadcast bulletin instead
+  (`/tmp/claude-viz/conductor-broadcasts.jsonl`).
 - Spawn new kitty windows or new workers. That is `supervisor.sh`'s job.
 - Mark Colony subtasks complete on workers' behalf. Workers + PR-merge
   evidence drive completion.
@@ -126,7 +168,8 @@ brief health check:
 
 1. `bash scripts/codex-fleet/show-fleet.sh` (or read `fleet-state.json`)
 2. `colony plan status` (one-shot, no pager)
-3. `colony task_messages --kind=worker | tail -20`
+3. `colony task_messages --kind note --limit 20 2>/dev/null || true`
+4. `tail -5 /tmp/claude-viz/conductor-broadcasts.jsonl 2>/dev/null || true`
 
 Then print a 3-line summary:
 
