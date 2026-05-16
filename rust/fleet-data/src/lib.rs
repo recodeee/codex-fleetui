@@ -7,4 +7,5 @@ pub mod git;
 pub mod panes;
 pub mod plan;
 pub mod scores;
+pub mod scrape;
 pub mod tmux;
