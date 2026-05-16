@@ -99,6 +99,62 @@ fi
 # ── enumerate available MIME types once ────────────────────────────────────
 mimes="$(wl-paste --list-types 2>/dev/null || true)"
 
+# ── (1a) plain `wl-paste` (no --type) FIRST when an image MIME is advertised
+# Wayland clipboard sources can be one-shot — calling `wl-paste --type image/X`
+# consumes the source and a subsequent plain `wl-paste` returns 0 bytes. So
+# when ANY image MIME is advertised, try plain wl-paste BEFORE the --type
+# loop and detect format via magic bytes. This also dodges the
+# gnome-screenshot quirk where `wl-paste --type image/png` returns the
+# literal "No suitable type of content copied" even though plain wl-paste
+# returns the actual PNG bytes. If plain wl-paste produces something
+# non-image, fall through to the --type loop (which still works for sources
+# that allow re-reads).
+if printf '%s\n' "$mimes" | grep -qE '^image/'; then
+  out_tmp="$CLIP_DIR/clipboard-paste-$(date +%Y%m%d-%H%M%S).bin"
+  if wl-paste > "$out_tmp" 2>/dev/null && [[ -s "$out_tmp" ]]; then
+    size="$(wc -c < "$out_tmp" 2>/dev/null || echo 0)"
+    if (( size > 100 )); then
+      hex="$(hex_head "$out_tmp")"
+      ext=""; detected_mime=""
+      case "$hex" in
+        89504e47*) ext="png";  detected_mime="image/png" ;;
+        ffd8ff*)   ext="jpg";  detected_mime="image/jpeg" ;;
+        47494638*) ext="gif";  detected_mime="image/gif" ;;
+        424d*)     ext="bmp";  detected_mime="image/bmp" ;;
+      esac
+      if [[ -z "$ext" && "${hex:0:8}" == "52494646" && "${hex:16:8}" == "57454250" ]]; then
+        ext="webp"; detected_mime="image/webp"
+      fi
+      # ISO-BMFF ftyp box at byte 4: AVIF/HEIC/HEIF. Brand at bytes 8-12.
+      if [[ -z "$ext" && "${hex:8:8}" == "66747970" ]]; then
+        case "${hex:16:8}" in
+          61766966) ext="avif"; detected_mime="image/avif" ;;
+          68656963|68656978) ext="heic"; detected_mime="image/heic" ;;
+          *)        ext="heif"; detected_mime="image/heif" ;;
+        esac
+      fi
+      if [[ -n "$ext" ]]; then
+        out="$CLIP_DIR/clipboard-paste-$(date +%Y%m%d-%H%M%S).$ext"
+        mv "$out_tmp" "$out" 2>/dev/null
+        if paste_text_buf "$out"; then
+          tmux display-message -d 1800 "⤓  image pasted: $(basename "$out")" || true
+          log_line "image-no-type" "$detected_mime" "$size" "$out" "wl-paste-no-type hex=${hex:0:16}"
+          exit 0
+        fi
+        log_line "fail-fallback" "$detected_mime" "$size" "$out" "tmux-paste-failed-after-no-type"
+      else
+        log_line "fail-fallback" "wl-paste-default" "$size" "$out_tmp" "no-image-magic-falling-through hex=${hex:0:16}"
+        rm -f "$out_tmp" 2>/dev/null || true
+      fi
+    else
+      log_line "fail-fallback" "wl-paste-default" "$size" "$out_tmp" "no-type-too-small hex=$(hex_head "$out_tmp")"
+      rm -f "$out_tmp" 2>/dev/null || true
+    fi
+  else
+    rm -f "$out_tmp" 2>/dev/null || true
+  fi
+fi
+
 # ── (1) image preference order ─────────────────────────────────────────────
 IMG_PREF=(
   image/png image/webp image/jpeg image/avif image/heic image/heif
