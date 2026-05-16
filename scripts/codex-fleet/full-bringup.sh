@@ -649,16 +649,10 @@ else
   open_window watcher "$SCRIPT_DIR/watcher-board.sh"    ""
 fi
 
-# Design preview — fleet-tui-poc renders the glass-dock floating nav + the
-# iOS overlay surfaces (ContextMenu / Spotlight / ActionSheet) as a live
-# reference for design work inside the running fleet. Optional: skip
-# silently when the release bin isn't built so design work doesn't gate
-# bringup on a non-essential window. Inside the pane, press 1/2/3 to open
-# ContextMenu / Spotlight / ActionSheet and reveal the terminal-backdrop
-# preview underneath.
-if [ -x "$rust_bin_dir/fleet-tui-poc" ]; then
-  open_window design "$rust_bin_dir/fleet-tui-poc" remain
-fi
+# Design-preview window (fleet-tui-poc) was retired alongside the POC
+# crate once fleet-ui shipped the canonical overlay widgets. If a
+# fleet-ui-backed preview binary lands later, re-add the open_window
+# call here.
 
 # 11b. Apply canonical iOS-style chrome (3-row tab strip at top, rounded pane
 # borders with `▭ #{@panel}` headers, sticky right-click menu). Runs after
