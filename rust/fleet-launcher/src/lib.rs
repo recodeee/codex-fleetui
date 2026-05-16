@@ -53,27 +53,36 @@ pub enum CliKind {
     Claw,
 }
 
+/// Per-CLI conventions: binary name, home env var, and command-line shape.
+///
+/// Implemented for [`CliKind`] so each variant dispatches to its own
+/// convention without a central match. The trait is the seam new CLIs
+/// plug into; the enum stays the user-facing identifier.
+pub trait CliConvention {
+    /// Binary name on PATH (`codex`, `claude`, `gemini`, `claw`).
+    fn binary(&self) -> &'static str;
+
+    /// Env var name that points at the CLI's per-account config / auth
+    /// directory (e.g. `CODEX_HOME`, `CLAUDE_CONFIG_DIR`).
+    fn home_env(&self) -> &'static str;
+
+    /// Render the CLI invocation given the optional first prompt and the
+    /// caller's verbatim extras. Implementations own bypass flags,
+    /// stdin-piping shapes, and any other per-CLI quirks.
+    fn command_line(&self, prompt: Option<&str>, extra_args: &[String]) -> String;
+}
+
 impl CliKind {
     /// Binary name on PATH (`codex`, `claude`, `gemini`, `claw`).
     pub fn binary(self) -> &'static str {
-        match self {
-            CliKind::Codex => "codex",
-            CliKind::Claude => "claude",
-            CliKind::Gemini => "gemini",
-            CliKind::Claw => "claw",
-        }
+        <Self as CliConvention>::binary(&self)
     }
 
     /// Env var name that points at the CLI's per-account config / auth
     /// directory. Each CLI uses a different convention; matching hcom's
     /// `launcher.rs:279-281`.
     pub fn home_env(self) -> &'static str {
-        match self {
-            CliKind::Codex => "CODEX_HOME",
-            CliKind::Claude => "CLAUDE_CONFIG_DIR",
-            CliKind::Gemini => "GEMINI_CLI_HOME",
-            CliKind::Claw => "CLAW_CONFIG_HOME",
-        }
+        <Self as CliConvention>::home_env(&self)
     }
 
     /// Parse from a CLI string (`"codex"`, `"claude"`, `"gemini"`). Used by
@@ -87,6 +96,58 @@ impl CliKind {
             _ => None,
         }
     }
+}
+
+impl CliConvention for CliKind {
+    fn binary(&self) -> &'static str {
+        match self {
+            CliKind::Codex => "codex",
+            CliKind::Claude => "claude",
+            CliKind::Gemini => "gemini",
+            CliKind::Claw => "claw",
+        }
+    }
+
+    fn home_env(&self) -> &'static str {
+        match self {
+            CliKind::Codex => "CODEX_HOME",
+            CliKind::Claude => "CLAUDE_CONFIG_DIR",
+            CliKind::Gemini => "GEMINI_CLI_HOME",
+            CliKind::Claw => "CLAW_CONFIG_HOME",
+        }
+    }
+
+    fn command_line(&self, prompt: Option<&str>, extra_args: &[String]) -> String {
+        let bin = <Self as CliConvention>::binary(self);
+        let extras_joined = join_extras(extra_args);
+        match (self, prompt) {
+            (CliKind::Codex | CliKind::Claw, Some(p)) => {
+                format!("{} {}{}", bin, shell_quote(p), extras_joined)
+            }
+            (CliKind::Codex | CliKind::Claw, None) => format!("{}{}", bin, extras_joined),
+            (CliKind::Claude, Some(p)) => format!(
+                "{} --dangerously-skip-permissions {}{}",
+                bin,
+                shell_quote(p),
+                extras_joined
+            ),
+            (CliKind::Claude, None) => {
+                format!("{} --dangerously-skip-permissions{}", bin, extras_joined)
+            }
+            (CliKind::Gemini, Some(p)) => {
+                format!("printf '%s' {} | {}{}", shell_quote(p), bin, extras_joined)
+            }
+            (CliKind::Gemini, None) => format!("{}{}", bin, extras_joined),
+        }
+    }
+}
+
+fn join_extras(extras: &[String]) -> String {
+    if extras.is_empty() {
+        return String::new();
+    }
+    let quoted: Vec<String> = extras.iter().map(|a| shell_quote(a)).collect();
+    format!(" {}", quoted.join(" "))
 }
 
 /// All inputs needed to launch one CLI inside a fresh kitty window.
@@ -276,36 +337,7 @@ pub fn write_launch_script(spec: &LaunchSpec) -> io::Result<PathBuf> {
 ///   callers wanting autonomous workers should pass it via `extra_args`,
 ///   so the choice is explicit at the supervisor layer.
 fn build_command_line(spec: &LaunchSpec) -> String {
-    let bin = spec.cli.binary();
-    let extras: Vec<String> = spec.extra_args.iter().map(|a| shell_quote(a)).collect();
-    let extras_joined = if extras.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", extras.join(" "))
-    };
-
-    match (spec.cli, spec.prompt.as_deref()) {
-        (CliKind::Codex, Some(p)) => format!("{} {}{}", bin, shell_quote(p), extras_joined),
-        (CliKind::Codex, None) => format!("{}{}", bin, extras_joined),
-        (CliKind::Claude, Some(p)) => format!(
-            "{} --dangerously-skip-permissions {}{}",
-            bin,
-            shell_quote(p),
-            extras_joined
-        ),
-        (CliKind::Claude, None) => {
-            format!("{} --dangerously-skip-permissions{}", bin, extras_joined)
-        }
-        (CliKind::Gemini, Some(p)) => format!(
-            "printf '%s' {} | {}{}",
-            shell_quote(p),
-            bin,
-            extras_joined
-        ),
-        (CliKind::Gemini, None) => format!("{}{}", bin, extras_joined),
-        (CliKind::Claw, Some(p)) => format!("{} {}{}", bin, shell_quote(p), extras_joined),
-        (CliKind::Claw, None) => format!("{}{}", bin, extras_joined),
-    }
+    spec.cli.command_line(spec.prompt.as_deref(), &spec.extra_args)
 }
 
 /// Bash-safe single-quoting. Identical contract to hcom's
