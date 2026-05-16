@@ -15,8 +15,8 @@
 # fleet-tui-poc displays before this PR), context-menu hotkeys are bare
 # single letters, tmux bindings use the user's `prefix` (default Ctrl+B).
 #
-# Smoke test (standalone, exits when stdin EOFs):
-#   bash scripts/codex-fleet/bin/help-popup.sh < /dev/null
+# Smoke test (standalone, one byte dismisses after render):
+#   printf q | bash scripts/codex-fleet/bin/help-popup.sh
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,6 +55,10 @@ menu_repeat() {
   for (( i=0; i<count; i++ )); do
     printf '%s' "$char"
   done
+}
+
+clear_popup() {
+  clear 2>/dev/null || printf '\033[H\033[2J'
 }
 
 # ── chrome helpers (visual lineage matches pane-context-menu.sh) ───────────
@@ -121,7 +125,7 @@ draw_header() {
 }
 
 # ── render ────────────────────────────────────────────────────────────────
-clear
+clear_popup
 printf '\n'
 
 draw_top
@@ -180,4 +184,4 @@ _ios_reset
 # When stdin is /dev/null (smoke test) read returns immediately so the popup
 # renders and exits cleanly without hanging.
 read -rsn1 -t 60 _ || :
-clear
+clear_popup
