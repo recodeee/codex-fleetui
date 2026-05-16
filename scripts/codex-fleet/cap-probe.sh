@@ -37,14 +37,7 @@ mkdir -p "$(dirname "$LOG")"
 ts() { date +%H:%M:%S; }
 log() { echo "[$(ts)] $*" >> "$LOG"; }
 
-email_to_id() {
-  python3 -c "
-import sys
-e=sys.argv[1]; part,dom=e.split('@',1); dom=dom.split('.',1)[0]
-m={'magnoliavilag':'magnolia','gitguardex':'gg','pipacsclub':'pipacs'}
-print(f'{part}-{m.get(dom,dom)}')
-" "$1"
-}
+source "$(dirname "${BASH_SOURCE[0]}")/lib/agents.sh"
 
 # Returns one of: healthy | capped | stale (re-probe).
 # Sets globals VERDICT, UNTIL_TEXT, UNTIL_EPOCH for the caller.

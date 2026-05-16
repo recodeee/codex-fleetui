@@ -36,14 +36,7 @@ mkdir -p "$(dirname "$LOG")" "$(dirname "$STATUS_FILE")" "$STATE"
 ts() { date +%H:%M:%S; }
 log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
 
-email_to_id() {
-  python3 -c "
-import sys
-e=sys.argv[1]; part,dom=e.split('@',1); dom=dom.split('.',1)[0]
-m={'magnoliavilag':'magnolia','gitguardex':'gg','pipacsclub':'pipacs'}
-print(f'{part}-{m.get(dom,dom)}')
-" "$1"
-}
+source "$(dirname "${BASH_SOURCE[0]}")/lib/agents.sh"
 
 # Emails currently assigned to fleet panes (from /proc/<pid>/environ of each pane's codex)
 current_emails() {
