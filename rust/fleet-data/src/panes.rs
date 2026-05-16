@@ -129,6 +129,16 @@ pub fn list_panes(session: &str, window: Option<&str>) -> std::io::Result<Vec<Pa
     // Phase 2 — spawn every capture-pane up front; the OS runs them in
     // parallel. We keep the raw child handles so we can drain them in
     // submission order and line each output up with its metadata row.
+    //
+    // Each child gets its own deadline (`TMUX_READ_DEADLINE`, 500 ms) so
+    // a single wedged tmux capture-pane can't stall the whole batch. The
+    // deadline budgets per-child, not across the join: a slow child can
+    // run to completion as long as it finishes within its own window.
+    // Stragglers are killed and reaped; the corresponding pane ends up
+    // with an empty `scrollback_tail`, which `classify` will treat as
+    // `PaneState::Idle` — the same fallback as a non-zero capture-pane
+    // exit elsewhere.
+    let deadline = crate::subprocess::TMUX_READ_DEADLINE;
     let mut children = Vec::with_capacity(rows.len());
     for row in &rows {
         let child = std::process::Command::new("tmux")
@@ -143,14 +153,21 @@ pub fn list_panes(session: &str, window: Option<&str>) -> std::io::Result<Vec<Pa
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()?;
-        children.push(child);
+        // Record spawn time so each child's deadline starts from when it
+        // was spawned — drain order is sequential, so without per-child
+        // start tracking the later children would inherit the earlier
+        // ones' wait time and trip the deadline spuriously.
+        children.push((std::time::Instant::now(), child));
     }
 
     // Drain in submission order so each PaneInfo lines up with its row.
     let mut out = Vec::with_capacity(rows.len());
-    for (row, child) in rows.into_iter().zip(children) {
-        let captured = child.wait_with_output()?;
-        let scrollback_tail = String::from_utf8_lossy(&captured.stdout).into_owned();
+    for (row, (started, mut child)) in rows.into_iter().zip(children) {
+        let scrollback_tail = match wait_child_with_deadline(&mut child, started, deadline) {
+            Some(stdout) => String::from_utf8_lossy(&stdout).into_owned(),
+            // Timeout or wait error → empty tail. classify() defaults to Idle.
+            None => String::new(),
+        };
         out.push(PaneInfo {
             pane_id: row.pane_id,
             panel_label: row.panel_label,
@@ -159,6 +176,47 @@ pub fn list_panes(session: &str, window: Option<&str>) -> std::io::Result<Vec<Pa
         });
     }
     Ok(out)
+}
+
+/// Drain `child`'s stdout, waiting up to `deadline` from `started`.
+///
+/// Returns `Some(stdout)` on a normal exit (regardless of status — the
+/// caller only cares about the captured bytes), or `None` if the child
+/// did not finish within the deadline (in which case it is killed and
+/// reaped first). Errors from `try_wait` / `wait_with_output` collapse
+/// to `None` so a transient failure on one pane never aborts the whole
+/// batch.
+fn wait_child_with_deadline(
+    child: &mut std::process::Child,
+    started: std::time::Instant,
+    deadline: std::time::Duration,
+) -> Option<Vec<u8>> {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                // Exited; drain stdout. wait_with_output would re-call
+                // wait(), which is fine on an already-reaped child.
+                // To do that we need to move the child, but we only have
+                // &mut — take stdout manually instead.
+                let mut buf = Vec::new();
+                if let Some(mut stdout) = child.stdout.take() {
+                    use std::io::Read;
+                    let _ = stdout.read_to_end(&mut buf);
+                }
+                return Some(buf);
+            }
+            Ok(None) => {
+                if started.elapsed() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(POLL);
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 #[cfg(test)]

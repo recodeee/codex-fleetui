@@ -90,7 +90,19 @@ fn extract_percent(s: &str, key: &str) -> Option<u8> {
 /// dashboards keep calling this on a tick; the parse cost is negligible
 /// next to the subprocess spawn.
 pub fn load_live() -> std::io::Result<Vec<Account>> {
-    let output = std::process::Command::new("agent-auth").arg("list").output()?;
+    let mut cmd = std::process::Command::new("agent-auth");
+    cmd.arg("list");
+    // A hung `agent-auth` (e.g. waiting on an auth prompt) must not freeze
+    // the 250 ms dashboard tick. HEAVY_CMD_DEADLINE (2 s) is generous for a
+    // local CLI; on timeout we surface an empty list, matching the existing
+    // "no accounts visible" posture for a missing binary or non-zero exit.
+    let output = match crate::subprocess::output_with_deadline(
+        cmd,
+        crate::subprocess::HEAVY_CMD_DEADLINE,
+    ) {
+        Ok(o) => o,
+        Err(_) => return Ok(Vec::new()),
+    };
     Ok(parse(&String::from_utf8_lossy(&output.stdout)))
 }
 
