@@ -11,9 +11,8 @@
 //                title, agent-initial badges on the right.
 //
 // Data: fleet-data::plan (newest plan.json under openspec/plans/*). Waves
-// come from a Kahn topological sort of `Subtask.depends_on`; copied inline
-// from fleet-plan-tree::waves() so this binary doesn't bump fleet-ui (locked
-// by another agent during warp-borrow validation).
+// come from a Kahn topological sort of `Subtask.depends_on`, provided by
+// `fleet_data::toposort::waves`.
 //
 // Visual notes:
 //   - Idle bars use IOS_CARD_BG (#2c2c30) — slightly above the background
@@ -36,7 +35,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use fleet_data::plan::{self, Plan, Subtask};
+use fleet_data::plan::{self, Plan};
+#[cfg(test)]
+use fleet_data::plan::Subtask;
+use fleet_data::toposort::waves;
 use fleet_ui::{
     chip::{status_chip, ChipKind, CHIP_WIDTH},
     palette::*,
@@ -151,55 +153,6 @@ impl AppComponent<Msg, NoUserEvent> for App {
             _ => None,
         }
     }
-}
-
-// Kahn topological levels — assign each subtask to a wave such that all
-// `depends_on` predecessors are in lower waves. Copied verbatim from
-// fleet-plan-tree::waves(); kept inline to avoid promoting it into a shared
-// crate while fleet-ui is locked by another agent.
-fn waves(subtasks: &[Subtask]) -> Vec<Vec<u32>> {
-    let mut level: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-    let by_idx: std::collections::HashMap<u32, &Subtask> =
-        subtasks.iter().map(|s| (s.subtask_index, s)).collect();
-    fn resolve(
-        idx: u32,
-        by: &std::collections::HashMap<u32, &Subtask>,
-        memo: &mut std::collections::HashMap<u32, u32>,
-    ) -> u32 {
-        if let Some(&v) = memo.get(&idx) {
-            return v;
-        }
-        let s = match by.get(&idx) {
-            Some(s) => s,
-            None => {
-                memo.insert(idx, 0);
-                return 0;
-            }
-        };
-        let lvl = if s.depends_on.is_empty() {
-            0
-        } else {
-            s.depends_on
-                .iter()
-                .map(|d| resolve(*d, by, memo))
-                .max()
-                .unwrap_or(0)
-                + 1
-        };
-        memo.insert(idx, lvl);
-        lvl
-    }
-    for s in subtasks {
-        resolve(s.subtask_index, &by_idx, &mut level);
-    }
-    let max = level.values().copied().max().unwrap_or(0);
-    let mut out: Vec<Vec<u32>> = (0..=max).map(|_| Vec::new()).collect();
-    let mut idxs: Vec<u32> = level.keys().copied().collect();
-    idxs.sort();
-    for i in idxs {
-        out[level[&i] as usize].push(i);
-    }
-    out
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

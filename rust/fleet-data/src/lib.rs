@@ -8,3 +8,4 @@ pub mod panes;
 pub mod plan;
 pub mod scores;
 pub mod tmux;
+pub mod toposort;
