@@ -307,7 +307,7 @@ bind-key   -T root MouseDown3Pane \
       display-menu -O -x M -y M \
         -T "#[align=centre,bold,fg=#FFFFFF,bg=#1C1C1E]  pane #{pane_index} · #{pane_id}  " \
         "#{?#{!=:#{buffer_size},0},#[fg=#34C759]✓  #[fg=#FFFFFF,bold]Copy selection #[fg=#8E8E93,italics]\"#{=/22/...:buffer_sample}\",-}" "" "run-shell \"tmux save-buffer - | bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-clip-dual.sh && tmux send-keys -X -t '#{pane_id}' cancel 2>/dev/null ; tmux display-message -d 1200 '✓  selection copied'\"" \
-        "#[fg=#34C759]↳  #[fg=#FFFFFF]Paste clipboard"    p  "run-shell \"wl-paste --no-newline | tmux load-buffer - && tmux paste-buffer -d -p -t '#{pane_id}'\"" \
+        "#[fg=#34C759]↳  #[fg=#FFFFFF]Paste clipboard"    p  "run-shell \"bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-paste.sh '#{pane_id}'\"" \
         "" "" "" \
         "#[fg=#AEAEB2]▣  #[fg=#FFFFFF]Copy whole pane"    C  "run-shell \"tmux capture-pane -t '#{pane_id}' -p -S - -E - | bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-clip-dual.sh && tmux display-message -d 1200 '▣  pane history copied'\"" \
         "#[fg=#AEAEB2]▢  #[fg=#FFFFFF]Copy visible"       c  "run-shell \"tmux capture-pane -t '#{pane_id}' -p | bash ${CODEX_FLEET_REPO_ROOT}/scripts/codex-fleet/bin/pane-menu-clip-dual.sh && tmux display-message -d 1200 '▢  visible area copied'\"" \
