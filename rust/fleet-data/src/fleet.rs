@@ -76,6 +76,23 @@ impl WorkerRow {
     pub fn is_in_review(&self) -> bool {
         matches!(self.state, Some(PaneState::Approval))
     }
+
+    /// `true` when this row counts toward the "capped" tally on dashboards.
+    ///
+    /// Two independent signals can flip a row to capped:
+    ///
+    /// 1. `agent-auth list` reports `5h >= 100%` — the cap-pool number has
+    ///    already crossed the throttle line even before the pane noticed.
+    /// 2. The pane's scrollback classifier returned [`PaneState::Capped`] —
+    ///    the pane itself printed a 5-hour quota message.
+    ///
+    /// The OR keeps either signal alone enough to count the row, which is the
+    /// rule the per-binary `ios_page_design.rs` modules used to recompute
+    /// inline. Lifting it here keeps every dashboard's "capped" number agreeing
+    /// with the data layer instead of drifting per renderer.
+    pub fn is_capped(&self) -> bool {
+        self.five_h_pct >= 100 || matches!(self.state, Some(PaneState::Capped))
+    }
 }
 
 /// Header summary line: "8 workers · 6 live · 1 in review".

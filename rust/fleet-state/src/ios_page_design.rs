@@ -237,10 +237,7 @@ impl Summary {
         Self {
             accounts: rows.len(),
             live: rows.iter().filter(|row| row.is_live()).count(),
-            capped: rows
-                .iter()
-                .filter(|row| row.five_h_pct >= 100 || matches!(row.state, Some(PaneState::Capped)))
-                .count(),
+            capped: rows.iter().filter(|row| row.is_capped()).count(),
             review: rows
                 .iter()
                 .filter(|row| matches!(row.state, Some(PaneState::Approval)))

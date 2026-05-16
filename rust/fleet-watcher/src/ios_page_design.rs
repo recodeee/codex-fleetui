@@ -1,3 +1,6 @@
+use fleet_ui::palette::{
+    IOS_DESTRUCTIVE as IOS_RED, IOS_GREEN, IOS_ORANGE, IOS_TINT as IOS_BLUE,
+};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -6,6 +9,10 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap},
 };
 
+// Local surface tones — this mock dashboard runs on a deeper-than-`IOS_BG_SOLID`
+// dark surface and keeps its own greyscale ramp so the panels read as a
+// separate visual context from the production fleet board. Only the iOS-named
+// accent colors above ride the canonical `fleet-ui::palette` values.
 const BG: Color = Color::Rgb(0x10, 0x12, 0x16);
 const SURFACE: Color = Color::Rgb(0x1a, 0x1d, 0x24);
 const SURFACE_ALT: Color = Color::Rgb(0x20, 0x24, 0x2d);
@@ -15,11 +22,8 @@ const TEXT: Color = Color::Rgb(0xf3, 0xf5, 0xf8);
 const MUTED: Color = Color::Rgb(0xa7, 0xae, 0xbb);
 const FAINT: Color = Color::Rgb(0x78, 0x80, 0x8e);
 
-const IOS_BLUE: Color = Color::Rgb(0x00, 0x7a, 0xff);
-const IOS_GREEN: Color = Color::Rgb(0x34, 0xc7, 0x59);
-const IOS_RED: Color = Color::Rgb(0xff, 0x3b, 0x30);
-const IOS_ORANGE: Color = Color::Rgb(0xff, 0x95, 0x00);
-
+// Tinted soft-fill washes derived from the accent colors — kept local because
+// they are intentionally dark muted bg tints not present in the canonical palette.
 const BLUE_SOFT: Color = Color::Rgb(0x0f, 0x24, 0x42);
 const ORANGE_SOFT: Color = Color::Rgb(0x35, 0x27, 0x11);
 const RED_SOFT: Color = Color::Rgb(0x37, 0x16, 0x14);

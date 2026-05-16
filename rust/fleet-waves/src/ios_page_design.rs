@@ -1,3 +1,6 @@
+use fleet_ui::palette::{
+    IOS_DESTRUCTIVE as DANGER, IOS_GREEN as SUCCESS, IOS_ORANGE as WARNING, IOS_TINT as ACCENT,
+};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -6,6 +9,9 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
 
+// Local surface tones — the wave timeline runs on its own deeper-than-
+// `IOS_BG_SOLID` ramp so the timeline panel reads as a distinct context.
+// Only the iOS-named accent colors above ride canonical `fleet-ui::palette`.
 const BG: Color = Color::Rgb(14, 17, 24);
 const SURFACE: Color = Color::Rgb(22, 26, 36);
 const SURFACE_ELEVATED: Color = Color::Rgb(30, 35, 47);
@@ -15,11 +21,6 @@ const TEXT: Color = Color::Rgb(240, 244, 250);
 const MUTED: Color = Color::Rgb(163, 171, 188);
 const FAINT: Color = Color::Rgb(102, 111, 130);
 const DARK_TEXT: Color = Color::Rgb(13, 15, 20);
-
-const ACCENT: Color = Color::Rgb(0, 122, 255);
-const SUCCESS: Color = Color::Rgb(52, 199, 89);
-const DANGER: Color = Color::Rgb(255, 59, 48);
-const WARNING: Color = Color::Rgb(255, 149, 0);
 
 const CHIP_LABEL_WIDTH: u16 = 7;
 const CHIP_WIDTH: u16 = 13;
