@@ -9,3 +9,4 @@ pub mod plan;
 pub mod scores;
 pub mod scrape;
 pub mod tmux;
+pub mod toposort;

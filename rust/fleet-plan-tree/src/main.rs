@@ -23,6 +23,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use fleet_data::plan::{self, Plan, Subtask};
+use fleet_data::toposort::waves;
 use fleet_ui::{
     card::card,
     chip::{status_chip, ChipKind},
@@ -932,51 +933,6 @@ fn resolve_plan_path() -> Option<PathBuf> {
         .or_else(|_| std::env::var("CODEX_FLEET_PLAN_REPO_ROOT"))
         .unwrap_or_else(|_| DEFAULT_REPO_ROOT.to_string());
     plan::newest_plan(&PathBuf::from(root)).ok().flatten()
-}
-
-fn waves(subtasks: &[Subtask]) -> Vec<Vec<u32>> {
-    let mut level: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-    let by_idx: std::collections::HashMap<u32, &Subtask> =
-        subtasks.iter().map(|s| (s.subtask_index, s)).collect();
-    fn resolve(
-        idx: u32,
-        by: &std::collections::HashMap<u32, &Subtask>,
-        memo: &mut std::collections::HashMap<u32, u32>,
-    ) -> u32 {
-        if let Some(&v) = memo.get(&idx) {
-            return v;
-        }
-        let s = match by.get(&idx) {
-            Some(s) => s,
-            None => {
-                memo.insert(idx, 0);
-                return 0;
-            }
-        };
-        let lvl = if s.depends_on.is_empty() {
-            0
-        } else {
-            s.depends_on
-                .iter()
-                .map(|d| resolve(*d, by, memo))
-                .max()
-                .unwrap_or(0)
-                + 1
-        };
-        memo.insert(idx, lvl);
-        lvl
-    }
-    for s in subtasks {
-        resolve(s.subtask_index, &by_idx, &mut level);
-    }
-    let max = level.values().copied().max().unwrap_or(0);
-    let mut out: Vec<Vec<u32>> = (0..=max).map(|_| Vec::new()).collect();
-    let mut idxs: Vec<u32> = level.keys().copied().collect();
-    idxs.sort();
-    for i in idxs {
-        out[level[&i] as usize].push(i);
-    }
-    out
 }
 
 fn rollup(plan: &Plan) -> (usize, usize, usize, usize) {
