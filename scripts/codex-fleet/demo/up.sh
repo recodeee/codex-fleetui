@@ -185,16 +185,21 @@ for i in "${!AIDS[@]}"; do
 done
 
 # Dashboard windows running the real binaries.
+# Both env vars are set because fleet-plan-tree honors CODEX_FLEET_PLAN_REPO_ROOT
+# (and FLEET_PLAN_REPO_ROOT as fallback) but fleet-waves only reads
+# FLEET_PLAN_REPO_ROOT — so the unprefixed form is the common contract.
+DASH_ENV="PATH='$DEMO_PATH' CODEX_FLEET_PLAN_REPO_ROOT='$REPO_ROOT' FLEET_PLAN_REPO_ROOT='$REPO_ROOT'"
+
 tmux -L "$SOCKET" new-window -t "$SESSION:" -n fleet \
     "env PATH='$DEMO_PATH' '$FLEET_STATE_BIN'; sleep 86400"
 tmux -L "$SOCKET" new-window -t "$SESSION:" -n plan \
-    "env PATH='$DEMO_PATH' CODEX_FLEET_PLAN_REPO_ROOT='$REPO_ROOT' '$FLEET_PLAN_TREE_BIN'; sleep 86400"
+    "env $DASH_ENV '$FLEET_PLAN_TREE_BIN'; sleep 86400"
 tmux -L "$SOCKET" new-window -t "$SESSION:" -n waves \
-    "env PATH='$DEMO_PATH' CODEX_FLEET_PLAN_REPO_ROOT='$REPO_ROOT' '$FLEET_WAVES_BIN'; sleep 86400"
+    "env $DASH_ENV '$FLEET_WAVES_BIN'; sleep 86400"
 
 if [[ -n "${FLEET_WATCHER_BIN:-}" ]]; then
     tmux -L "$SOCKET" new-window -t "$SESSION:" -n watcher \
-        "env PATH='$DEMO_PATH' CODEX_FLEET_PLAN_REPO_ROOT='$REPO_ROOT' '$FLEET_WATCHER_BIN'; sleep 86400"
+        "env $DASH_ENV '$FLEET_WATCHER_BIN'; sleep 86400"
 fi
 
 tmux -L "$SOCKET" select-window -t "$SESSION:overview"
