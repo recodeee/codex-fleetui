@@ -394,12 +394,6 @@ fn active_wave_info(waves: &[Vec<u32>], plan: &Plan) -> (usize, &'static str, u3
     (waves.len().max(1), "done", pct)
 }
 
-struct WavePreview<'a> {
-    wave_index: usize,
-    status: WaveStatus,
-    title: &'a str,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TimelineAction {
     Claim,
@@ -640,29 +634,6 @@ fn leaderboard(plan: &Plan) -> Vec<AgentScore> {
     rows.sort_by(|a, b| b.count.cmp(&a.count).then(a.agent.cmp(&b.agent)));
     rows.truncate(6);
     rows
-}
-
-fn unfinished_waves<'a>(
-    waves_v: &'a [Vec<u32>],
-    plan: &'a Plan,
-    limit: usize,
-) -> Vec<WavePreview<'a>> {
-    let mut out = Vec::new();
-    for (wave_index, indices) in waves_v.iter().enumerate() {
-        let status = wave_status(indices, plan);
-        if matches!(status, WaveStatus::Done) {
-            continue;
-        }
-        out.push(WavePreview {
-            wave_index,
-            status,
-            title: first_task_title(indices, plan),
-        });
-        if out.len() >= limit {
-            break;
-        }
-    }
-    out
 }
 
 fn clip(s: &str, max: u16) -> String {
@@ -1359,61 +1330,6 @@ mod tests {
     use super::*;
     use tuirealm::ratatui::{backend::TestBackend, Terminal};
 
-    fn demo_plan() -> Plan {
-        Plan {
-            schema_version: 1,
-            plan_slug: "demo".into(),
-            title: "Demo".into(),
-            problem: "demo".into(),
-            acceptance_criteria: vec![],
-            roles: vec![],
-            created_at: None,
-            updated_at: None,
-            published: None,
-            tasks: vec![
-                Subtask {
-                    subtask_index: 0,
-                    title: "Wave zero".into(),
-                    description: "done".into(),
-                    file_scope: vec![],
-                    depends_on: vec![],
-                    capability_hint: None,
-                    spec_row_id: None,
-                    status: "completed".into(),
-                    claimed_by_session_id: None,
-                    claimed_by_agent: None,
-                    completed_summary: None,
-                },
-                Subtask {
-                    subtask_index: 1,
-                    title: "Wave one".into(),
-                    description: "claimed".into(),
-                    file_scope: vec![],
-                    depends_on: vec![0],
-                    capability_hint: None,
-                    spec_row_id: None,
-                    status: "claimed".into(),
-                    claimed_by_session_id: None,
-                    claimed_by_agent: Some("codex-alpha".into()),
-                    completed_summary: None,
-                },
-                Subtask {
-                    subtask_index: 2,
-                    title: "Wave two".into(),
-                    description: "available".into(),
-                    file_scope: vec![],
-                    depends_on: vec![1],
-                    capability_hint: None,
-                    spec_row_id: None,
-                    status: "available".into(),
-                    claimed_by_session_id: None,
-                    claimed_by_agent: None,
-                    completed_summary: None,
-                },
-            ],
-        }
-    }
-
     fn lively_plan() -> Plan {
         let mut tasks = Vec::new();
         for i in 0..9 {
@@ -1479,20 +1395,6 @@ mod tests {
                 title: format!("Lane {} with deliberately long title for clipping", i),
             })
             .collect()
-    }
-
-    #[test]
-    fn unfinished_waves_skip_completed_rows() {
-        let plan = demo_plan();
-        let waves_v = waves(&plan.tasks);
-        let previews = unfinished_waves(&waves_v, &plan, 3);
-        assert_eq!(previews.len(), 2);
-        assert_eq!(previews[0].wave_index, 1);
-        assert!(matches!(previews[0].status, WaveStatus::Working));
-        assert_eq!(previews[0].title, "Wave one");
-        assert_eq!(previews[1].wave_index, 2);
-        assert!(matches!(previews[1].status, WaveStatus::Idle));
-        assert_eq!(previews[1].title, "Wave two");
     }
 
     #[test]
