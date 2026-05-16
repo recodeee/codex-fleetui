@@ -44,6 +44,95 @@ pub struct SpotlightState {
     pub tick: u64,
 }
 
+/// Canonical Spotlight catalogue shared by every fleet binary
+/// (`fleet-state`, `fleet-plan-tree`, `fleet-waves`). Previously each
+/// binary kept its own near-identical `SPOTLIGHT_ITEMS` const; that
+/// duplication is consolidated here. Three groups: PANE (split / zoom /
+/// swap), SESSION (transcript / queue / history), FLEET (spawn / switch).
+pub const SHARED_SPOTLIGHT_ITEMS: &[SpotlightItem<'static>] = &[
+    SpotlightItem {
+        group: "PANE",
+        icon: "⊟",
+        title: "Horizontal split",
+        sub: "Split active pane top/bottom",
+        kbd: "h",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⊞",
+        title: "Vertical split",
+        sub: "Split active pane left/right",
+        kbd: "v",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⤢",
+        title: "Zoom pane",
+        sub: "Toggle full-screen for this pane",
+        kbd: "z",
+    },
+    SpotlightItem {
+        group: "PANE",
+        icon: "⇄",
+        title: "Swap with marked pane",
+        sub: "Swap active and marked panes",
+        kbd: "s",
+    },
+    SpotlightItem {
+        group: "SESSION",
+        icon: "⧉",
+        title: "Copy whole session",
+        sub: "Copy the current transcript",
+        kbd: "⇧C",
+    },
+    SpotlightItem {
+        group: "SESSION",
+        icon: "☰",
+        title: "Queue message",
+        sub: "Send a message on next idle",
+        kbd: "↹",
+    },
+    SpotlightItem {
+        group: "SESSION",
+        icon: "⌚",
+        title: "Search history…",
+        sub: "Search the current session",
+        kbd: "/",
+    },
+    SpotlightItem {
+        group: "FLEET",
+        icon: "+",
+        title: "Spawn new codex worker",
+        sub: "Open another worker pane",
+        kbd: "Ctrl N",
+    },
+    SpotlightItem {
+        group: "FLEET",
+        icon: "⎇",
+        title: "Switch worktree…",
+        sub: "Choose another branch/worktree",
+        kbd: "Ctrl B",
+    },
+];
+
+/// Fuzzy-rank the canonical catalogue against `query`. Returns the items
+/// in score-descending order; an empty query returns all items in catalogue
+/// order. Mirrors the legacy per-binary `spotlight_filter` helper, but
+/// powered by `SpotlightFilter` (skim fuzzy) instead of substring matching.
+pub fn shared_spotlight_filter(query: &str) -> Vec<&'static SpotlightItem<'static>> {
+    if query.is_empty() {
+        return SHARED_SPOTLIGHT_ITEMS.iter().collect();
+    }
+    let keys: Vec<String> = SHARED_SPOTLIGHT_ITEMS
+        .iter()
+        .map(|item| format!("{} {} {}", item.group, item.title, item.sub))
+        .collect();
+    let hits = SpotlightFilter::default().rank(query, &keys, SHARED_SPOTLIGHT_ITEMS.len());
+    hits.into_iter()
+        .map(|hit| &SHARED_SPOTLIGHT_ITEMS[hit.index])
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spotlight<'a> {
     pub items: Vec<SpotlightItem<'a>>,
