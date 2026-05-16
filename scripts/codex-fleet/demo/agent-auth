@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Demo shim: fake `agent-auth list` output for codex-fleet/demo/up.sh.
+# Used via PATH override so fleet-data::accounts::load_via_agent_auth() reads
+# this instead of the real binary. Eight synthetic accounts with varied
+# 5h/weekly caps so the dashboard shows visual range.
+#
+# When invoked with a sub-command other than `list`, exit 0 silently — the
+# real binary supports more verbs, but the dashboards only call `list`.
+set -euo pipefail
+
+if [[ "${1:-}" != "list" ]]; then
+    exit 0
+fi
+
+# Allow the tick simulator to flip the "current" account by writing the
+# email into this file. Defaults to admin-magnolia.
+current_file="${CODEX_FLEET_DEMO_CURRENT:-/tmp/claude-viz/demo-current-account}"
+current_email=""
+if [[ -r "$current_file" ]]; then
+    current_email="$(head -1 "$current_file" | tr -d '[:space:]')"
+fi
+
+print_row() {
+    local email="$1" five_h="$2" weekly="$3"
+    local marker=" "
+    if [[ "$email" == "$current_email" ]]; then
+        marker="*"
+    fi
+    printf "%s %-32s  5h=%s%%  weekly=%s%%\n" "$marker" "$email" "$five_h" "$weekly"
+}
+
+# 8 synthetic accounts. Caps tuned so the dashboards show variety: some
+# heavily loaded, some fresh, one near the limit.
+print_row admin-magnolia@example.dev   88 62
+print_row admin-sumac@example.dev      71 48
+print_row admin-yarrow@example.dev     59 35
+print_row admin-clover@example.dev     94 78
+print_row admin-thistle@example.dev    42 21
+print_row admin-fennel@example.dev     67 44
+print_row admin-mallow@example.dev     53 29
+print_row admin-borage@example.dev     81 56
