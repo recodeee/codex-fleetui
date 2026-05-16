@@ -1,0 +1,26 @@
+[package]
+name = "fleet-launcher"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "Spawn codex / claude / gemini sessions in kitty windows. Ports the kitty-spawn path from ~/Documents/hcom (terminal.rs) into a small standalone API for codex-fleet supervisors and tooling."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "fleet-spawn"
+path = "src/bin/spawn.rs"
+
+[dependencies]
+libc = "0.2"
+
+# Cross-platform process-liveness checks for the presence/heartbeat file
+# work. Disable default features so we don't pay for component/network/disk
+# probes we never read — `is_alive(pid)` only needs the process refresh.
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+
+# Modern date-time crate for heartbeat timestamps. Picked over `chrono` for
+# correctness (Jiff's tz model + arithmetic don't carry chrono's leap-second
+# / DST footguns) and over `time` for ergonomics.
+jiff = "0.2"
