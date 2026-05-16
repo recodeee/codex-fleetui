@@ -210,6 +210,16 @@ echo "demo up. session=$SESSION socket=$SOCKET plan=$PLAN_SLUG"
 echo "attach: tmux -L $SOCKET attach -t $SESSION"
 echo "tear down: bash scripts/codex-fleet/demo/down.sh"
 
+# Attach only when stdin + stdout are real TTYs. Without that, `exec tmux
+# attach` aborts with "open terminal failed: not a terminal" and strands the
+# parent — observed to lock up the kitty launcher / session picker that
+# spawned up.sh. Drop `exec` so the shell returns cleanly even if tmux's
+# attach fails for some other reason. Print the attach command when we skip.
 if [[ "$attach" -eq 1 ]]; then
-    exec tmux -L "$SOCKET" attach -t "$SESSION"
+    if [[ -t 0 && -t 1 ]]; then
+        tmux -L "$SOCKET" attach -t "$SESSION"
+    else
+        echo "demo: no TTY available, skipping auto-attach" >&2
+        echo "      run from a terminal: tmux -L $SOCKET attach -t $SESSION" >&2
+    fi
 fi
