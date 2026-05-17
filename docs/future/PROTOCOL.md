@@ -11996,3 +11996,46 @@ protocol section) will summarise the current distribution of states.
 
 Updated by the docs/future captain after each two-week review.
 
+
+---
+
+## Implementation Log
+
+This appendix records improvements that have moved beyond PROPOSED. Each
+entry links to the protocol section it implements, the PR that landed
+the work, and the resulting artifacts. Captains refresh this log at
+each two-week review.
+
+### 2026-05-17 — Governance bootstrap (PR #171)
+
+The first wave of governance tooling that the rest of this protocol
+depends on. None of the proposed *behaviour* changes ship in this PR;
+only the scaffolding that makes the rest of the protocol enforceable.
+
+| Section | Improvement | State | Artifact |
+|---------|-------------|-------|----------|
+| `meta-protocol` | Formal lifecycle states (state-line scheme + linter) | SHIPPED | `scripts/protocol/check-states.sh`, `scripts/protocol/protocol-state.sh` |
+| `meta-protocol` | Anti-bikeshed: budget per section | SHIPPED | `scripts/protocol/check-budget.sh` |
+| `meta-protocol` | Cite-real-files rule | SHIPPED | `scripts/protocol/check-refs.sh` |
+| `meta-protocol` | Decision log (ADR-lite) | IN-PROGRESS | `docs/future/decisions/_template.md`, `docs/future/decisions/README.md` |
+| `meta-protocol` | Two-week protocol review cadence | IN-PROGRESS | `docs/future/reviews/_template.md`, `docs/future/reviews/README.md` |
+| `repo-layout` | Top-level taskfile (justfile) | SHIPPED | `justfile` |
+| `repo-layout` | Top-level `.editorconfig` | SHIPPED | `.editorconfig` |
+
+#### How to use the new tooling
+
+- `just protocol-state` — print lifecycle-state counts.
+- `just protocol-check` — run every governance gate (states, refs, budget).
+- `just ci` — composite gate intended for CI.
+
+Captains: see `docs/future/decisions/README.md` for ADR conventions and
+`docs/future/reviews/README.md` for the bi-weekly review process.
+
+#### Known gaps
+
+- ADRs: only the template ships; no historical decisions backfilled yet.
+- Reviews: the first review has not been held.
+- CI wiring: `just ci` is documented but not yet invoked from any
+  GitHub Actions workflow under `.github/`.
+- Captains: every section still shows `unassigned`. The first review
+  should fill the section-status snapshot.
